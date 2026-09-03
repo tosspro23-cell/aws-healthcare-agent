@@ -41,12 +41,28 @@ Status legend: ⬜ not started · 🔶 in progress · ✅ done
   resources) + `tests/test_adapter.py` (Lambda handler logic against a
   `moto`-mocked DynamoDB/S3, 18 cases incl. malformed-JSON-body variants
   that surfaced and fixed a real crash — see `DECISIONS.md`).
-- ⬜ **Not yet done — needs real AWS credentials**: `cdk bootstrap`,
-  `cdk deploy --all`, and running `tests/test_live_endpoint_smoke.py`
-  against the live endpoint.
-- **Acceptance** (pending the deploy step above): a request against the
-  live endpoint returns the same answer as running `care-agent ask` locally
-  for the same question.
+- ✅ `cdk bootstrap` + `cdk deploy --all` against a real AWS account
+  (us-east-1). Both stacks deployed cleanly on the second attempt — the
+  first `cdk bootstrap` failed on `cloudformation:DescribeStacks` because
+  the IAM user had no policy attached yet; see `DECISIONS.md`.
+- ✅ **Phase 1 acceptance criterion met and verified**: a live `curl`/pytest
+  request against the deployed endpoint returns byte-for-byte the same
+  `answer` text as running `care-agent ask` locally for the same question
+  (compared directly, not just spot-checked). `tests/test_live_endpoint_smoke.py`
+  passes all 4 cases against the real endpoint. Confirmed the DynamoDB run
+  record and S3 evidence object were both actually written (fetched them
+  back by `run_id` after the call, not just trusted a 200 response).
+
+**Phase 1: complete.** The live API URL is intentionally not committed to
+this repo (see `DECISIONS.md` — Phase 1 has no auth by design, and an
+unauthenticated endpoint's URL doesn't belong in a public repo's history
+even though the cost exposure from someone finding and hammering it is
+small at this scale). Retrieve it yourself with:
+
+```bash
+aws cloudformation describe-stacks --stack-name CareAgentApiStack \
+    --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text
+```
 
 ## Phase 2 — Authentication
 

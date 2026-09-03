@@ -8,6 +8,50 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-03 — Phase 1 deployed live; the live URL isn't committed anywhere
+
+**Context**: `cdk deploy --all` succeeded against a real account
+(`470293170577`, `us-east-1`); both stacks are live. Phase 1 has no auth by
+design (Cognito is Phase 2) -- the `/ask` endpoint is anonymous.
+
+**Decision**: The API URL is not written into any committed file (docs,
+tests, scripts). `tests/test_live_endpoint_smoke.py` reads it from
+`CARE_AGENT_API_URL`, set manually per-session, not from a checked-in
+value. `AWS_ROADMAP.md` documents the one-line `aws cloudformation
+describe-stacks` command to fetch it instead.
+
+**Consequence**: Nobody browsing this public repo's history can find and
+hit the live anonymous endpoint. The cost exposure from someone finding it
+anyway and hammering it is small at this scale (Lambda/DynamoDB/S3 are all
+consumption-priced fractions of a cent per request, no Bedrock calls
+happen on the default mock-narrator path this endpoint runs), but there's
+no reason to make it easier to find than it has to be before Phase 2 adds
+real auth.
+
+---
+
+## 2026-09-03 — `cdk bootstrap` failed once: IAM user had no policy attached
+
+**Context**: First `cdk bootstrap` attempt failed:
+`AccessDenied: ... dev-cli is not authorized to perform:
+cloudformation:DescribeStacks`. The IAM user existed (created per
+`AWS_SETUP.md`) but had no policy attached yet -- `AdministratorAccess`
+hadn't actually been attached in the console, just planned.
+
+**Decision**: Not a code fix -- confirmed via `aws iam list-attached-user-policies`
+that no policy was attached, had the account owner attach
+`AdministratorAccess` in the console, re-ran `aws sts get-caller-identity`
+to confirm the ARN and account, then retried `cdk bootstrap`, which
+succeeded immediately.
+
+**Consequence**: Worth remembering as a first-deploy checklist item on any
+new AWS account: `aws iam list-attached-user-policies --user-name <name>`
+is a fast way to confirm "did the policy attachment actually take" before
+spending time debugging what looks like a CDK/CloudFormation problem but
+is actually an IAM console step that didn't happen.
+
+---
+
 ## 2026-09-03 — Lambda packaging: plain file copy, no Docker/pip bundling
 
 **Context**: CDK's typical Python Lambda bundling story assumes third-party

@@ -10,12 +10,12 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phase 0 complete. Phase 1 code-complete (CDK stacks,
-Lambda adapter, unit tests, `cdk synth` validated) but not yet deployed** —
-that step needs AWS credentials configured (see
-[`docs/AWS_SETUP.md`](docs/AWS_SETUP.md)) and is intentionally not run
-automatically. The `src/care_agent/` kernel below runs standalone today
-regardless. See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
+**Current status: Phase 0 and Phase 1 both complete.** A live deployment
+(API Gateway + Lambda + DynamoDB + S3, no auth yet — that's Phase 2) is
+running in AWS; the deployed endpoint returns byte-for-byte the same answer
+as running `care-agent ask` locally for the same question, verified
+directly. The `src/care_agent/` kernel below also runs standalone with no
+AWS dependency at all. See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
 phase-by-phase status.
 
 This is a personal architecture-comparison learning project: the same
