@@ -1,0 +1,104 @@
+{
+  "user_id": "user_demo_001",
+  "schema_version": "mock_questionnaire_context.v1",
+  "completed_at": "2026-05-02T12:05:00Z",
+  "profile_facts": [
+    {
+      "field": "age",
+      "value": 42,
+      "source": "profile"
+    },
+    {
+      "field": "sex",
+      "value": "female",
+      "source": "profile"
+    }
+  ],
+  "facts": [
+    {
+      "field": "nutrition.sugary_foods",
+      "value": "3_4_days_per_week",
+      "state": "known_present",
+      "source": "questionnaire"
+    },
+    {
+      "field": "nutrition.vegetables",
+      "value": "0_1_servings_per_day",
+      "state": "known_present",
+      "source": "questionnaire"
+    },
+    {
+      "field": "exercise.aerobic_activity",
+      "value": "less_than_60_min_per_week",
+      "state": "known_present",
+      "source": "questionnaire"
+    },
+    {
+      "field": "exercise.strength_training",
+      "value": "rarely",
+      "state": "known_present",
+      "source": "questionnaire"
+    },
+    {
+      "field": "mind.sleep_duration",
+      "value": "5_6_hours",
+      "state": "known_present",
+      "source": "questionnaire"
+    },
+    {
+      "field": "mind.stress",
+      "value": "high",
+      "state": "known_present",
+      "source": "questionnaire"
+    }
+  ],
+  "cautions": [
+    {
+      "kind": "exercise_limitation",
+      "detail": "Reports knee pain with running or jumping.",
+      "source": "questionnaire"
+    },
+    {
+      "kind": "medication_context",
+      "detail": "Reports levothyroxine use; avoid supplement timing or dose advice.",
+      "source": "questionnaire"
+    },
+    {
+      "kind": "allergy_context",
+      "detail": "Reports shellfish allergy; avoid shellfish-derived supplement assumptions.",
+      "source": "questionnaire"
+    },
+    {
+      "kind": "family_history_context",
+      "detail": "Reports first-degree family history of type 2 diabetes.",
+      "source": "questionnaire"
+    }
+  ],
+  "preferences": [
+    {
+      "field": "exercise.preference",
+      "value": "walking_and_cycling",
+      "source": "questionnaire"
+    },
+    {
+      "field": "nutrition.preference",
+      "value": "mediterranean_style_foods",
+      "source": "questionnaire"
+    }
+  ],
+  "unknowns": [
+    {
+      "field": "nutrition.alcohol_intake",
+      "reason": "question_unanswered",
+      "source": "questionnaire"
+    }
+  ],
+  "declined": [
+    {
+      "field": "mental_health.phq2",
+      "source": "questionnaire",
+      "instruction": "Do not ask the user to provide this field again in the answer."
+    }
+  ],
+  "style_hint": "Use silently; mention questionnaire context only when it changes the advice."
+}

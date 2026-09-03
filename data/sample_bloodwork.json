@@ -1,0 +1,149 @@
+{
+  "user_id": "user_demo_001",
+  "dataset_version": "mock_bloodwork.v1",
+  "latest_panel": {
+    "panel_id": "panel_2026_05_06_demo",
+    "measurement_date": "2026-05-06",
+    "source": {
+      "type": "mock_lab_report",
+      "file_name": "mock_lab_report_2026_05_06.pdf"
+    },
+    "overall_flags": [
+      "cardiometabolic_priority",
+      "review_with_clinician"
+    ],
+    "biomarkers": [
+      {
+        "concept_id": "ldl_c_mg_dl",
+        "display_name": "LDL-C",
+        "value": 162,
+        "unit": "mg/dL",
+        "classification": "high",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["NUTRITION", "EXERCISE", "MEDICAL"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "hba1c_percent",
+        "display_name": "HbA1c",
+        "value": 6.1,
+        "unit": "%",
+        "classification": "elevated",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["NUTRITION", "EXERCISE", "MEDICAL"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "hdl_c_mg_dl",
+        "display_name": "HDL-C",
+        "value": 47,
+        "unit": "mg/dL",
+        "classification": "adequate",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["EXERCISE", "NUTRITION"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "triglycerides_mg_dl",
+        "display_name": "Triglycerides",
+        "value": 188,
+        "unit": "mg/dL",
+        "classification": "borderline_high",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["NUTRITION", "EXERCISE"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "fasting_glucose_mg_dl",
+        "display_name": "Fasting glucose",
+        "value": 108,
+        "unit": "mg/dL",
+        "classification": "elevated",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["NUTRITION", "EXERCISE", "MEDICAL"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "hs_crp_mg_l",
+        "display_name": "hs-CRP",
+        "value": 2.8,
+        "unit": "mg/L",
+        "classification": "suboptimal",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["NUTRITION", "EXERCISE", "MIND"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "vitamin_d_25oh_ng_ml",
+        "display_name": "Vitamin D",
+        "value": 24,
+        "unit": "ng/mL",
+        "classification": "low",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["MEDICAL", "NUTRITION"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "tsh_miu_l",
+        "display_name": "TSH",
+        "value": 3.9,
+        "unit": "mIU/L",
+        "classification": "borderline",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["MEDICAL"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "alt_u_l",
+        "display_name": "ALT",
+        "value": 29,
+        "unit": "U/L",
+        "classification": "adequate",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["MEDICAL"],
+        "source": "latest_bloodwork"
+      },
+      {
+        "concept_id": "egfr_ml_min_1_73m2",
+        "display_name": "eGFR",
+        "value": 91,
+        "unit": "mL/min/1.73m2",
+        "classification": "adequate",
+        "classification_basis": "mock_catalog_v1",
+        "action_fields": ["MEDICAL"],
+        "source": "latest_bloodwork"
+      }
+    ]
+  },
+  "previous_panels": [
+    {
+      "panel_id": "panel_2025_12_08_demo",
+      "measurement_date": "2025-12-08",
+      "biomarkers": [
+        {
+          "concept_id": "ldl_c_mg_dl",
+          "display_name": "LDL-C",
+          "value": 148,
+          "unit": "mg/dL"
+        },
+        {
+          "concept_id": "hba1c_percent",
+          "display_name": "HbA1c",
+          "value": 5.8,
+          "unit": "%"
+        },
+        {
+          "concept_id": "triglycerides_mg_dl",
+          "display_name": "Triglycerides",
+          "value": 171,
+          "unit": "mg/dL"
+        }
+      ]
+    }
+  ],
+  "stale_panel_example": {
+    "panel_id": "panel_2024_10_12_stale_demo",
+    "measurement_date": "2024-10-12",
+    "note": "Use this record for stale-data tests if desired."
+  }
+}

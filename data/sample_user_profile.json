@@ -1,0 +1,25 @@
+{
+  "user_id": "user_demo_001",
+  "profile_version": "mock_profile.v1",
+  "display_name": "Alex",
+  "age": 42,
+  "sex": "female",
+  "country": "PT",
+  "height_cm": 168,
+  "weight_kg": 81,
+  "known_conditions": [],
+  "medications": [
+    {
+      "name": "levothyroxine",
+      "source": "user_reported_questionnaire",
+      "confidence": "self_reported"
+    }
+  ],
+  "allergies": [
+    {
+      "name": "shellfish",
+      "source": "user_reported_questionnaire",
+      "confidence": "self_reported"
+    }
+  ]
+}
