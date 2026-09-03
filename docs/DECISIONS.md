@@ -8,6 +8,75 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-03 — Auth enforced at API Gateway, not in the Lambda handler
+
+**Context**: Phase 2 needed to protect `/ask`. One option was to check the
+`Authorization` header inside `adapter.py` itself (decode/validate the JWT
+in Lambda code).
+
+**Decision**: Use API Gateway's native Cognito JWT authorizer
+(`HttpJwtAuthorizer`) on the route instead. A request without a valid token
+never invokes the Lambda at all.
+
+**Consequence**: `lambda_src/adapter.py` needed zero changes for Phase 2 —
+it still has no idea auth exists. This keeps the handler's own tests
+(`test_adapter.py`) entirely about business logic, and keeps auth
+concerns testable independently via CloudFormation assertions
+(`test_stacks.py`) rather than needing to mock JWT validation inside a
+Lambda unit test. It also means a misconfigured/compromised Lambda can't
+accidentally skip an auth check that lives in its own code path -- the
+check isn't in that code path at all.
+
+---
+
+## 2026-09-03 — App Client is a public client (no secret), ID token not access token
+
+**Context**: Cognito app clients can be "confidential" (have a secret,
+suited to a server that can keep it private) or "public" (no secret,
+suited to a CLI/native/browser client that can't). `get_dev_token.py` is a
+local script with nowhere secure to keep a secret.
+
+**Decision**: `generate_secret=False`, Authorization Code + PKCE flow
+(PKCE is specifically the mechanism that makes the public-client,
+no-secret case safe against authorization-code interception). The API
+Gateway authorizer validates the **ID token**, not the access token --
+the ID token's `aud` claim matches the app client ID directly, which is
+what `HttpJwtAuthorizer`'s `jwt_audience` check expects for a
+Cognito-issued token; the access token carries a `client_id` claim
+instead and isn't the conventional shape for this check.
+
+**Consequence**: `get_dev_token.py` exports `CARE_AGENT_ID_TOKEN`, not an
+access token. Worth remembering if this is ever compared against how the
+Azure side scopes its equivalent (Entra ID access tokens are the more
+conventional choice there) -- a concrete example of "same requirement,
+different idiomatic answer per platform," which is exactly the kind of
+thing this log exists to capture.
+
+---
+
+## 2026-09-03 — Cognito Hosted UI domain prefix is a hardcoded literal
+
+**Context**: Cognito Hosted UI domain prefixes are globally unique across
+*all* AWS accounts (they live under `*.auth.<region>.amazoncognito.com`),
+not just this one. `cdk synth` also needs to work with no real AWS
+credentials at all (CI's fake-account job) -- so the prefix can't be
+computed at synth time via a live `sts.get_caller_identity()` call.
+
+**Decision**: `auth_stack.py` defaults `domain_prefix` to the literal
+string `"care-agent-470293170577"` (this project's actual account number,
+known from having already deployed once), overridable via a constructor
+parameter. Tests pass a distinct literal (`"care-agent-test-synth-only"`)
+so `cdk synth`-time template generation never depends on any live account
+state either.
+
+**Consequence**: Redeploying this stack to a *different* AWS account
+requires passing a different `domain_prefix` explicitly (the default would
+still technically work — Cognito domain prefixes aren't required to match
+the account they're deployed in — but reusing an unrelated account number
+as a label would be confusing). Documented here so that's not a surprise.
+
+---
+
 ## 2026-09-03 — Phase 1 deployed live; the live URL isn't committed anywhere
 
 **Context**: `cdk deploy --all` succeeded against a real account

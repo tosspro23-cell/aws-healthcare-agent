@@ -1,9 +1,13 @@
 """End-to-end smoke test against a *deployed* API Gateway endpoint.
 
 Skipped entirely unless CARE_AGENT_API_URL is set -- this never runs in CI
-and never runs as part of a normal `pytest` invocation. It exists for the
-Phase 1 acceptance check: "a request against the live endpoint returns the
-same answer as running `care-agent ask` locally for the same question."
+and never runs as part of a normal `pytest` invocation.
+
+Since Phase 2, `/ask` requires a valid Cognito JWT (see
+`../stacks/api_stack.py`): a request with no/invalid token never reaches
+the Lambda at all, so most of these cases additionally need
+CARE_AGENT_ID_TOKEN to actually exercise Lambda-level behavior. The
+no-token case is deliberately its own always-runs-if-URL-is-set test.
 
 Usage, after `cdk deploy` (see docs/AWS_ROADMAP.md):
 
@@ -11,6 +15,7 @@ Usage, after `cdk deploy` (see docs/AWS_ROADMAP.md):
         --stack-name CareAgentApiStack \\
         --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" \\
         --output text)"
+    eval "$(python infra/scripts/get_dev_token.py | grep ^export)"
     pytest infra/tests/test_live_endpoint_smoke.py -v
 
 Uses stdlib `urllib` rather than `requests`, consistent with the rest of
@@ -25,25 +30,64 @@ import urllib.request
 import pytest
 
 API_URL = os.environ.get("CARE_AGENT_API_URL")
+ID_TOKEN = os.environ.get("CARE_AGENT_ID_TOKEN")
 
 pytestmark = pytest.mark.skipif(not API_URL, reason="CARE_AGENT_API_URL not set -- no deployed endpoint to test against")
 
+requires_token = pytest.mark.skipif(
+    not ID_TOKEN, reason="CARE_AGENT_ID_TOKEN not set -- run infra/scripts/get_dev_token.py first"
+)
 
-def _post_ask(payload: dict) -> tuple[int, dict]:
+
+def _post_ask(payload: dict, *, authorized: bool = True) -> tuple[int, dict]:
     url = API_URL.rstrip("/") + "/ask"
+    headers = {"Content-Type": "application/json"}
+    if authorized and ID_TOKEN:
+        headers["Authorization"] = f"Bearer {ID_TOKEN}"
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read().decode("utf-8"))
+        body = exc.read().decode("utf-8")
+        try:
+            return exc.code, json.loads(body)
+        except json.JSONDecodeError:
+            # API Gateway's own 401 (not our Lambda's JSON error shape) is
+            # plain text, not JSON -- still a valid, expected response.
+            return exc.code, {"raw": body}
 
 
+def test_live_ask_without_token_returns_401():
+    """Phase 2 acceptance check: the route now actually enforces auth --
+    this must fail *before* ever reaching the Lambda, regardless of whether
+    a valid CARE_AGENT_ID_TOKEN happens to be set for other tests in this
+    file (deliberately calls with authorized=False)."""
+    status, _payload = _post_ask({"user_id": "user_demo_001", "question": "hello"}, authorized=False)
+    assert status == 401
+
+
+def test_live_ask_with_garbage_token_returns_401():
+    url = API_URL.rstrip("/") + "/ask"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"user_id": "user_demo_001", "question": "hello"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer not-a-real-jwt"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30):
+            raise AssertionError("expected an HTTPError for a garbage token")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 401
+
+
+@requires_token
 def test_live_main_question_matches_local_behavior():
     status, payload = _post_ask(
         {
@@ -59,17 +103,20 @@ def test_live_main_question_matches_local_behavior():
     assert payload["trace"]["narrator_backend"] == "mock"
 
 
+@requires_token
 def test_live_missing_fields_returns_400():
     status, payload = _post_ask({"question": "hello"})
     assert status == 400
     assert "error" in payload
 
 
+@requires_token
 def test_live_unknown_user_returns_404():
     status, payload = _post_ask({"user_id": "not_a_real_user", "question": "hi"})
     assert status == 404
 
 
+@requires_token
 def test_live_supplement_question_gives_no_dose():
     status, payload = _post_ask({"user_id": "user_demo_001", "question": "Should I take supplements for cholesterol?"})
     assert status == 200

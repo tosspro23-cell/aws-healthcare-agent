@@ -66,11 +66,35 @@ aws cloudformation describe-stacks --stack-name CareAgentApiStack \
 
 ## Phase 2 — Authentication
 
-- ⬜ Cognito User Pool + App Client.
-- ⬜ API Gateway Cognito Authorizer on the protected routes.
-- ⬜ Test/CLI client updated to do the auth-code + PKCE flow to get a token.
-- Deliberately its own phase, separate from Phase 1, so auth configuration
-  issues don't block getting the skeleton running end to end first.
+- ✅ `AuthStack` (`infra/stacks/auth_stack.py`): Cognito User Pool + Hosted
+  UI domain + a public (no-secret) App Client, `AllowedOAuthFlows: [code]`
+  — the shape Authorization Code + PKCE requires.
+- ✅ `ApiStack`'s `/ask` route now has a Cognito JWT authorizer
+  (`AuthorizationType: JWT`, audience = the App Client ID, issuer = the
+  User Pool). Enforced entirely at API Gateway — zero changes to
+  `lambda_src/adapter.py`, since a request without a valid token never
+  reaches the Lambda.
+- ✅ `infra/scripts/get_dev_token.py`: walks the real Authorization Code +
+  PKCE flow (opens the browser to the Hosted UI, catches the redirect with
+  a local stdlib HTTP server, exchanges the code for tokens) to get a real
+  bearer token for testing.
+- ✅ `cdk synth` validated locally for all three stacks together.
+- ✅ Unit tests: `tests/test_stacks.py` gained JWT-authorizer and
+  public-client assertions (13 cases total now); `tests/test_get_dev_token.py`
+  covers the PKCE math and URL/request construction (6 cases) without
+  needing a real browser or network call.
+- ✅ `tests/test_live_endpoint_smoke.py` updated: no-token and
+  garbage-token requests now assert `401` (always run once `CARE_AGENT_API_URL`
+  is set); the existing behavioral checks (matches-local-answer,
+  400/404 cases) are gated on `CARE_AGENT_ID_TOKEN` additionally, since they
+  need a request that actually reaches the Lambda.
+- ⬜ **Live verification against the deployed endpoint** — pending an
+  actual signed-in session via `get_dev_token.py` (needs a human to click
+  through a real browser login; not something this session can do for you
+  the way `curl` calls were for Phase 1).
+
+Deliberately its own phase, separate from Phase 1, so auth configuration
+issues wouldn't have blocked getting the skeleton running end to end first.
 
 ## Phase 3 — Step Functions orchestration (reliability semantics)
 

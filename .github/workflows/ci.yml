@@ -110,7 +110,7 @@ jobs:
 
       - name: Mypy (type check)
         working-directory: infra
-        run: mypy stacks app.py lambda_src build_lambda_asset.py --ignore-missing-imports
+        run: mypy stacks app.py lambda_src build_lambda_asset.py scripts/get_dev_token.py --ignore-missing-imports
 
       - name: Pytest (stack assertions + moto-mocked Lambda handler tests)
         working-directory: infra

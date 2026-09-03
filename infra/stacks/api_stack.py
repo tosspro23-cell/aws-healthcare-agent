@@ -1,9 +1,9 @@
 """ApiStack: API Gateway HTTP API + Lambda integration.
 
-Phase 1 scope only: a single anonymous `POST /ask` route. Cognito auth is
-deliberately deferred to Phase 2 (see `../../docs/AWS_ROADMAP.md`) so this
-skeleton isn't blocked on auth configuration before it can be exercised
-end to end.
+Phase 1 shipped a single anonymous `POST /ask` route. Phase 2 adds a
+Cognito JWT authorizer on that same route -- auth is enforced entirely at
+the API Gateway layer (a request without a valid token never reaches the
+Lambda), so `lambda_src/adapter.py` needed zero changes for this.
 """
 
 import sys
@@ -11,7 +11,9 @@ from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, Stack
 from aws_cdk import aws_apigatewayv2 as apigwv2
+from aws_cdk import aws_apigatewayv2_authorizers as apigwv2_authorizers
 from aws_cdk import aws_apigatewayv2_integrations as apigwv2_integrations
+from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_s3 as s3
@@ -29,6 +31,8 @@ class ApiStack(Stack):
         *,
         runs_table: dynamodb.Table,
         evidence_bucket: s3.Bucket,
+        user_pool: cognito.UserPool,
+        app_client: cognito.UserPoolClient,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -53,10 +57,18 @@ class ApiStack(Stack):
 
         http_api = apigwv2.HttpApi(self, "CareAgentApi", api_name="care-agent-api")
         ask_integration = apigwv2_integrations.HttpLambdaIntegration("AskIntegration", ask_handler)
+
+        authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
+            "CognitoAuthorizer",
+            jwt_issuer=f"https://cognito-idp.{self.region}.amazonaws.com/{user_pool.user_pool_id}",
+            jwt_audience=[app_client.user_pool_client_id],
+        )
+
         http_api.add_routes(
             path="/ask",
             methods=[apigwv2.HttpMethod.POST],
             integration=ask_integration,
+            authorizer=authorizer,
         )
 
         self.api_url = http_api.api_endpoint

@@ -1,28 +1,33 @@
 """Assertions against the synthesized CloudFormation, not just "does cdk
 synth exit 0." Catches regressions like an accidentally-broadened IAM
-policy or a bucket that stops blocking public access.
+policy, a bucket that stops blocking public access, or a route that goes
+back to being anonymous after auth was added.
 """
 
 import aws_cdk as cdk
 from aws_cdk.assertions import Match, Template
 from stacks.api_stack import ApiStack
+from stacks.auth_stack import AuthStack
 from stacks.data_stack import DataStack
 
 
 def _synth_stacks():
     app = cdk.App()
+    auth_stack = AuthStack(app, "TestAuthStack", domain_prefix="care-agent-test-synth-only")
     data_stack = DataStack(app, "TestDataStack")
     api_stack = ApiStack(
         app,
         "TestApiStack",
         runs_table=data_stack.runs_table,
         evidence_bucket=data_stack.evidence_bucket,
+        user_pool=auth_stack.user_pool,
+        app_client=auth_stack.app_client,
     )
-    return Template.from_stack(data_stack), Template.from_stack(api_stack)
+    return Template.from_stack(auth_stack), Template.from_stack(data_stack), Template.from_stack(api_stack)
 
 
 def test_dynamodb_table_uses_run_id_partition_key_and_on_demand_billing():
-    data_template, _ = _synth_stacks()
+    _, data_template, _ = _synth_stacks()
     data_template.has_resource_properties(
         "AWS::DynamoDB::Table",
         {
@@ -33,7 +38,7 @@ def test_dynamodb_table_uses_run_id_partition_key_and_on_demand_billing():
 
 
 def test_evidence_bucket_blocks_all_public_access():
-    data_template, _ = _synth_stacks()
+    _, data_template, _ = _synth_stacks()
     data_template.has_resource_properties(
         "AWS::S3::Bucket",
         {
@@ -48,7 +53,7 @@ def test_evidence_bucket_blocks_all_public_access():
 
 
 def test_evidence_bucket_is_encrypted():
-    data_template, _ = _synth_stacks()
+    _, data_template, _ = _synth_stacks()
     data_template.has_resource_properties(
         "AWS::S3::Bucket",
         {"BucketEncryption": Match.any_value()},
@@ -56,13 +61,13 @@ def test_evidence_bucket_is_encrypted():
 
 
 def test_data_stack_has_exactly_one_table_and_one_bucket():
-    data_template, _ = _synth_stacks()
+    _, data_template, _ = _synth_stacks()
     data_template.resource_count_is("AWS::DynamoDB::Table", 1)
     data_template.resource_count_is("AWS::S3::Bucket", 1)
 
 
 def test_lambda_uses_python312_runtime_and_expected_handler():
-    _, api_template = _synth_stacks()
+    _, _, api_template = _synth_stacks()
     api_template.has_resource_properties(
         "AWS::Lambda::Function",
         {
@@ -73,10 +78,31 @@ def test_lambda_uses_python312_runtime_and_expected_handler():
 
 
 def test_http_api_has_post_ask_route():
-    _, api_template = _synth_stacks()
+    _, _, api_template = _synth_stacks()
     api_template.has_resource_properties(
         "AWS::ApiGatewayV2::Route",
         {"RouteKey": "POST /ask"},
+    )
+
+
+def test_ask_route_requires_jwt_authorization_not_anonymous():
+    """Regression guard for Phase 2: the /ask route must require a JWT,
+    never fall back to anonymous (AuthorizationType NONE)."""
+    _, _, api_template = _synth_stacks()
+    api_template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route",
+        {"RouteKey": "POST /ask", "AuthorizationType": "JWT"},
+    )
+
+
+def test_jwt_authorizer_uses_identity_source_authorization_header():
+    _, _, api_template = _synth_stacks()
+    api_template.has_resource_properties(
+        "AWS::ApiGatewayV2::Authorizer",
+        {
+            "AuthorizerType": "JWT",
+            "IdentitySource": ["$request.header.Authorization"],
+        },
     )
 
 
@@ -86,7 +112,7 @@ def test_no_iam_policy_uses_wildcard_resource():
     a bare "*" -- catches an accidental switch from `grant_read_write_data`
     to a broader `grant_full_access`-style call.
     """
-    _, api_template = _synth_stacks()
+    _, _, api_template = _synth_stacks()
     policies = api_template.find_resources("AWS::IAM::Policy")
     for policy in policies.values():
         for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
@@ -95,14 +121,48 @@ def test_no_iam_policy_uses_wildcard_resource():
                 raise AssertionError(f"Wildcard IAM resource found in statement: {statement}")
 
 
-def test_api_stack_depends_on_data_stack():
+def test_user_pool_client_is_public_no_secret_pkce_shaped():
+    """The App Client must be a public client (no secret) with the
+    authorization-code grant enabled -- the shape PKCE requires. A
+    `generate_secret=True` regression would break the CLI token script,
+    which has no secure place to keep a client secret."""
+    auth_template, _, _ = _synth_stacks()
+    auth_template.has_resource_properties(
+        "AWS::Cognito::UserPoolClient",
+        {
+            "AllowedOAuthFlows": ["code"],
+            "GenerateSecret": False,
+        },
+    )
+
+
+def test_user_pool_domain_matches_expected_prefix():
+    auth_template, _, _ = _synth_stacks()
+    auth_template.has_resource_properties(
+        "AWS::Cognito::UserPoolDomain",
+        {"Domain": "care-agent-test-synth-only"},
+    )
+
+
+def test_auth_stack_has_exactly_one_user_pool():
+    auth_template, _, _ = _synth_stacks()
+    auth_template.resource_count_is("AWS::Cognito::UserPool", 1)
+    auth_template.resource_count_is("AWS::Cognito::UserPoolClient", 1)
+
+
+def test_api_stack_depends_on_data_stack_and_auth_stack():
     app = cdk.App()
+    auth_stack = AuthStack(app, "TestAuthStack2", domain_prefix="care-agent-test-synth-only-2")
     data_stack = DataStack(app, "TestDataStack2")
     api_stack = ApiStack(
         app,
         "TestApiStack2",
         runs_table=data_stack.runs_table,
         evidence_bucket=data_stack.evidence_bucket,
+        user_pool=auth_stack.user_pool,
+        app_client=auth_stack.app_client,
     )
     api_stack.add_stack_dependency(data_stack)
+    api_stack.add_stack_dependency(auth_stack)
     assert data_stack in api_stack.dependencies
+    assert auth_stack in api_stack.dependencies
