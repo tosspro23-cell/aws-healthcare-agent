@@ -4,24 +4,39 @@ policy, a bucket that stops blocking public access, or a route that goes
 back to being anonymous after auth was added.
 """
 
+from pathlib import Path
+
 import aws_cdk as cdk
 from aws_cdk.assertions import Match, Template
 from stacks.api_stack import ApiStack
 from stacks.auth_stack import AuthStack
 from stacks.data_stack import DataStack
+from stacks.orchestration_stack import OrchestrationStack
+
+_LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 
 
 def _synth_stacks():
     app = cdk.App()
     auth_stack = AuthStack(app, "TestAuthStack", domain_prefix="care-agent-test-synth-only")
     data_stack = DataStack(app, "TestDataStack")
+    orch_stack = OrchestrationStack(
+        app,
+        "TestOrchStack",
+        runs_table=data_stack.runs_table,
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
+    )
     api_stack = ApiStack(
         app,
         "TestApiStack",
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
         runs_table=data_stack.runs_table,
         evidence_bucket=data_stack.evidence_bucket,
         user_pool=auth_stack.user_pool,
         app_client=auth_stack.app_client,
+        start_run_handler=orch_stack.start_run_handler,
+        get_run_handler=orch_stack.get_run_handler,
+        cancel_run_handler=orch_stack.cancel_run_handler,
     )
     return Template.from_stack(auth_stack), Template.from_stack(data_stack), Template.from_stack(api_stack)
 
@@ -85,6 +100,15 @@ def test_http_api_has_post_ask_route():
     )
 
 
+def test_http_api_has_runs_routes():
+    """Phase 3: the async run-management routes exist and are wired to
+    their respective Lambdas."""
+    _, _, api_template = _synth_stacks()
+    api_template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "POST /runs"})
+    api_template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "GET /runs/{run_id}"})
+    api_template.has_resource_properties("AWS::ApiGatewayV2::Route", {"RouteKey": "POST /runs/{run_id}/cancel"})
+
+
 def test_ask_route_requires_jwt_authorization_not_anonymous():
     """Regression guard for Phase 2: the /ask route must require a JWT,
     never fall back to anonymous (AuthorizationType NONE)."""
@@ -93,6 +117,17 @@ def test_ask_route_requires_jwt_authorization_not_anonymous():
         "AWS::ApiGatewayV2::Route",
         {"RouteKey": "POST /ask", "AuthorizationType": "JWT"},
     )
+
+
+def test_runs_routes_also_require_jwt_authorization():
+    """Regression guard: the new Phase 3 routes must reuse the same
+    Cognito authorizer, not accidentally ship anonymous."""
+    _, _, api_template = _synth_stacks()
+    for route_key in ("POST /runs", "GET /runs/{run_id}", "POST /runs/{run_id}/cancel"):
+        api_template.has_resource_properties(
+            "AWS::ApiGatewayV2::Route",
+            {"RouteKey": route_key, "AuthorizationType": "JWT"},
+        )
 
 
 def test_jwt_authorizer_uses_identity_source_authorization_header():
@@ -150,19 +185,31 @@ def test_auth_stack_has_exactly_one_user_pool():
     auth_template.resource_count_is("AWS::Cognito::UserPoolClient", 1)
 
 
-def test_api_stack_depends_on_data_stack_and_auth_stack():
+def test_api_stack_depends_on_data_stack_and_auth_stack_and_orch_stack():
     app = cdk.App()
     auth_stack = AuthStack(app, "TestAuthStack2", domain_prefix="care-agent-test-synth-only-2")
     data_stack = DataStack(app, "TestDataStack2")
+    orch_stack = OrchestrationStack(
+        app,
+        "TestOrchStack2",
+        runs_table=data_stack.runs_table,
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
+    )
     api_stack = ApiStack(
         app,
         "TestApiStack2",
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
         runs_table=data_stack.runs_table,
         evidence_bucket=data_stack.evidence_bucket,
         user_pool=auth_stack.user_pool,
         app_client=auth_stack.app_client,
+        start_run_handler=orch_stack.start_run_handler,
+        get_run_handler=orch_stack.get_run_handler,
+        cancel_run_handler=orch_stack.cancel_run_handler,
     )
     api_stack.add_stack_dependency(data_stack)
     api_stack.add_stack_dependency(auth_stack)
+    api_stack.add_stack_dependency(orch_stack)
     assert data_stack in api_stack.dependencies
     assert auth_stack in api_stack.dependencies
+    assert orch_stack in api_stack.dependencies

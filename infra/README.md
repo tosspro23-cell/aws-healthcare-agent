@@ -8,32 +8,57 @@ a real account).
 
 ## Layout
 
-- `app.py` — CDK entrypoint; wires `AuthStack` + `DataStack` into `ApiStack`.
+- `app.py` — CDK entrypoint; wires `AuthStack` + `DataStack` +
+  `OrchestrationStack` into `ApiStack`. Builds the shared Lambda asset once
+  and passes it to every stack that needs it.
 - `stacks/auth_stack.py` — Cognito User Pool + Hosted UI domain + a public
   (no-secret) App Client configured for Authorization Code + PKCE.
 - `stacks/data_stack.py` — DynamoDB run-state table + S3 evidence bucket.
-- `stacks/api_stack.py` — API Gateway HTTP API + Lambda integration, with a
-  Cognito JWT authorizer on `/ask` (enforced at the gateway, before the
-  Lambda ever runs — no auth-specific code in the handler itself).
-- `lambda_src/adapter.py` — the Lambda handler itself: a thin translation
-  layer between an API Gateway event and `care_agent.HealthAgent`. All
-  actual reasoning/safety/retrieval logic stays in `care_agent`, unchanged.
-- `build_lambda_asset.py` — assembles the Lambda deployment package as a
-  plain file copy (no Docker/pip bundling needed: `care_agent` has zero
+- `stacks/orchestration_stack.py` — the Phase 3 async run path: a Step
+  Functions state machine (`start → bounded retry → timeout → terminal
+  state`, native `Retry`/`Catch`/`TimeoutSeconds`) plus its Task Lambdas
+  (`mark_running`, `agent_task`, `record_result`) and the three API-facing
+  Lambdas (`start_run`, `get_run`, `cancel_run`). Cancellation races the
+  state machine's own finalization via a DynamoDB conditional write
+  (`ConditionExpression: status = RUNNING`) — see the module docstring and
+  `../../docs/DECISIONS.md` for the full reasoning.
+- `stacks/api_stack.py` — API Gateway HTTP API + Lambda integrations, with
+  a Cognito JWT authorizer on every route (enforced at the gateway, before
+  any Lambda ever runs — no auth-specific code in any handler). Routes:
+  `POST /ask` (Phase 1, synchronous), `POST /runs` / `GET /runs/{run_id}` /
+  `POST /runs/{run_id}/cancel` (Phase 3, async).
+- `lambda_src/adapter.py` — the synchronous `/ask` handler: a thin
+  translation layer between an API Gateway event and
+  `care_agent.HealthAgent`. All actual reasoning/safety/retrieval logic
+  stays in `care_agent`, unchanged.
+- `lambda_src/agent_runtime.py` — the shared `HealthAgent` construction
+  `adapter.py` and `agent_task.py` both use, so the two paths resolve the
+  dataset location identically.
+- `lambda_src/agent_task.py`, `mark_running.py`, `record_result.py`,
+  `start_run.py`, `get_run.py`, `cancel_run.py` — the Phase 3 Lambdas (see
+  `orchestration_stack.py` above for what each does).
+- `build_lambda_asset.py` — assembles one shared Lambda deployment
+  directory (every handler module + `care_agent` + `data/`) as a plain
+  file copy (no Docker/pip bundling needed: `care_agent` has zero
   third-party runtime dependencies for its default mock-narrator path, and
-  `boto3` already ships in the Lambda runtime image).
+  `boto3` already ships in the Lambda runtime image). Every `Function`
+  construct across every stack points at a different `<module>.handler`
+  within this same asset.
 - `scripts/get_dev_token.py` — walks the Authorization Code + PKCE flow
   against the deployed Hosted UI (opens your browser, catches the redirect
   locally, exchanges the code for tokens) so you can get a real bearer
-  token to test the now-protected `/ask` route with.
-- `tests/test_stacks.py` — assertions against the synthesized CloudFormation
-  (not just "does `cdk synth` exit 0"): correct partition key, on-demand
-  billing, public access blocked, `/ask` requires JWT auth (not anonymous),
-  the App Client is a public/no-secret client, no wildcard IAM resources.
-- `tests/test_adapter.py` — the Lambda handler's own logic, against a
-  `moto`-mocked DynamoDB table and S3 bucket. No real AWS account, no
-  network call. (Auth doesn't need coverage here — API Gateway rejects
-  unauthorized requests before the Lambda is invoked at all.)
+  token to test the protected routes with.
+- `tests/test_stacks.py` / `tests/test_orchestration_stack.py` —
+  assertions against the synthesized CloudFormation (not just "does
+  `cdk synth` exit 0"): correct partition key, on-demand billing, public
+  access blocked, every route requires JWT auth, the App Client is a
+  public/no-secret client, the state machine's retry/timeout/catch/choice
+  routing is actually configured as intended, no wildcard IAM resources.
+- `tests/test_adapter.py` / `tests/test_orchestration_lambdas.py` — every
+  Lambda handler's own logic, against `moto`-mocked DynamoDB/S3/Step
+  Functions. No real AWS account, no network call. Includes the
+  terminal-state race directly: `record_result` and `cancel_run` both
+  attempting to finalize the same run_id, and asserting exactly one wins.
 - `tests/test_get_dev_token.py` — the pure/testable parts of the token
   script (PKCE generation, URL/request construction). The interactive
   parts (browser + real login) aren't covered by an automated test, same
@@ -83,7 +108,7 @@ pytest tests/test_live_endpoint_smoke.py -v
 - `cdk ls` — list all stacks in the app
 - `cdk synth` — emit the synthesized CloudFormation template
 - `cdk diff` — compare the deployed stack against current code
-- `cdk deploy --all` — deploy all three stacks
+- `cdk deploy --all` — deploy all four stacks
 - `cdk destroy --all` — tear everything down (all stacks use
   `RemovalPolicy.DESTROY` deliberately, since this is a demo/learning
   project, not a system holding real data worth protecting from deletion)

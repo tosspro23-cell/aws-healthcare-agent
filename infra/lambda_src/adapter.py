@@ -7,11 +7,9 @@ is: parse the request, call the agent, persist a run record, serialize the
 response. It must never reimplement or bypass anything `care_agent` already
 does (in particular, never construct or alter the answer text here).
 
-`_DATA_DIR` is overridable via `CARE_AGENT_DATA_DIR` so this module can be
-imported and tested locally (pointed at the repo's real `data/` directory)
-without needing the Lambda packaging step run first -- in the deployed
-package, `build_lambda_asset.py` places `data/` next to this file, and the
-default (no env var) picks that up correctly.
+This is the *synchronous* path (Phase 1/2). `agent_task.py` is the async
+equivalent invoked as a Step Functions Task (Phase 3) -- both share the
+same `HealthAgent` construction via `agent_runtime.py`.
 """
 
 from __future__ import annotations
@@ -20,24 +18,12 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import boto3
+from agent_runtime import agent as _agent
 
-from care_agent.agent import HealthAgent
 from care_agent.data_store import UnknownUserError
-
-_DATA_DIR = Path(os.environ.get("CARE_AGENT_DATA_DIR", str(Path(__file__).resolve().parent / "data")))
-
-# Constructed once per Lambda execution environment (warm-start reuse),
-# not per invocation -- matches how the CLI/tests construct one HealthAgent
-# and call .ask() repeatedly.
-_agent = HealthAgent(
-    data_dir=_DATA_DIR,
-    catalog_path=_DATA_DIR / "mock_biomarker_catalog.sqlite",
-    kb_path=_DATA_DIR / "knowledge_base.jsonl",
-)
 
 _RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE_NAME")
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")

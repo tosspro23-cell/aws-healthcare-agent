@@ -1,12 +1,14 @@
-"""ApiStack: API Gateway HTTP API + Lambda integration.
+"""ApiStack: API Gateway HTTP API + Lambda integrations.
 
-Phase 1 shipped a single anonymous `POST /ask` route. Phase 2 adds a
-Cognito JWT authorizer on that same route -- auth is enforced entirely at
-the API Gateway layer (a request without a valid token never reaches the
-Lambda), so `lambda_src/adapter.py` needed zero changes for this.
+Phase 1 shipped a single anonymous `POST /ask` route (synchronous).
+Phase 2 added a Cognito JWT authorizer on it -- auth is enforced entirely
+at the API Gateway layer (a request without a valid token never reaches a
+Lambda), so no handler needed any auth-specific code for that.
+Phase 3 adds the async equivalent: `POST /runs` (start), `GET /runs/{run_id}`
+(poll), `POST /runs/{run_id}/cancel` -- all protected by the same
+authorizer, all backed by Lambdas owned by `OrchestrationStack`.
 """
 
-import sys
 from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, Stack
@@ -19,9 +21,6 @@ from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from build_lambda_asset import build_lambda_asset  # noqa: E402
-
 
 class ApiStack(Stack):
     def __init__(
@@ -29,15 +28,17 @@ class ApiStack(Stack):
         scope: Construct,
         construct_id: str,
         *,
+        lambda_asset_dir: Path,
         runs_table: dynamodb.Table,
         evidence_bucket: s3.Bucket,
         user_pool: cognito.UserPool,
         app_client: cognito.UserPoolClient,
+        start_run_handler: _lambda.Function,
+        get_run_handler: _lambda.Function,
+        cancel_run_handler: _lambda.Function,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
-
-        lambda_asset_dir = build_lambda_asset()
 
         ask_handler = _lambda.Function(
             self,
@@ -56,7 +57,6 @@ class ApiStack(Stack):
         evidence_bucket.grant_read_write(ask_handler)
 
         http_api = apigwv2.HttpApi(self, "CareAgentApi", api_name="care-agent-api")
-        ask_integration = apigwv2_integrations.HttpLambdaIntegration("AskIntegration", ask_handler)
 
         authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
             "CognitoAuthorizer",
@@ -67,7 +67,25 @@ class ApiStack(Stack):
         http_api.add_routes(
             path="/ask",
             methods=[apigwv2.HttpMethod.POST],
-            integration=ask_integration,
+            integration=apigwv2_integrations.HttpLambdaIntegration("AskIntegration", ask_handler),
+            authorizer=authorizer,
+        )
+        http_api.add_routes(
+            path="/runs",
+            methods=[apigwv2.HttpMethod.POST],
+            integration=apigwv2_integrations.HttpLambdaIntegration("StartRunIntegration", start_run_handler),
+            authorizer=authorizer,
+        )
+        http_api.add_routes(
+            path="/runs/{run_id}",
+            methods=[apigwv2.HttpMethod.GET],
+            integration=apigwv2_integrations.HttpLambdaIntegration("GetRunIntegration", get_run_handler),
+            authorizer=authorizer,
+        )
+        http_api.add_routes(
+            path="/runs/{run_id}/cancel",
+            methods=[apigwv2.HttpMethod.POST],
+            integration=apigwv2_integrations.HttpLambdaIntegration("CancelRunIntegration", cancel_run_handler),
             authorizer=authorizer,
         )
 

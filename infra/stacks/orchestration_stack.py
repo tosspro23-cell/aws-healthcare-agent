@@ -1,0 +1,219 @@
+"""OrchestrationStack: the Step Functions state machine + supporting
+Lambdas for the async run path (Phase 3).
+
+Reliability semantics this implements, matching the challenge/comparison
+goal directly (see `../../docs/AWS_ROADMAP.md` Phase 3 and
+`../../docs/DECISIONS.md`):
+
+- **start**: `MarkRunning` writes the initial `RUNNING` record.
+- **bounded retry**: `InvokeAgent`'s `add_retry` -- native Step Functions
+  retry, not a hand-rolled loop.
+- **timeout**: `InvokeAgent`'s `timeout=` -- native per-task timeout.
+- **cancellation**: `../lambda_src/cancel_run.py`, called from outside the
+  state machine (via `POST /runs/{run_id}/cancel`) at any time while a run
+  is in flight.
+- **terminal-state ownership**: `record_result.py`'s conditional DynamoDB
+  write (`ConditionExpression: status = RUNNING`) is the single source of
+  truth for "who finalized this run" -- the state machine's own success/
+  failure path and the external cancel handler race for it, and DynamoDB's
+  atomic compare-and-swap decides the winner deterministically. Nothing in
+  this stack coordinates that race directly; the database does.
+
+The Lambda that actually calls `care_agent` (`agent_task.py`) is the
+*only* place `HealthAgent.ask()` gets invoked here -- everything else in
+this stack is pure orchestration plumbing.
+"""
+
+from pathlib import Path
+
+from aws_cdk import Duration, Stack
+from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_lambda as _lambda
+from aws_cdk import aws_stepfunctions as sfn
+from aws_cdk import aws_stepfunctions_tasks as tasks
+from constructs import Construct
+
+
+class OrchestrationStack(Stack):
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        *,
+        runs_table: dynamodb.Table,
+        lambda_asset_dir: Path,
+        **kwargs,
+    ) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+
+        common_env = {"RUNS_TABLE_NAME": runs_table.table_name}
+
+        mark_running_handler = _lambda.Function(
+            self,
+            "MarkRunningHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="mark_running.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+            environment=common_env,
+        )
+        runs_table.grant_write_data(mark_running_handler)
+
+        agent_task_handler = _lambda.Function(
+            self,
+            "AgentTaskHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="agent_task.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(25),
+            memory_size=512,
+        )
+
+        record_result_handler = _lambda.Function(
+            self,
+            "RecordResultHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="record_result.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+            environment=common_env,
+        )
+        runs_table.grant_write_data(record_result_handler)
+
+        self.start_run_handler = _lambda.Function(
+            self,
+            "StartRunHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="start_run.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+        )
+
+        self.get_run_handler = _lambda.Function(
+            self,
+            "GetRunHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="get_run.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+            environment=common_env,
+        )
+        runs_table.grant_read_data(self.get_run_handler)
+
+        self.cancel_run_handler = _lambda.Function(
+            self,
+            "CancelRunHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="cancel_run.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+            environment=common_env,
+        )
+        runs_table.grant_read_write_data(self.cancel_run_handler)
+
+        # -- state machine definition ---------------------------------------
+        mark_running_task = tasks.LambdaInvoke(
+            self,
+            "MarkRunning",
+            lambda_function=mark_running_handler,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "run_id": sfn.JsonPath.string_at("$.run_id"),
+                    "user_id": sfn.JsonPath.string_at("$.user_id"),
+                    "question": sfn.JsonPath.string_at("$.question"),
+                }
+            ),
+            result_path=sfn.JsonPath.DISCARD,
+        )
+
+        invoke_agent_task = tasks.LambdaInvoke(
+            self,
+            "InvokeAgent",
+            lambda_function=agent_task_handler,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "run_id": sfn.JsonPath.string_at("$.run_id"),
+                    "user_id": sfn.JsonPath.string_at("$.user_id"),
+                    "question": sfn.JsonPath.string_at("$.question"),
+                }
+            ),
+            result_path="$.agent_result",
+            result_selector={
+                "answer": sfn.JsonPath.string_at("$.Payload.answer"),
+                "safe": sfn.JsonPath.string_at("$.Payload.safe"),
+            },
+            task_timeout=sfn.Timeout.duration(Duration.seconds(25)),
+        )
+        invoke_agent_task.add_retry(
+            errors=["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+            interval=Duration.seconds(2),
+            max_attempts=3,
+            backoff_rate=2.0,
+        )
+
+        record_success_task = tasks.LambdaInvoke(
+            self,
+            "RecordSuccess",
+            lambda_function=record_result_handler,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "run_id": sfn.JsonPath.string_at("$.run_id"),
+                    "outcome": "SUCCEEDED",
+                    "answer": sfn.JsonPath.string_at("$.agent_result.answer"),
+                    "safe": sfn.JsonPath.string_at("$.agent_result.safe"),
+                }
+            ),
+            result_path=sfn.JsonPath.DISCARD,
+        )
+
+        record_failure_task = tasks.LambdaInvoke(
+            self,
+            "RecordFailure",
+            lambda_function=record_result_handler,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "run_id": sfn.JsonPath.string_at("$.run_id"),
+                    "outcome": "FAILED",
+                    "error": sfn.JsonPath.string_at("$.error_info.Cause"),
+                }
+            ),
+            result_path=sfn.JsonPath.DISCARD,
+        )
+
+        record_timeout_task = tasks.LambdaInvoke(
+            self,
+            "RecordTimeout",
+            lambda_function=record_result_handler,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "run_id": sfn.JsonPath.string_at("$.run_id"),
+                    "outcome": "TIMED_OUT",
+                    "error": sfn.JsonPath.string_at("$.error_info.Cause"),
+                }
+            ),
+            result_path=sfn.JsonPath.DISCARD,
+        )
+
+        is_timeout_choice = (
+            sfn.Choice(self, "IsTimeout")
+            .when(sfn.Condition.string_equals("$.error_info.Error", "States.Timeout"), record_timeout_task)
+            .otherwise(record_failure_task)
+        )
+
+        invoke_agent_task.add_catch(is_timeout_choice, errors=[sfn.Errors.ALL], result_path="$.error_info")
+
+        definition = mark_running_task.next(invoke_agent_task).next(record_success_task)
+
+        self.state_machine = sfn.StateMachine(
+            self,
+            "AgentRunStateMachine",
+            definition_body=sfn.DefinitionBody.from_chainable(definition),
+            timeout=Duration.minutes(5),
+            state_machine_type=sfn.StateMachineType.STANDARD,
+        )
+
+        self.state_machine.grant_start_execution(self.start_run_handler)
+        self.state_machine.grant_execution(self.cancel_run_handler, "states:StopExecution")
+
+        self.start_run_handler.add_environment("STATE_MACHINE_ARN", self.state_machine.state_machine_arn)
+        self.cancel_run_handler.add_environment("STATE_MACHINE_ARN", self.state_machine.state_machine_arn)

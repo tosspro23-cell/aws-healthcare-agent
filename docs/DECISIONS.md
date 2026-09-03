@@ -8,6 +8,59 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-03 — State machine finalization uses Lambda Tasks, not direct DynamoDB ASL integrations
+
+**Context**: Step Functions can write to DynamoDB two ways: a direct
+service integration (`tasks.DynamoUpdateItem`, no Lambda involved) or a
+Lambda Task that itself calls `boto3`. The direct-integration route is
+"more native" and is what a purist reading of "use Step Functions'
+reliability features" might reach for first.
+
+**Decision**: Used Lambda Tasks (`mark_running.py`, `record_result.py`)
+for every DynamoDB write instead. Direct ASL integrations require typed
+`DynamoAttributeValue` values, and dynamically inserting a *boolean*
+(`safe`) sourced from `$.agent_result.safe` into that typed system has no
+clean built-in path (`JsonPath.string_at` is for strings; there's no
+dynamic-boolean equivalent) — the workaround options were all uglier than
+just writing five lines of `boto3` in a Lambda.
+
+**Consequence**: The retry/timeout/catch/choice *orchestration* is still
+100% native Step Functions (that's the actual Phase 3 requirement); only
+the leaf-level "how does a value get into DynamoDB" step is a thin Lambda
+instead of raw ASL. This also made the terminal-state race directly unit
+-testable with ordinary `moto` + `boto3` mocking
+(`test_orchestration_lambdas.py`), which a pure ASL integration would have
+made harder to exercise outside a real deployed state machine.
+
+---
+
+## 2026-09-03 — Execution name = run_id, for a free idempotency property
+
+**Context**: `start_run.py` needed some way to avoid double-starting a run
+if a client retries a `POST /runs` call (e.g. after a client-side timeout
+that wasn't actually a server failure).
+
+**Decision**: Use `run_id` as the Step Functions execution *name*, not
+just data passed in the execution input. For a STANDARD state machine,
+starting an execution with a name that's already in use (within Step
+Functions' ~90-day execution-history retention) raises
+`ExecutionAlreadyExists` rather than starting a second, independent run.
+`start_run.py` catches that specific error and treats it as success —
+the run is already in flight (or finished); there's nothing new to start.
+
+**Consequence**: This is a *second*, independent idempotency mechanism,
+layered on top of (not a replacement for) the DynamoDB conditional-write
+terminal-state protection `record_result.py`/`cancel_run.py` implement.
+The execution-name check prevents a duplicate *state machine run* from
+starting at all; the conditional write protects against races *within* a
+single run's lifecycle (e.g. cancel vs. natural completion). Worth noting:
+`moto`'s Step Functions mock doesn't actually enforce
+`ExecutionAlreadyExists` for duplicate names (verified while writing
+tests), so that specific behavior is tested against a directly mocked
+boto3 client rather than moto's state-machine simulation.
+
+---
+
 ## 2026-09-03 — Cognito's default email never delivered the sign-up code; confirmed via admin API instead
 
 **Context**: `AuthStack`'s User Pool doesn't configure a custom email

@@ -107,15 +107,46 @@ issues wouldn't have blocked getting the skeleton running end to end first.
 
 ## Phase 3 — Step Functions orchestration (reliability semantics)
 
-- ⬜ Step Functions state machine implementing: start → bounded retry →
-  timeout → cancellation → terminal state.
-- ⬜ Retry/timeout via Step Functions' native Retry/Catch blocks.
-- ⬜ Terminal-state ownership race handled via DynamoDB conditional writes
-  (`ConditionExpression`) — the AWS analog of optimistic concurrency control
-  (ETag/CAS-style patterns elsewhere).
-- ⬜ Write up the comparison note in `DECISIONS.md`: same reliability
-  requirement, how does the AWS-native implementation differ in shape from
-  a Durable-Functions-style approach elsewhere?
+- ✅ `OrchestrationStack` (`infra/stacks/orchestration_stack.py`): a Step
+  Functions state machine implementing start → bounded retry → timeout →
+  terminal state, plus an async API surface (`POST /runs`,
+  `GET /runs/{run_id}`, `POST /runs/{run_id}/cancel`) alongside the
+  existing synchronous `/ask`.
+- ✅ **start**: `MarkRunning` (Lambda Task) writes the initial `RUNNING`
+  DynamoDB record.
+- ✅ **bounded retry**: `InvokeAgent`'s native `add_retry` (3 attempts,
+  2s interval, 2x backoff on Lambda service errors) — not a hand-rolled
+  loop.
+- ✅ **timeout**: `InvokeAgent`'s native per-task `TimeoutSeconds` (25s)
+  plus an overall execution timeout (5 min).
+- ✅ **cancellation**: `POST /runs/{run_id}/cancel` (`cancel_run.py`) can
+  fire at any point while a run is in flight, entirely outside the state
+  machine.
+- ✅ **terminal-state ownership**: `record_result.py`'s conditional
+  DynamoDB write (`ConditionExpression: status = RUNNING`) is the single
+  source of truth for who finalized a run. The state machine's own
+  success/failure path and the external cancel handler race for it;
+  DynamoDB's atomic compare-and-swap decides the winner. Directly tested
+  (`test_orchestration_lambdas.py`): both the "state machine wins" and
+  "cancel wins" orderings, asserting the loser's write is silently
+  rejected rather than corrupting the winner's record.
+- ✅ Failure branch further distinguishes `States.Timeout` from other
+  errors via a `Choice` state (`RecordTimeout` vs `RecordFailure`), so a
+  timed-out run and a genuinely failed run end up in visibly different
+  terminal states, not lumped together.
+- ✅ `cdk synth` validated locally for all four stacks together, no
+  deprecation warnings.
+- ✅ Unit tests: `test_orchestration_stack.py` (12 cases — ASL structure:
+  retry config, timeout values, catch routing, choice branching, IAM scope)
+  + `test_orchestration_lambdas.py` (16 cases — every new Lambda's own
+  logic against moto-mocked DynamoDB/Step Functions, including the race).
+- ⬜ **Live deploy + verification** — pending: deploy all four stacks,
+  confirm a real `/runs` → poll `/runs/{run_id}` → `/runs/{run_id}/cancel`
+  sequence against the actual account (same "verify directly, don't just
+  assume" standard as Phases 1–2).
+- ⬜ Comparison note in `DECISIONS.md` on how this reliability shape
+  compares to a Durable-Functions-style equivalent, once there's a live
+  run to point at concretely rather than just the design on paper.
 
 ## Phase 4 — Bedrock integration (highest priority)
 
@@ -145,6 +176,27 @@ issues wouldn't have blocked getting the skeleton running end to end first.
 - Not because keyword/BM25 retrieval is insufficient at this corpus size —
   it isn't — but as a hands-on learning exercise.
 - ⬜ Tear down whatever gets provisioned afterward to avoid ongoing cost.
+
+## Phase 6 — Frontend / Workbench (future milestone, not started)
+
+Everything through Phase 5 is backend-only: real auth exists (Cognito
+Hosted UI is a genuine login page), but nothing calls it except this
+project's own terminal tooling (`curl`, `pytest`, `get_dev_token.py`). A
+user-facing product needs an actual client — web or mobile — that:
+
+- ⬜ Runs the Authorization Code + PKCE flow through an in-browser redirect
+  (not a local Python script standing in for one).
+- ⬜ Calls `/ask` (and, after Phase 3, `/runs` + `/runs/{run_id}` +
+  `/runs/{run_id}/cancel`) with the resulting token.
+- ⬜ Renders the answer, and ideally the grounding trace, in a UI a
+  non-technical person could actually use.
+
+Not started, not blocking anything else in this roadmap — flagged here
+because the Azure counterpart already has a React/Vite "Workbench" doing
+exactly this, and a frontend is the natural next comparison point once the
+AWS-side backend phases are further along: same underlying API, is the
+client-side auth/UX story simpler or harder to build against API Gateway +
+Cognito than against Azure Functions + Entra/MSAL?
 
 ## Process checklist (apply at every phase, not just once)
 

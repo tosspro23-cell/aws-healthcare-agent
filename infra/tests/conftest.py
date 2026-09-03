@@ -21,6 +21,7 @@ sys.path.insert(0, str(_INFRA_DIR / "lambda_src"))
 os.environ.setdefault("CARE_AGENT_DATA_DIR", str(_REPO_ROOT / "data"))
 os.environ.setdefault("RUNS_TABLE_NAME", "test-runs-table")
 os.environ.setdefault("EVIDENCE_BUCKET_NAME", "test-evidence-bucket")
+os.environ.setdefault("STATE_MACHINE_ARN", "arn:aws:states:us-east-1:123456789012:stateMachine:test-agent-run-sm")
 
 # moto convention: fake credentials so a misconfigured test environment
 # can never accidentally touch a real AWS account.
