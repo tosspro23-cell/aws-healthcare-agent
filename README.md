@@ -10,7 +10,13 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phases 0–3 complete.** A live deployment (Cognito +
+**Current status: Phases 0–3 complete; Phase 4 (Bedrock) core goal
+met** — a real, non-mocked `bedrock-runtime.Converse` call against Claude
+Haiku 4.5 verified end to end (real output + trace recorded in
+[`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md)); one
+item remains open (scoped IAM for a deployed Lambda calling Bedrock — see
+[`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `DECISIONS.md`).
+A live deployment (Cognito +
 API Gateway + Lambda + DynamoDB + S3 + Step Functions) is running in AWS.
 The synchronous `/ask` and the async `/runs` → `/runs/{run_id}` →
 `/runs/{run_id}/cancel` path both require a real Cognito-issued JWT
@@ -189,9 +195,37 @@ layer is mocked).
 | Anthropic | `anthropic` | `pip install -e ".[anthropic]"` | `ANTHROPIC_API_KEY` | paid API |
 | OpenAI | `openai` | `pip install -e ".[openai]"` | `OPENAI_API_KEY` | paid API |
 | Google Gemini | `google` | `pip install -e ".[google]"` | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) | has a free tier |
+| Amazon Bedrock | `bedrock` | `pip install -e ".[bedrock]"` | standard AWS credential chain (`AWS_PROFILE`, IAM role) — no separate API key | paid API |
 
-`pip install -e ".[llm]"` installs all three cloud SDKs at once if you want
+`pip install -e ".[llm]"` installs all four cloud SDKs at once if you want
 to switch between them without reinstalling.
+
+**Bedrock** is this repo's fifth narrator backend and the AWS-native
+equivalent of the others — same pluggable interface
+(`src/care_agent/narrator/bedrock_narrator.py`), same safety contract
+(only ever rephrases the mock narrator's grounded bullet list; `agent.py`
+re-verifies the output and falls back on failure). It authenticates
+differently from the rest: no API key env var, just whatever AWS
+credentials are already available (`aws configure`'s profile, or a
+Lambda's execution role in a deployed context) — see
+`docs/AWS_SETUP.md`/`infra/` for how those get set up. Requires
+`bedrock:InvokeModel` IAM permission scoped to the specific model (see
+`infra/stacks/orchestration_stack.py` for the pattern used elsewhere in
+this repo) and Bedrock model access enabled for the account (a one-time
+console step, separate from IAM). Verified end to end with a real,
+non-mocked call — see
+[`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md) for
+the full real output and trace.
+
+```bash
+pip install -e ".[bedrock]"
+export AWS_PROFILE=dev   # or whatever profile has bedrock:InvokeModel
+export CARE_AGENT_NARRATOR_BACKEND=bedrock
+# optional -- this is the default; note the "us." cross-region inference
+# profile prefix, required for this model on Bedrock (see docs/DECISIONS.md)
+export BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0
+python -m care_agent ask "..."
+```
 
 **Local (Ollama)** — no pip install, no API key, no network egress, no cost;
 everything stays on `localhost`:

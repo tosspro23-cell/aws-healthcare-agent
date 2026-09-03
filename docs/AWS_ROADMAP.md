@@ -169,24 +169,64 @@ issues wouldn't have blocked getting the skeleton running end to end first.
 
 ## Phase 4 — Bedrock integration (highest priority)
 
-- ⬜ Request model access in the Bedrock console (Anthropic models need
-  separate enablement).
+- ✅ `src/care_agent/narrator/bedrock_narrator.py` — same pluggable
+  `Narrator` interface and safety contract as `openai_narrator.py` /
+  `google_narrator.py` / `ollama_narrator.py`, calling `bedrock-runtime`'s
+  `Converse` API. Authenticates via the standard AWS credential chain
+  (no separate API-key env var, unlike the other cloud backends) — see
+  `README.md`'s narrator backend table.
+- ✅ **Reuses the existing safety pipeline as-is** — no changes to
+  `safety.py`. Directly tested: `test_agent_with_bedrock_narrator_passes_through_when_grounded`
+  and `test_agent_with_bedrock_narrator_falls_back_when_unsafe`
+  (`tests/test_bedrock_narrator.py`), the same full-pipeline pattern
+  already used for Ollama — proves the same `no_diagnosis`/`no_dosing`/
+  `numeric_grounding` checks, unmodified, correctly pass a faithful
+  Bedrock-shaped response through and correctly reject an unsafe one.
+- ✅ Mocked unit tests (9 cases): request/response shape (`modelId`,
+  `system`, `inferenceConfig.maxTokens`, multi-block content
+  concatenation, empty-content defensiveness), model/region resolution
+  from env vars vs explicit args. CI never calls a real endpoint
+  (`pytest.importorskip("boto3")` skips the whole file when the `bedrock`
+  extra isn't installed, which is always true in CI).
+- ✅ **Account-verification hold cleared** — resolved same-day, well under
+  AWS's stated ~2-hour window. Confirmed by retrying the exact `aws
+  bedrock-runtime converse` call from the blocked investigation with no
+  other change; it succeeded. See `DECISIONS.md` for the closed-out
+  before/after comparison against the Azure side's open-ended block.
+- ✅ **At least one real, non-mocked Bedrock call**, with the real output
+  and trace recorded as evidence — **done**. Full real
+  `python -m care_agent ask ... --narrator-backend bedrock --trace` output
+  (real Claude Haiku 4.5 answer + real `bedrock-runtime.Converse`-derived
+  trace, `narrator_backend: "bedrock"`, no `narrator_fallback`, all three
+  safety checks passed) recorded in
+  [`PHASE4_BEDROCK_EVIDENCE.md`](PHASE4_BEDROCK_EVIDENCE.md). This closes
+  the one genuine capability gap the challenge brief called out (the
+  Azure counterpart never got a real model call working). Two real,
+  non-obvious findings came out of making this call for real rather than
+  only against mocks — both documented in `DECISIONS.md`:
+  - Newer Anthropic models on Bedrock require a cross-region inference
+    profile ID (`us.` prefix), not the bare on-demand model ID —
+    `DEFAULT_MODEL_ID` updated accordingly.
+  - The real model's natural-language date formatting ("May 6, 2026")
+    initially tripped `numeric_grounding` and correctly triggered a
+    silent fallback to the mock narrator — fixed at the prompt layer
+    (`SYSTEM_PROMPT` now specifies ISO date format), not by loosening the
+    safety check itself. Verified the fix generalized past the one
+    question that surfaced it by re-running all three `eval-samples`
+    questions live against real Bedrock afterward.
 - ⬜ IAM policy scoped precisely to `bedrock:InvokeModel` on the specific
-  model ARN — no broad Bedrock permissions.
-- ⬜ `src/care_agent/narrator/bedrock_narrator.py` — same pluggable
-  `Narrator` interface as `openai_narrator.py` / `ollama_narrator.py`,
-  calling `bedrock-runtime`'s `Converse` API.
-- ⬜ **Reuse the existing safety pipeline as-is** (`numeric_grounding`,
-  `no_diagnosis`, `no_dosing`) — do not rewrite it. The test that matters:
-  does the same safety net hold up against a materially different model
-  output style?
-- ⬜ Mocked unit tests following the `test_ollama_narrator.py` /
-  `test_openai_narrator.py` pattern (HTTP/SDK layer mocked, CI never calls
-  a real endpoint).
-- ⬜ **At least one real, non-mocked Bedrock call**, with the real output and
-  trace recorded as evidence (not just described) — this is the one piece
-  that's a genuine capability gap to close, not just more of the same
-  pattern already proven with Anthropic/OpenAI/Google/Ollama.
+  model (inference-profile) ARN, wired into a deployed Lambda — this is
+  the one remaining Phase 4 item. What's proven so far is the real call
+  working from the local CLI with a broad `AdministratorAccess` dev
+  profile; a Lambda that itself calls Bedrock, with IAM scoped down to
+  exactly `bedrock:InvokeModel` on
+  `arn:aws:bedrock:us-east-1::inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`
+  and nothing broader, is still open.
+
+**Phase 4: core goal met — the real, non-mocked Bedrock call is done and
+evidenced.** One item remains open: wiring Bedrock into a deployed Lambda
+with scoped-down IAM (as opposed to today's local-CLI call against a
+broad-access dev profile).
 
 ## Phase 5 — Vector retrieval experiment (optional, lowest priority)
 

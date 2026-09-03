@@ -70,7 +70,13 @@ def _select_narrator():
         from care_agent.narrator.google_narrator import GoogleNarrator
 
         return GoogleNarrator()
-    raise ValueError(f"Unknown CARE_AGENT_NARRATOR_BACKEND={backend!r}; expected 'mock', 'anthropic', 'openai', 'google', or 'ollama'.")
+    if backend == "bedrock":
+        from care_agent.narrator.bedrock_narrator import BedrockNarrator
+
+        return BedrockNarrator()
+    raise ValueError(
+        f"Unknown CARE_AGENT_NARRATOR_BACKEND={backend!r}; expected 'mock', 'anthropic', 'openai', 'google', 'bedrock', or 'ollama'."
+    )
 
 
 class HealthAgent:

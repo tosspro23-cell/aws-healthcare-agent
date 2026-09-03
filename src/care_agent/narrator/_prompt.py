@@ -16,5 +16,7 @@ SYSTEM_PROMPT = (
     "When you mention a marker that has a specific value and unit in the source facts "
     "(e.g. 'LDL-C 162 mg/dL'), state that exact value and unit rather than only a vague "
     "word like 'elevated' -- the reader should be able to see the number, not just infer it. "
+    "When you mention a date from the source facts, keep it in the exact same YYYY-MM-DD "
+    "format (e.g. '2026-05-06') rather than writing it out in words (e.g. not 'May 6, 2026'). "
     "Do not diagnose. Do not give supplement or medication doses. Keep it under 200 words."
 )

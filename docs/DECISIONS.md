@@ -8,6 +8,133 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-03 — Bedrock live call blocked by new-account verification, not by IAM or model access
+
+**Context**: Phase 4's stated highest-priority goal was one real,
+non-mocked Bedrock call as evidence -- explicitly because the Azure side
+never got this far (`CannotDeployDueToLocalRegulations` on model
+deployment, subscription-eligibility, never resolved). Attempted the AWS
+equivalent: `aws bedrock-runtime converse` against
+`anthropic.claude-haiku-4-5-20251001-v1:0`.
+
+**What happened**: `AccessDeniedException: Your account is currently
+being verified. Verification normally takes less than 2 hours.` Ruled out
+the two more mundane explanations before accepting this at face value:
+- **Not an IAM problem** -- `dev-cli` already has `AdministratorAccess`
+  (confirmed earlier, Phase 1's bootstrap fix).
+- **Not model-specific** -- tried a second, older Anthropic model
+  (`claude-3-haiku-20240307-v1:0`) and got a *different* error entirely
+  (`ResourceNotFoundException`, a Bedrock model-lifecycle/legacy-model
+  restriction, unrelated to account verification). Two different models
+  producing two different, unrelated errors rules out "this one model
+  needs access requested" as the actual blocker for the first case.
+- The AWS account itself (not just the IAM user) was created today, which
+  matches AWS's own explanation: new accounts get a temporary anti-fraud
+  hold on higher-risk, billable operations like Bedrock model invocation.
+
+**Decision**: Don't chase this further right now -- it's a time-bound
+hold, not a configuration problem to solve. Built and fully tested
+`bedrock_narrator.py` regardless (mocked at the boto3-client boundary, so
+none of that work depends on the account being unblocked). Left the "real
+call" roadmap item explicitly open (⬜, not falsely marked done) rather
+than treating the code being ready as equivalent to the capability gap
+being closed.
+
+**Consequence, and the actual cross-cloud comparison point**: both clouds
+hit a real-account provisioning obstacle on their respective model layer,
+but the *shape* of the obstacle differs in a way worth naming directly:
+Azure's was a **support-ticket-bound eligibility/regulatory block** with
+no stated resolution timeline (a case was opened, never resolved during
+that project's timeframe); AWS's is a **self-service, time-bound identity
+verification hold** with a stated expected resolution window from AWS's
+own error message. Whether that difference holds up (i.e., whether this
+actually clears in ~2 hours as claimed) is itself part of what this
+comparison is for -- worth updating this entry once it's known either way,
+rather than assuming the more optimistic framing is correct just because
+it sounds better.
+
+**Update (same day, resolved)**: the hold cleared in well under the stated
+window -- confirmed by retrying the exact same `aws bedrock-runtime
+converse` call from the previous entry with no other change, and it
+succeeded. AWS's "self-service, time-bound" framing held up in practice,
+unlike Azure's open-ended support-ticket block. See the next two entries
+for what came up immediately after the hold cleared.
+
+---
+
+## 2026-09-03 — Bedrock real call needs a cross-region inference profile ID, not the bare model ID
+
+**Context**: Once the account-verification hold cleared, the first real
+`converse` call against the bare on-demand model ID
+(`anthropic.claude-haiku-4-5-20251001-v1:0`) still failed, with a
+different, unrelated error: `ValidationException: Invocation of model ID
+anthropic.claude-haiku-4-5-20251001-v1:0 with on-demand throughput isn't
+supported.`
+
+**Decision**: Newer Anthropic models on Bedrock are only invocable through
+a cross-region inference profile ID (the `us.` prefix), not the bare
+on-demand model ID. Switched `BedrockNarrator`'s `DEFAULT_MODEL_ID` to
+`us.anthropic.claude-haiku-4-5-20251001-v1:0` and confirmed the same call
+succeeds with no other change. Left `BEDROCK_MODEL_ID` overridable via env
+var (already was) with a code comment explaining *why* the default carries
+the `us.` prefix, so a future model swap doesn't silently reintroduce this
+error.
+
+**Consequence**: This is an AWS-specific gotcha with no Azure-side
+equivalent surfaced yet (the Azure project never got a real model call
+working at all) -- worth keeping as a concrete example of an
+undocumented-until-you-hit-it platform quirk for the eventual
+cross-cloud writeup.
+
+---
+
+## 2026-09-03 — Live Bedrock output failed `numeric_grounding` on natural-language dates; fixed in the shared system prompt
+
+**Context**: With the inference-profile fix in place, `care-agent
+eval-samples --narrator-backend bedrock` ran against real Bedrock for all
+three sample questions. `q_missing_context`'s answer silently fell back to
+the mock narrator (`narrator_fallback` present in the trace) instead of
+using the real Claude Haiku 4.5 output.
+
+**What happened**: Claude Haiku wrote source dates in prose form ("May 6,
+2026") instead of the ISO format the grounded facts use
+(`2026-05-06`). `safety.py`'s `verify_numeric_grounding` only recognizes
+ISO-format dates as a single grounded unit (`_ISO_DATE_RE`); a
+prose-rendered date's individual number tokens (`2026`, `6`, `8`) got
+checked as standalone numeric claims, didn't match any grounded value
+verbatim, and the whole response was correctly rejected as
+possibly-ungrounded -- exactly the safety net Phase 4 set out to test,
+working as designed against a real model's actual output style, not a
+contrived case.
+
+**Decision**: Fixed at the prompt layer, not the safety-check layer:
+added one instruction to the shared `SYSTEM_PROMPT`
+(`src/care_agent/narrator/_prompt.py`, used by every LLM-backed narrator)
+telling the model to keep dates in the exact `YYYY-MM-DD` format from the
+source facts rather than writing them out in words. Did not loosen
+`verify_numeric_grounding` to also parse prose dates -- the check doing
+its job correctly (rejecting a plausible-looking but unverifiable
+rewording) is the behavior worth keeping; the fix belongs on the output
+side that can be steered, not on relaxing what "grounded" means.
+
+**Verification**: re-ran the same question after the prompt change --
+real Bedrock output now uses `2026-05-06` verbatim, `narrator_backend:
+"bedrock"` with no `narrator_fallback` entry, all three safety checks
+(`no_diagnosis`, `no_dosing`, `numeric_grounding`) pass. Re-ran the full
+mocked test suite (125 passed) and all three `eval-samples` questions
+live against real Bedrock afterward to confirm the fix generalized past
+the one question that surfaced it, not just patched over a single
+example. See `docs/PHASE4_BEDROCK_EVIDENCE.md` for the full real
+output/trace.
+
+**Consequence**: A second concrete, non-obvious finding from the one
+Phase 4 explicitly prioritized "make at least one real call" for -- this
+kind of format-drift-vs-grounding-check interaction is exactly the sort
+of thing that never shows up against a hand-written mock response and
+only surfaces against a real model.
+
+---
+
 ## 2026-09-03 — Live cancel-race test: cancellation lost, and that's informative, not a bug
 
 **Context**: `record_result.py`/`cancel_run.py`'s conditional-write race
