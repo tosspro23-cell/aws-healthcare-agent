@@ -8,6 +8,35 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-03 — Cognito's default email never delivered the sign-up code; confirmed via admin API instead
+
+**Context**: `AuthStack`'s User Pool doesn't configure a custom email
+sender (no SES integration), so it falls back to `COGNITO_DEFAULT` --
+Cognito's own built-in email sending. Three real sign-up attempts through
+the Hosted UI (against real Gmail addresses) all stayed stuck in
+`UNCONFIRMED`; no verification code email ever arrived (checked spam too).
+This is a known limitation of `COGNITO_DEFAULT`: a low daily send quota
+and a sender address/reputation that many providers filter as spam --
+not something specific to this account or this code.
+
+**Decision**: Rather than set up SES (real domain verification, sending
+limits, production-access request -- meaningful scope for what's still a
+Phase 2 auth skeleton), confirmed the stuck user directly with
+`aws cognito-idp admin-confirm-sign-up`, using admin credentials against a
+User Pool this project itself owns and created purely for testing. The
+user then signed in normally (password they'd already set) through the
+Hosted UI and completed the real PKCE flow end to end.
+
+**Consequence**: Documented as a manual step, not automated -- this is
+exactly the kind of thing `AWS_SETUP.md`/`get_dev_token.py`'s "a human has
+to click through a real login" boundary already anticipated, just for a
+different reason (missing email, not missing browser). If this project
+ever needs self-serve sign-up to actually work unattended, SES + a
+verified sending domain becomes real, non-optional scope -- worth flagging
+explicitly rather than let "add SES" quietly become an assumed given.
+
+---
+
 ## 2026-09-03 — Auth enforced at API Gateway, not in the Lambda handler
 
 **Context**: Phase 2 needed to protect `/ask`. One option was to check the

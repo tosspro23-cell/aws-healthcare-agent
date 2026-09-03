@@ -88,10 +88,19 @@ aws cloudformation describe-stacks --stack-name CareAgentApiStack \
   is set); the existing behavioral checks (matches-local-answer,
   400/404 cases) are gated on `CARE_AGENT_ID_TOKEN` additionally, since they
   need a request that actually reaches the Lambda.
-- ⬜ **Live verification against the deployed endpoint** — pending an
-  actual signed-in session via `get_dev_token.py` (needs a human to click
-  through a real browser login; not something this session can do for you
-  the way `curl` calls were for Phase 1).
+- ✅ **Live verification against the deployed endpoint, complete.** Deployed
+  all three stacks; confirmed no-token and garbage-token requests both
+  return `401` directly with `curl` before any test ran. Cognito's default
+  email delivery (`COGNITO_DEFAULT`) never delivered the sign-up
+  verification code (known low-quota/spam-filtered behavior — see
+  `DECISIONS.md`), so the account was confirmed via
+  `admin-confirm-sign-up` instead of waiting on email; after that, a real
+  browser login through `get_dev_token.py` produced a real ID token, and
+  all 6 `tests/test_live_endpoint_smoke.py` cases passed against the live
+  endpoint, including the two behavioral checks that require the token to
+  actually reach the Lambda.
+
+**Phase 2: complete.**
 
 Deliberately its own phase, separate from Phase 1, so auth configuration
 issues wouldn't have blocked getting the skeleton running end to end first.

@@ -10,12 +10,14 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phase 0 and Phase 1 both complete.** A live deployment
-(API Gateway + Lambda + DynamoDB + S3, no auth yet — that's Phase 2) is
-running in AWS; the deployed endpoint returns byte-for-byte the same answer
-as running `care-agent ask` locally for the same question, verified
-directly. The `src/care_agent/` kernel below also runs standalone with no
-AWS dependency at all. See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
+**Current status: Phases 0–2 complete.** A live deployment (Cognito +
+API Gateway + Lambda + DynamoDB + S3) is running in AWS: `/ask` requires a
+real Cognito-issued JWT (Authorization Code + PKCE), unauthenticated and
+garbage-token requests are rejected with 401, and an authenticated request
+returns byte-for-byte the same answer as running `care-agent ask` locally
+for the same question — all verified directly against the live endpoint,
+not assumed. The `src/care_agent/` kernel below also runs standalone with
+no AWS dependency at all. See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
 phase-by-phase status.
 
 This is a personal architecture-comparison learning project: the same
