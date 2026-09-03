@@ -140,13 +140,32 @@ issues wouldn't have blocked getting the skeleton running end to end first.
   retry config, timeout values, catch routing, choice branching, IAM scope)
   + `test_orchestration_lambdas.py` (16 cases — every new Lambda's own
   logic against moto-mocked DynamoDB/Step Functions, including the race).
-- ⬜ **Live deploy + verification** — pending: deploy all four stacks,
-  confirm a real `/runs` → poll `/runs/{run_id}` → `/runs/{run_id}/cancel`
-  sequence against the actual account (same "verify directly, don't just
-  assume" standard as Phases 1–2).
-- ⬜ Comparison note in `DECISIONS.md` on how this reliability shape
-  compares to a Durable-Functions-style equivalent, once there's a live
-  run to point at concretely rather than just the design on paper.
+- ✅ **Live deploy + verification, complete.** All four stacks deployed;
+  `POST /runs` / `GET /runs/{run_id}` / `POST /runs/{run_id}/cancel`
+  confirmed to require auth (401 without a token, checked directly, same
+  as `/ask`). Invoking `start_run`/`get_run`/`cancel_run` directly
+  (bypassing API Gateway, so no browser login needed to verify this part)
+  against the real account: a real run went `RUNNING → SUCCEEDED` in
+  Step Functions and DynamoDB both, with the correct grounded answer;
+  `list-executions` on the real state machine shows both real runs by
+  name (the execution name = run_id design). A cancel request fired
+  immediately after starting a run *lost* the terminal-state race — the
+  mock-narrator path finishes in well under a second, faster than the
+  cancel Lambda's own cold-start-plus-conditional-write round trip, so
+  `cancel_run` correctly detected it lost and returned `409` with the
+  real `SUCCEEDED` status rather than lying about a cancellation. The
+  *mechanism* was already proven independently via
+  `test_orchestration_lambdas.py` (both race orderings, seeded directly);
+  this live run is an honest observation about real-world timing, not a
+  gap — cancelling a run that finishes in ~1 second was never going to be
+  the common case this feature is for.
+- ✅ Comparison note in `DECISIONS.md`: state-machine-native
+  retry/timeout/catch/choice vs. hand-written Lambda conditional writes
+  for the DynamoDB leaf steps, and what the live cancel-race timing
+  result implies about when this pattern actually matters (slow/long
+  tasks, not fast synchronous ones).
+
+**Phase 3: complete.**
 
 ## Phase 4 — Bedrock integration (highest priority)
 

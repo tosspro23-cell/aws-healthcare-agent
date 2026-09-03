@@ -26,7 +26,7 @@ this stack is pure orchestration plumbing.
 
 from pathlib import Path
 
-from aws_cdk import Duration, Stack
+from aws_cdk import CfnOutput, Duration, Stack
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_stepfunctions as sfn
@@ -217,3 +217,5 @@ class OrchestrationStack(Stack):
 
         self.start_run_handler.add_environment("STATE_MACHINE_ARN", self.state_machine.state_machine_arn)
         self.cancel_run_handler.add_environment("STATE_MACHINE_ARN", self.state_machine.state_machine_arn)
+
+        CfnOutput(self, "StateMachineArn", value=self.state_machine.state_machine_arn)

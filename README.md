@@ -10,13 +10,16 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phases 0–2 complete.** A live deployment (Cognito +
-API Gateway + Lambda + DynamoDB + S3) is running in AWS: `/ask` requires a
-real Cognito-issued JWT (Authorization Code + PKCE), unauthenticated and
-garbage-token requests are rejected with 401, and an authenticated request
-returns byte-for-byte the same answer as running `care-agent ask` locally
-for the same question — all verified directly against the live endpoint,
-not assumed. The `src/care_agent/` kernel below also runs standalone with
+**Current status: Phases 0–3 complete.** A live deployment (Cognito +
+API Gateway + Lambda + DynamoDB + S3 + Step Functions) is running in AWS.
+The synchronous `/ask` and the async `/runs` → `/runs/{run_id}` →
+`/runs/{run_id}/cancel` path both require a real Cognito-issued JWT
+(unauthenticated and garbage-token requests are rejected with 401,
+verified directly); an authenticated `/ask` request returns byte-for-byte
+the same answer as running `care-agent ask` locally; a real async run went
+`RUNNING → SUCCEEDED` in Step Functions and DynamoDB both, confirmed via
+`list-executions` against the real state machine. The `src/care_agent/`
+kernel below also runs standalone with
 no AWS dependency at all. See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
 phase-by-phase status.
 

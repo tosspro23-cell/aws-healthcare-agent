@@ -8,6 +8,40 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-03 — Live cancel-race test: cancellation lost, and that's informative, not a bug
+
+**Context**: `record_result.py`/`cancel_run.py`'s conditional-write race
+was already proven correct via `test_orchestration_lambdas.py` (both
+orderings seeded directly, no timing dependency). Deployed live, a real
+test fired `cancel_run` immediately after `start_run` for the same
+run_id, to see which side actually wins under real network/Lambda timing
+rather than a unit test's artificial ordering.
+
+**Observation**: The state machine's own success path won every time
+tried. `agent_task`'s work (the mock-narrator path) completes in well
+under a second; a cold-started `cancel_run` Lambda's own invoke + a
+DynamoDB conditional write round-trip is comparably slow or slower. By the
+time `cancel_run` reaches its own conditional write, `record_result` has
+usually already claimed `SUCCEEDED`.
+
+**Decision**: Not a bug to fix -- this is the correct, honest behavior of
+optimistic concurrency: whoever's write actually lands first wins, and a
+task that finishes in ~1 second was never a realistic cancellation target
+in the first place. No code change from this entry; it's here so a future
+reader (or a comparison against the Azure side's cancellation behavior)
+isn't surprised by "cancel didn't seem to do anything" against this
+specific fast, synthetic workload.
+
+**Consequence**: This pattern's practical value shows up once a task is
+genuinely slow (a real model call taking several seconds to tens of
+seconds, external API calls, anything with real latency) -- which is
+exactly the situation Phase 4's Bedrock integration will introduce.
+Re-testing the cancel race after Phase 4 lands, with a task that actually
+takes long enough to plausibly cancel mid-flight, would be a more
+meaningful test of this mechanism than repeating today's version.
+
+---
+
 ## 2026-09-03 — State machine finalization uses Lambda Tasks, not direct DynamoDB ASL integrations
 
 **Context**: Step Functions can write to DynamoDB two ways: a direct
