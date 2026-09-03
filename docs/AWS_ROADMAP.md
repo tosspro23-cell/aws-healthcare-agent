@@ -19,20 +19,34 @@ Status legend: ⬜ not started · 🔶 in progress · ✅ done
 
 ## Phase 1 — Minimal skeleton deployment
 
-- ⬜ `cdk init app --language python` under `infra/`.
-- ⬜ `DataStack`: DynamoDB table for run state (partition key `run_id`) +
-  S3 bucket for large trace/evidence payloads.
-- ⬜ `ApiStack`: API Gateway HTTP API + Lambda integration.
-- ⬜ Lambda handler (`infra/lambda/adapter.py` or similar): thin adapter —
-  parse the API Gateway event, pull `scenario_id`/`question`, call
-  `HealthAgent.ask()`, serialize `AgentResponse` to JSON.
-- ⬜ No auth yet (anonymous calls allowed) — deliberately deferred to Phase 2
+- ✅ `cdk init app --language python` under `infra/`, restructured
+  (`infra/infra/` → `infra/stacks/`, split into `data_stack.py` +
+  `api_stack.py`).
+- ✅ `DataStack`: DynamoDB table for run state (partition key `run_id`,
+  on-demand billing) + S3 bucket for full JSON execution traces (blocked
+  public access, SSE, TLS-enforced).
+- ✅ `ApiStack`: API Gateway HTTP API + Lambda integration (`POST /ask`).
+- ✅ Lambda handler (`infra/lambda_src/adapter.py`): thin adapter — parses
+  the API Gateway event, calls `HealthAgent.ask()`, writes a compact run
+  record to DynamoDB + the full trace to S3, serializes the response.
+  Zero third-party runtime deps needed (`care_agent`'s default mock path is
+  stdlib-only, `boto3` ships in the Lambda runtime) so packaging is a plain
+  file copy (`build_lambda_asset.py`), no Docker bundling.
+- ✅ No auth yet (anonymous calls allowed) — deliberately deferred to Phase 2
   so the skeleton isn't blocked on auth configuration.
-- **Acceptance**: `cdk deploy` succeeds; a request against the live endpoint
-  returns the same answer as running `care-agent ask` locally for the same
-  question.
-- ⬜ End-to-end smoke tests against the *deployed* endpoint (`boto3` or
-  `requests`), not just local unit tests.
+- ✅ `cdk synth` validated locally (no AWS credentials needed for this step;
+  confirmed by running it with a fake account/region and no `~/.aws`).
+- ✅ Unit tests: `tests/test_stacks.py` (CloudFormation assertions — correct
+  partition key, on-demand billing, blocked public access, no wildcard IAM
+  resources) + `tests/test_adapter.py` (Lambda handler logic against a
+  `moto`-mocked DynamoDB/S3, 18 cases incl. malformed-JSON-body variants
+  that surfaced and fixed a real crash — see `DECISIONS.md`).
+- ⬜ **Not yet done — needs real AWS credentials**: `cdk bootstrap`,
+  `cdk deploy --all`, and running `tests/test_live_endpoint_smoke.py`
+  against the live endpoint.
+- **Acceptance** (pending the deploy step above): a request against the
+  live endpoint returns the same answer as running `care-agent ask` locally
+  for the same question.
 
 ## Phase 2 — Authentication
 

@@ -15,9 +15,10 @@ htmlcov/
 .DS_Store
 *.log
 
-# AWS CDK (Python app, added when infra/ lands)
+# AWS CDK (Python app)
 infra/.venv/
 infra/cdk.out/
 infra/cdk.context.json
 infra/.cdk.staging/
+infra/.build/
 
