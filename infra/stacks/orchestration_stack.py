@@ -33,6 +33,8 @@ from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
 
+from stacks.bedrock_grant import grant_bedrock_invoke
+
 
 class OrchestrationStack(Stack):
     def __init__(
@@ -67,7 +69,9 @@ class OrchestrationStack(Stack):
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(25),
             memory_size=512,
+            environment={"CARE_AGENT_NARRATOR_BACKEND": "bedrock"},
         )
+        grant_bedrock_invoke(agent_task_handler)
 
         record_result_handler = _lambda.Function(
             self,

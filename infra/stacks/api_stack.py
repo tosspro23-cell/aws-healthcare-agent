@@ -21,6 +21,8 @@ from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
+from stacks.bedrock_grant import grant_bedrock_invoke
+
 
 class ApiStack(Stack):
     def __init__(
@@ -51,10 +53,12 @@ class ApiStack(Stack):
             environment={
                 "RUNS_TABLE_NAME": runs_table.table_name,
                 "EVIDENCE_BUCKET_NAME": evidence_bucket.bucket_name,
+                "CARE_AGENT_NARRATOR_BACKEND": "bedrock",
             },
         )
         runs_table.grant_read_write_data(ask_handler)
         evidence_bucket.grant_read_write(ask_handler)
+        grant_bedrock_invoke(ask_handler)
 
         http_api = apigwv2.HttpApi(self, "CareAgentApi", api_name="care-agent-api")
 

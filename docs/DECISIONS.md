@@ -135,6 +135,79 @@ only surfaces against a real model.
 
 ---
 
+## 2026-09-04 — Bedrock wired into the deployed Lambdas, with IAM scoped to the exact routed model ARNs
+
+**Context**: Everything Bedrock-related up to this point was proven from
+the local CLI against a broad-access dev IAM profile -- genuinely a real,
+non-mocked call, but not yet the actual deployed cloud runtime calling
+Bedrock, and not yet under scoped-down IAM. This was the one Phase 4 item
+left open, and the user explicitly asked to close it before moving to any
+stress-testing work, correctly pointing out that "is the runtime fully
+running in the cloud" wasn't true yet while this gap remained.
+
+**Decision**: Added `infra/stacks/bedrock_grant.py`, a small shared
+helper (`grant_bedrock_invoke(fn)`) used by both `OrchestrationStack`
+(`AgentTaskHandler`, the Step Functions `InvokeAgent` task) and
+`ApiStack` (`AskHandler`, the synchronous `/ask` path) -- the two, and
+only two, Lambdas that call `HealthAgent.ask()`. Each gets
+`CARE_AGENT_NARRATOR_BACKEND=bedrock` in its environment and an IAM
+policy statement scoped to `bedrock:InvokeModel` on exactly 4 resource
+ARNs.
+
+**Why 4 ARNs, not 1**: A naive scoping to just the inference-profile ARN
+(`arn:aws:bedrock:us-east-1:<account>:inference-profile/us.anthropic....`)
+looks sufficient but isn't -- cross-region inference profiles route the
+actual request to one of several underlying on-demand foundation models
+in different regions, and IAM evaluates permission against *both* the
+profile resource and whichever underlying foundation-model resource the
+request lands on. Didn't assume this from memory: ran
+`aws bedrock get-inference-profile --inference-profile-identifier
+us.anthropic.claude-haiku-4-5-20251001-v1:0` against the real account
+first, which returned the profile's actual 3 routed foundation-model
+ARNs (`us-east-1`, `us-east-2`, `us-west-2`). All 4 ARNs (1 profile + 3
+models) are hardcoded explicitly in `bedrock_grant.py` -- no wildcard
+anywhere in the resource list, verified by
+`test_no_iam_policy_uses_wildcard_resource` (an existing regression guard
+in both `test_stacks.py` and `test_orchestration_stack.py`) continuing to
+pass unchanged.
+
+**Verification against the live account** (all three bypass API
+Gateway/Cognito entirely, the same direct-invoke approach used for
+Phase 3's live verification -- no browser login needed):
+1. Direct `aws lambda invoke` on the deployed `AgentTaskHandler` --
+   real Claude Haiku prose returned, `narrator_backend: "bedrock"`,
+   `safe: true`.
+2. Direct `aws lambda invoke` on the deployed `AskHandler` (API-Gateway
+   proxy-event shape) with a supplement/dosing-adjacent question -- real
+   Bedrock output, correctly declined to give a specific dose, and the
+   resulting DynamoDB item (fetched back by `run_id`, not just trusted
+   from the response) shows `narrator_backend: "bedrock"` written by the
+   Lambda itself.
+3. A real `aws stepfunctions start-execution` against the actual deployed
+   state machine, with the same kind of dosing-adjacent adversarial
+   question -- `SUCCEEDED` in ~9.5 seconds, comfortably inside the 25-second
+   `InvokeAgent` task timeout despite Bedrock's added latency over the
+   mock narrator (this was a real open question -- Bedrock's latency
+   eating into a timeout budget sized for the near-instant mock path was
+   exactly the kind of thing worth actually measuring, not assuming).
+4. Cross-checked all three against `CloudWatch`'s `AWS/Bedrock`
+   `Invocations` metric for the model: 3 → 6 across exactly these 3 calls,
+   re-queried before and after -- independent confirmation the calls
+   originated from AWS-side infrastructure (the Lambdas), not from a local
+   process again.
+
+**Consequence**: This closes Phase 4 completely -- both "at least one
+real, non-mocked call" and "scoped IAM in a deployed Lambda" are done and
+independently verified, not just code-complete. It also surfaces the
+concrete next question the user raised right after this: Bedrock's real
+latency (several seconds, not the mock's near-zero) is now a live variable
+in the deployed system, worth stress-testing deliberately (concurrent
+load, timeout boundaries, throttling behavior) rather than assumed safe
+because it worked in ones-of-calls testing. See `docs/AWS_ROADMAP.md` for
+what that stress-testing pass should cover.
+
+---
+
 ## 2026-09-03 — Live cancel-race test: cancellation lost, and that's informative, not a bug
 
 **Context**: `record_result.py`/`cancel_run.py`'s conditional-write race

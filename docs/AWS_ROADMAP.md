@@ -214,19 +214,37 @@ issues wouldn't have blocked getting the skeleton running end to end first.
     safety check itself. Verified the fix generalized past the one
     question that surfaced it by re-running all three `eval-samples`
     questions live against real Bedrock afterward.
-- ⬜ IAM policy scoped precisely to `bedrock:InvokeModel` on the specific
-  model (inference-profile) ARN, wired into a deployed Lambda — this is
-  the one remaining Phase 4 item. What's proven so far is the real call
-  working from the local CLI with a broad `AdministratorAccess` dev
-  profile; a Lambda that itself calls Bedrock, with IAM scoped down to
-  exactly `bedrock:InvokeModel` on
-  `arn:aws:bedrock:us-east-1::inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`
-  and nothing broader, is still open.
+- ✅ **Bedrock wired into the deployed Lambdas, with scoped IAM — done.**
+  `infra/stacks/bedrock_grant.py` grants `bedrock:InvokeModel` on exactly
+  4 ARNs (the inference profile + its 3 routed foundation-model ARNs
+  across `us-east-1`/`us-east-2`/`us-west-2` — confirmed necessary via
+  `aws bedrock get-inference-profile`, not assumed), nothing broader.
+  Applied to both Lambdas that call `HealthAgent.ask()`: `AskHandler`
+  (sync `/ask`) and `AgentTaskHandler` (the Step Functions `InvokeAgent`
+  task), each also getting `CARE_AGENT_NARRATOR_BACKEND=bedrock` in its
+  environment. `test_no_iam_policy_uses_wildcard_resource` (already
+  existed for both stacks) continues to pass with the new grant in place.
+- ✅ **Live cloud verification, complete** — this is the deployed Lambda
+  itself calling Bedrock, not the local CLI. Three real calls made
+  directly against the deployed resources (no browser/Cognito login
+  needed, matching the same bypass-API-Gateway approach used for Phase 3's
+  live verification): a direct `AgentTaskHandler` invoke, a direct
+  `AskHandler` invoke, and a real `start-execution` through the actual
+  Step Functions state machine with a dosing-adjacent adversarial question
+  ("what dosages should I take?"). All three: `narrator_backend: "bedrock"`
+  in the response/DynamoDB record, `safe: true`, real Claude Haiku prose
+  (not the mock's templated bullets), and the dosing question correctly
+  refused specific numbers while still answering helpfully. The Step
+  Functions run `SUCCEEDED` in ~9.5s, comfortably inside the 25s task
+  timeout despite Bedrock's added latency. CloudWatch's `AWS/Bedrock`
+  `Invocations` metric for the model went from 3 → 6 across exactly these
+  3 calls, confirmed by re-querying before and after — independent proof
+  the calls came from AWS-side infrastructure, not a local process. Full
+  evidence: [`PHASE4_BEDROCK_EVIDENCE.md`](PHASE4_BEDROCK_EVIDENCE.md).
 
-**Phase 4: core goal met — the real, non-mocked Bedrock call is done and
-evidenced.** One item remains open: wiring Bedrock into a deployed Lambda
-with scoped-down IAM (as opposed to today's local-CLI call against a
-broad-access dev profile).
+**Phase 4: complete.** Both the real-call requirement and the
+scoped-IAM-in-a-deployed-Lambda requirement are done and independently
+verified against the live account.
 
 ## Phase 5 — Vector retrieval experiment (optional, lowest priority)
 

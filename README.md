@@ -10,21 +10,27 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phases 0–3 complete; Phase 4 (Bedrock) core goal
-met** — a real, non-mocked `bedrock-runtime.Converse` call against Claude
-Haiku 4.5 verified end to end (real output + trace recorded in
-[`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md)); one
-item remains open (scoped IAM for a deployed Lambda calling Bedrock — see
-[`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `DECISIONS.md`).
+**Current status: Phases 0–4 complete.** Phase 4 (Bedrock) closed out
+both its acceptance items: a real, non-mocked `bedrock-runtime.Converse`
+call, and that same integration wired into the deployed Lambdas
+(`/ask` and the Step Functions run path) under IAM scoped to exactly the
+model ARNs they need — real output/trace for both the local-CLI call and
+the deployed-cloud-Lambda calls recorded in
+[`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md). See
+[`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md` for
+the full writeup.
 A live deployment (Cognito +
-API Gateway + Lambda + DynamoDB + S3 + Step Functions) is running in AWS.
-The synchronous `/ask` and the async `/runs` → `/runs/{run_id}` →
-`/runs/{run_id}/cancel` path both require a real Cognito-issued JWT
-(unauthenticated and garbage-token requests are rejected with 401,
-verified directly); an authenticated `/ask` request returns byte-for-byte
-the same answer as running `care-agent ask` locally; a real async run went
-`RUNNING → SUCCEEDED` in Step Functions and DynamoDB both, confirmed via
-`list-executions` against the real state machine. The `src/care_agent/`
+API Gateway + Lambda + DynamoDB + S3 + Step Functions + Bedrock) is
+running in AWS end to end. The synchronous `/ask` and the async `/runs` →
+`/runs/{run_id}` → `/runs/{run_id}/cancel` path both require a real
+Cognito-issued JWT (unauthenticated and garbage-token requests are
+rejected with 401, verified directly); both deployed Lambdas that answer
+questions now call real Bedrock (Claude Haiku 4.5), so their answers are
+no longer byte-for-byte identical to a local mock-narrator run — the
+`DynamoDB`/trace `narrator_backend` field records which backend actually
+answered; a real async run went `RUNNING → SUCCEEDED` in Step Functions
+and DynamoDB both, confirmed via `list-executions` against the real state
+machine. The `src/care_agent/`
 kernel below also runs standalone with
 no AWS dependency at all. See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
 phase-by-phase status.

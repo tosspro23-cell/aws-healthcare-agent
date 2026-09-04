@@ -27,6 +27,13 @@ a real account).
   any Lambda ever runs — no auth-specific code in any handler). Routes:
   `POST /ask` (Phase 1, synchronous), `POST /runs` / `GET /runs/{run_id}` /
   `POST /runs/{run_id}/cancel` (Phase 3, async).
+- `stacks/bedrock_grant.py` — Phase 4: shared `grant_bedrock_invoke(fn)`
+  helper, used by both `AskHandler` and `AgentTaskHandler` (the only two
+  Lambdas that call `HealthAgent.ask()`). Scopes `bedrock:InvokeModel` to
+  exactly the 4 ARNs the deployed model needs (the cross-region inference
+  profile + its 3 routed foundation-model ARNs) — see the module
+  docstring and `../../docs/DECISIONS.md` for why a cross-region profile
+  needs all 4, not just the profile ARN.
 - `lambda_src/adapter.py` — the synchronous `/ask` handler: a thin
   translation layer between an API Gateway event and
   `care_agent.HealthAgent`. All actual reasoning/safety/retrieval logic
