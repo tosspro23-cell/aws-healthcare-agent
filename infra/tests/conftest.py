@@ -22,6 +22,7 @@ os.environ.setdefault("CARE_AGENT_DATA_DIR", str(_REPO_ROOT / "data"))
 os.environ.setdefault("RUNS_TABLE_NAME", "test-runs-table")
 os.environ.setdefault("EVIDENCE_BUCKET_NAME", "test-evidence-bucket")
 os.environ.setdefault("STATE_MACHINE_ARN", "arn:aws:states:us-east-1:123456789012:stateMachine:test-agent-run-sm")
+os.environ.setdefault("JOBS_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789012/test-jobs-queue")
 
 # moto convention: fake credentials so a misconfigured test environment
 # can never accidentally touch a real AWS account.

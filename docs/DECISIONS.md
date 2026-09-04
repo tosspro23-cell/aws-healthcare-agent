@@ -8,6 +8,91 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-04 — Added an SQS-buffered path as a direct, load-tested comparison against Step Functions retry
+
+**Context**: After the concurrency stress test found Step Functions'
+bounded retry degrading under enough sustained load (41/50 succeeding at
+a 50-concurrent burst -- see `docs/STRESS_TEST.md`), the user asked
+specifically whether adding a real SQS-buffered path -- matching the
+pattern the Azure/Durable-Functions counterpart uses internally -- would
+improve on that, and asked for it to be built and load-tested, not just
+discussed.
+
+**Decision**: Built `QueueStack` (`infra/stacks/queue_stack.py`) as a
+genuinely separate, deployed third path, not a modification of the
+existing two: `POST /jobs` (`enqueue_job.py`) writes a `QUEUED` record and
+sends one SQS message, returning 202 immediately; an SQS-triggered Lambda
+(`process_job.py`) consumes messages with the event source's
+`max_concurrency=5` -- a hard cap on concurrent consumer Lambdas
+*regardless of queue depth*, which is the mechanism this whole comparison
+is about. A dead-letter queue (`maxReceiveCount=3`) catches genuinely
+un-processable messages. Deliberately reused the existing `RunsTable` and
+`GET /runs/{run_id}` (`get_run.py`, already schema-agnostic) for polling
+rather than adding a new table or endpoint -- the comparison is about the
+ingestion/processing mechanism, not about needing a parallel data model.
+
+**Why `max_concurrency=5`, not higher**: the account's real Lambda
+concurrency ceiling is 10, shared across every function. Setting the
+queue's consumer cap to half of that leaves headroom for every other
+Lambda in the account (the sync path, the Step Functions path, the
+enqueue Lambda itself) to keep functioning normally while the queue is
+actively draining a burst -- capping it at or near 10 would let a large
+queue burst starve the rest of the system, defeating part of the point of
+buffering in the first place.
+
+**Verification**: ran the identical burst sizes used for the Step
+Functions comparison (15, 50) plus a further push to 100 (2x the size
+that made Step Functions degrade) against the real deployed queue.
+Result: **100% success at every size tested, including 100 concurrent
+(10x the account's raw Lambda ceiling)**, at the cost of latency scaling
+roughly linearly with burst size (p50 ~13s at 15 concurrent -> ~60s at
+100 concurrent) -- exactly the trade-off basic queueing theory predicts
+for a fixed-concurrency consumer. `JobsDLQ` stayed empty at every size,
+confirmed via `aws sqs get-queue-attributes`, not assumed. Full numbers
+and the head-to-head table: `docs/STRESS_TEST.md`.
+
+**Consequence, and the actual comparison point**: this is not "SQS is
+better" -- it's a genuine trade-off, now quantified instead of asserted.
+Step Functions' retry is faster in the common case and simpler (no extra
+queue resource, no DLQ to monitor) but has a bounded retry budget that a
+large enough burst can exhaust. SQS buffering has no such ceiling on
+eventual success but makes callers wait proportionally longer during a
+real burst, and adds real operational surface (a queue + a DLQ to watch).
+Which one is "right" depends entirely on whether the caller needs a
+bounded-time answer or needs a guaranteed-eventual one -- the same
+question the Azure/Durable-Functions comparison was gesturing at, now
+answered with real numbers from both sides of this project rather than
+architectural intuition alone.
+
+---
+
+## 2026-09-04 — `process_job.py`'s generic DynamoDB writer hit `status` being a reserved keyword
+
+**Context**: While writing `process_job.py` (the SQS consumer, see the
+entry above), its `_write_result(run_id, **fields)` helper built an
+`UpdateExpression` directly from keyword-argument names (`f"{key} = :{key}"`)
+for brevity, unlike `record_result.py`/`mark_running.py`/`cancel_run.py`,
+which all hand-write `ExpressionAttributeNames` for `status` specifically.
+The very first test run against moto failed with a real
+`ValidationException: Attribute name is a reserved keyword; reserved
+keyword: status` -- moto correctly reproduces this specific DynamoDB
+behavior, so this would have failed identically against the real service.
+
+**Decision**: Fixed by aliasing *every* field name through
+`ExpressionAttributeNames` unconditionally (`f"#{key}"` for every key,
+not just `status`), rather than special-casing the one reserved word
+known today. DynamoDB has a long, non-obvious reserved-word list; a
+generic helper that takes arbitrary field names should not have to be
+kept in sync with that list by hand every time a new field gets added.
+
+**Consequence**: A small, cheap catch from actually running the test
+suite against moto (which models real DynamoDB validation behavior,
+not just a generic key-value store) rather than only reasoning about the
+code -- exactly the value moto's fidelity is supposed to provide, working
+as intended here.
+
+---
+
 ## 2026-09-04 — Stress test found two real bugs: truthiness-only input validation, and retry only wired onto one of four Lambda tasks
 
 **Context**: With Phase 4 closed (Bedrock genuinely running in the

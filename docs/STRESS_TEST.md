@@ -11,12 +11,15 @@ stay consistent under repeated concurrent access?
 Tooling: [`infra/scripts/stress_test.py`](../infra/scripts/stress_test.py)
 (not part of the pytest suite or CI -- a manual, deliberate live tool that
 makes real calls, real Lambda invokes, real Step Functions executions,
-and a real Bedrock model, at real if small cost). Every check bypasses API
-Gateway/Cognito by design (same approach used for Phase 3/4's live
-verification) so it isolates "does compute/orchestration/the model layer
-hold up" from "does auth work" (proven separately in Phase 2).
+real SQS messages, and a real Bedrock model, at real if small cost). Every
+check bypasses API Gateway/Cognito by design (same approach used for
+Phase 3/4's live verification) so it isolates "does compute/orchestration/
+the model layer hold up" from "does auth work" (proven separately in
+Phase 2).
 
-Four independent checks. Two real bugs were found and fixed along the way
+Five independent checks (a fifth, SQS-buffered, was added after the
+first four surfaced Step Functions' retry-budget limit, specifically to
+compare against it). Three real bugs were found and fixed along the way
 (see `DECISIONS.md` for the full reasoning on each) -- this file is the
 evidence; the ADR-style reasoning lives there.
 
@@ -204,6 +207,63 @@ almost every time, and the DynamoDB conditional write (`ConditionExpression:
 status = RUNNING`) held perfectly consistent across all 15 repetitions in
 both directions.
 
+## 4. A third path: SQS-buffered, as a direct comparison against Step Functions retry
+
+Follow-up to the concurrency section above, built specifically because
+the user asked for it as an explicit architecture-comparison point
+(matching the Azure/Durable-Functions side's own internal queuing): does
+buffering the burst behind a real queue, with the actual work capped at a
+fixed number of concurrent consumers, hold up better than retry-with-
+backoff once retry's own budget gets exhausted (the 50-concurrent, 82%
+result above)?
+
+**Built**: `QueueStack` (`infra/stacks/queue_stack.py`) -- `POST /jobs`
+(`enqueue_job.py`) writes a `QUEUED` DynamoDB record and sends one SQS
+message, returning 202 immediately; an SQS-triggered Lambda
+(`process_job.py`, same `HealthAgent.ask()` / Bedrock wiring as the other
+two paths) consumes messages with `max_concurrency=5` on the event
+source -- a hard cap on how many consumer Lambdas can run at once,
+*regardless of how many messages are queued*. A dead-letter queue
+(`maxReceiveCount=3`) catches anything that fails repeatedly. Polling
+reuses the existing `GET /runs/{run_id}` unchanged (`get_run.py` is
+schema-agnostic).
+
+**Same burst sizes as the Step Functions comparison, run against the real
+deployed queue**:
+
+| Burst size | Step Functions (retry-based) | SQS-buffered (`max_concurrency=5`) |
+|---|---|---|
+| 15 | 15/15 (100%), p50 5.97s / p95 11.68s | 15/15 (100%), p50 12.83s / p95 20.41s |
+| 30 | 30/30 (100%), p50 10.81s / p95 19.04s | *(not re-run -- see below)* |
+| 50 | **41/50 (82%)**, p50 15.48s / p95 25.3s | **50/50 (100%)**, p50 25.16s / p95 45.97s |
+| 100 | *(not run -- see `docs/DECISIONS.md`, not worth the cost to reconfirm the same known limit)* | **100/100 (100%)**, p50 59.81s / p95 114.54s / max 118.34s |
+
+At every burst size, `JobsDLQ` stayed empty (`ApproximateNumberOfMessages: 0`)
+-- confirmed after each run, not assumed.
+
+**The trade-off, stated plainly**: SQS-buffering trades *latency* for
+*guaranteed eventual success at unlimited scale*. 100 concurrent
+submissions, 10x the account's real Lambda concurrency ceiling, still
+resolved with zero failures -- something Step Functions' bounded retry
+provably cannot do (it already started failing at 50). The cost is that
+total latency scales up with burst size in a way Step Functions' retry
+doesn't (a throttled Step Functions execution either recovers within a
+few retry attempts or fails; a queued job always eventually runs, but
+"eventually" stretches out as more jobs compete for the same 5 consumer
+slots) -- p50 latency went from ~13s at 15 concurrent to ~60s at 100
+concurrent, roughly linear in burst size given a fixed consumer count,
+exactly as basic queueing theory predicts.
+
+**Which one is "better" depends entirely on what the caller needs**: if a
+result is wanted within a bounded time and an occasional failure under
+extreme load is acceptable (with the caller free to retry), Step
+Functions' retry-with-backoff is the right shape -- it's faster in the
+common case and simpler (no separate queue resource, no DLQ to monitor).
+If every submission must eventually succeed and the caller is fine
+waiting arbitrarily long during a burst, SQS buffering is strictly more
+robust. This is the concrete, load-tested version of the trade-off the
+Azure Durable-Functions comparison was gesturing at in the abstract.
+
 ## What this closes, and what's still open
 
 Closed:
@@ -211,6 +271,12 @@ Closed:
   redeployed and re-verified live.
 - Concrete, quantified answers to "how much load," "how malformed an
   input," and "does persistence hold" -- not just qualitative confidence.
+- A third, real, deployed architecture path (SQS-buffered) built and
+  load-tested head-to-head against Step Functions' retry-based approach
+  at identical burst sizes, not just discussed as a hypothetical --
+  proved the two have a genuine, quantified trade-off (latency vs
+  guaranteed eventual success) rather than one strictly dominating the
+  other.
 
 Still open / deliberately not done here (see `docs/AWS_ROADMAP.md`):
 - No fix for Bedrock-side throttling specifically (a `ThrottlingException`
@@ -219,10 +285,31 @@ Still open / deliberately not done here (see `docs/AWS_ROADMAP.md`):
   this was never actually exercised. `bedrock_narrator.py` has no retry of
   its own around `converse()`; worth a dedicated test once a burst large
   enough to hit Bedrock's 50 RPM ceiling (independent of the Lambda
-  ceiling) is worth running.
+  ceiling) is worth running. `process_job.py`'s handler has the same gap:
+  a real Bedrock throttle inside it isn't specifically caught, so it would
+  currently fall into the same coarse-grained SQS redelivery-then-DLQ path
+  as any other unexpected exception (see `enqueue_job.py`/`process_job.py`
+  docstrings for the `UnknownUserError`-vs-everything-else split that
+  already exists).
 - No request submitted to raise the account's Lambda concurrency limit
   above 10 -- this is an account/support-ticket action, not a code change,
-  and 10 was left as-is deliberately so the retry fix could be tested
-  against a real, tight ceiling rather than a synthetic one.
-- No SQS-buffered ingestion path -- noted above as the natural next step
-  past what retry alone can smooth over, not built.
+  and 10 was left as-is deliberately so both the retry fix and the SQS
+  comparison could be tested against a real, tight ceiling rather than a
+  synthetic one. Discussed explicitly with the user and deliberately
+  deferred: no real traffic exists yet to justify it, and raising it
+  wouldn't have changed either comparison's conclusion (Step Functions
+  retry still has a bounded budget; SQS buffering still trades latency
+  for guaranteed success) -- it would only move where the specific
+  numbers land.
+- `enqueue_job.py` itself has no explicit throttling retry (there's no
+  Step-Functions-style `add_retry` equivalent for a Lambda invoked
+  directly by API Gateway) -- in practice its own concurrent-execution
+  footprint is tiny (a `SendMessage` + a `PutItem`, both well under 100ms,
+  versus the multi-second Bedrock call the other paths' entry points
+  don't have to make), so it was never observed to throttle in any of
+  these runs, but it remains a theoretical gap under an extreme-enough
+  burst, same category as `AskHandler`/`StartRunHandler`.
+- No cancellation support for the SQS-buffered path -- `cancel_run.py`'s
+  conditional-write pattern isn't wired up here; a queued or in-flight
+  job runs to completion once enqueued. Would be a natural next piece if
+  this path were taken further.

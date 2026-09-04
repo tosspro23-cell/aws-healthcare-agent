@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""CDK entrypoint. Wires AuthStack (identity), DataStack (state), and
-OrchestrationStack (async Step Functions run path) into ApiStack
-(compute + routing).
+"""CDK entrypoint. Wires AuthStack (identity), DataStack (state),
+OrchestrationStack (async Step Functions run path), and QueueStack
+(async SQS-buffered run path) into ApiStack (compute + routing).
 
 Environment is picked up from the CLI's current AWS profile/region
 (`CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION`, set automatically by the CDK
@@ -17,6 +17,7 @@ from stacks.api_stack import ApiStack
 from stacks.auth_stack import AuthStack
 from stacks.data_stack import DataStack
 from stacks.orchestration_stack import OrchestrationStack
+from stacks.queue_stack import QueueStack
 
 app = cdk.App()
 
@@ -41,6 +42,15 @@ orchestration_stack = OrchestrationStack(
 )
 orchestration_stack.add_stack_dependency(data_stack)
 
+queue_stack = QueueStack(
+    app,
+    "CareAgentQueueStack",
+    runs_table=data_stack.runs_table,
+    lambda_asset_dir=lambda_asset_dir,
+    env=env,
+)
+queue_stack.add_stack_dependency(data_stack)
+
 api_stack = ApiStack(
     app,
     "CareAgentApiStack",
@@ -52,10 +62,12 @@ api_stack = ApiStack(
     start_run_handler=orchestration_stack.start_run_handler,
     get_run_handler=orchestration_stack.get_run_handler,
     cancel_run_handler=orchestration_stack.cancel_run_handler,
+    enqueue_job_handler=queue_stack.enqueue_job_handler,
     env=env,
 )
 api_stack.add_stack_dependency(data_stack)
 api_stack.add_stack_dependency(auth_stack)
 api_stack.add_stack_dependency(orchestration_stack)
+api_stack.add_stack_dependency(queue_stack)
 
 app.synth()

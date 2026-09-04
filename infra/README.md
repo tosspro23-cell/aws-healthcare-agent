@@ -9,8 +9,8 @@ a real account).
 ## Layout
 
 - `app.py` — CDK entrypoint; wires `AuthStack` + `DataStack` +
-  `OrchestrationStack` into `ApiStack`. Builds the shared Lambda asset once
-  and passes it to every stack that needs it.
+  `OrchestrationStack` + `QueueStack` into `ApiStack`. Builds the shared
+  Lambda asset once and passes it to every stack that needs it.
 - `stacks/auth_stack.py` — Cognito User Pool + Hosted UI domain + a public
   (no-secret) App Client configured for Authorization Code + PKCE.
 - `stacks/data_stack.py` — DynamoDB run-state table + S3 evidence bucket.
@@ -22,11 +22,21 @@ a real account).
   state machine's own finalization via a DynamoDB conditional write
   (`ConditionExpression: status = RUNNING`) — see the module docstring and
   `../../docs/DECISIONS.md` for the full reasoning.
+- `stacks/queue_stack.py` — the stress-test follow-up: an SQS-buffered
+  alternative async path, built specifically to compare against
+  `orchestration_stack.py`'s retry-based approach (see the module
+  docstring and `../../docs/STRESS_TEST.md`/`DECISIONS.md`). `POST /jobs`
+  (`enqueue_job.py`) enqueues onto SQS and returns immediately; an
+  SQS-triggered `process_job.py` consumes at a bounded
+  `max_concurrency=5` regardless of queue depth, with a DLQ for anything
+  that fails repeatedly. Polling reuses the existing `GET /runs/{run_id}`
+  unchanged.
 - `stacks/api_stack.py` — API Gateway HTTP API + Lambda integrations, with
   a Cognito JWT authorizer on every route (enforced at the gateway, before
   any Lambda ever runs — no auth-specific code in any handler). Routes:
   `POST /ask` (Phase 1, synchronous), `POST /runs` / `GET /runs/{run_id}` /
-  `POST /runs/{run_id}/cancel` (Phase 3, async).
+  `POST /runs/{run_id}/cancel` (Phase 3, async, Step Functions),
+  `POST /jobs` (stress-test follow-up, async, SQS-buffered).
 - `stacks/bedrock_grant.py` — Phase 4: shared `grant_bedrock_invoke(fn)`
   helper, used by both `AskHandler` and `AgentTaskHandler` (the only two
   Lambdas that call `HealthAgent.ask()`). Scopes `bedrock:InvokeModel` to
@@ -44,6 +54,8 @@ a real account).
 - `lambda_src/agent_task.py`, `mark_running.py`, `record_result.py`,
   `start_run.py`, `get_run.py`, `cancel_run.py` — the Phase 3 Lambdas (see
   `orchestration_stack.py` above for what each does).
+- `lambda_src/enqueue_job.py`, `process_job.py` — the SQS-buffered path's
+  two Lambdas (see `queue_stack.py` above).
 - `build_lambda_asset.py` — assembles one shared Lambda deployment
   directory (every handler module + `care_agent` + `data/`) as a plain
   file copy (no Docker/pip bundling needed: `care_agent` has zero
@@ -56,11 +68,12 @@ a real account).
   locally, exchanges the code for tokens) so you can get a real bearer
   token to test the protected routes with.
 - `scripts/stress_test.py` — live (not CI, real cost) adversarial/load/
-  persistence harness: concurrent bursts against the sync and async
-  paths, a curated real-Bedrock prompt-injection sweep, and a repeated
-  start-then-cancel race checking DynamoDB consistency each time. Bypasses
-  API Gateway/Cognito by design. See `../docs/STRESS_TEST.md` for the
-  methodology and results.
+  persistence harness: concurrent bursts against the sync, Step-Functions-
+  async, and SQS-buffered paths (`burst-sync` / `burst-async` /
+  `burst-queue`), a curated real-Bedrock prompt-injection sweep
+  (`adversarial`), and a repeated start-then-cancel race checking
+  DynamoDB consistency each time (`race`). Bypasses API Gateway/Cognito by
+  design. See `../docs/STRESS_TEST.md` for the methodology and results.
 - `tests/test_stacks.py` / `tests/test_orchestration_stack.py` —
   assertions against the synthesized CloudFormation (not just "does
   `cdk synth` exit 0"): correct partition key, on-demand billing, public

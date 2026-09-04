@@ -12,6 +12,7 @@ from stacks.api_stack import ApiStack
 from stacks.auth_stack import AuthStack
 from stacks.data_stack import DataStack
 from stacks.orchestration_stack import OrchestrationStack
+from stacks.queue_stack import QueueStack
 
 _LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 
@@ -26,6 +27,12 @@ def _synth_stacks():
         runs_table=data_stack.runs_table,
         lambda_asset_dir=_LAMBDA_ASSET_DIR,
     )
+    queue_stack = QueueStack(
+        app,
+        "TestQueueStack",
+        runs_table=data_stack.runs_table,
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
+    )
     api_stack = ApiStack(
         app,
         "TestApiStack",
@@ -37,6 +44,7 @@ def _synth_stacks():
         start_run_handler=orch_stack.start_run_handler,
         get_run_handler=orch_stack.get_run_handler,
         cancel_run_handler=orch_stack.cancel_run_handler,
+        enqueue_job_handler=queue_stack.enqueue_job_handler,
     )
     return Template.from_stack(auth_stack), Template.from_stack(data_stack), Template.from_stack(api_stack)
 
@@ -130,6 +138,16 @@ def test_runs_routes_also_require_jwt_authorization():
         )
 
 
+def test_jobs_route_exists_and_requires_jwt_authorization():
+    """The SQS-buffered path's entrypoint (stress-test follow-up): same
+    JWT authorizer as every other route, not anonymous."""
+    _, _, api_template = _synth_stacks()
+    api_template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route",
+        {"RouteKey": "POST /jobs", "AuthorizationType": "JWT"},
+    )
+
+
 def test_jwt_authorizer_uses_identity_source_authorization_header():
     _, _, api_template = _synth_stacks()
     api_template.has_resource_properties(
@@ -195,6 +213,12 @@ def test_api_stack_depends_on_data_stack_and_auth_stack_and_orch_stack():
         runs_table=data_stack.runs_table,
         lambda_asset_dir=_LAMBDA_ASSET_DIR,
     )
+    queue_stack = QueueStack(
+        app,
+        "TestQueueStack2",
+        runs_table=data_stack.runs_table,
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
+    )
     api_stack = ApiStack(
         app,
         "TestApiStack2",
@@ -206,10 +230,13 @@ def test_api_stack_depends_on_data_stack_and_auth_stack_and_orch_stack():
         start_run_handler=orch_stack.start_run_handler,
         get_run_handler=orch_stack.get_run_handler,
         cancel_run_handler=orch_stack.cancel_run_handler,
+        enqueue_job_handler=queue_stack.enqueue_job_handler,
     )
     api_stack.add_stack_dependency(data_stack)
     api_stack.add_stack_dependency(auth_stack)
     api_stack.add_stack_dependency(orch_stack)
+    api_stack.add_stack_dependency(queue_stack)
     assert data_stack in api_stack.dependencies
     assert auth_stack in api_stack.dependencies
     assert orch_stack in api_stack.dependencies
+    assert queue_stack in api_stack.dependencies

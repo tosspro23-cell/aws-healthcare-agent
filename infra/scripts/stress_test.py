@@ -294,6 +294,63 @@ def cmd_burst_async(args: argparse.Namespace) -> Report:
     return report
 
 
+def _enqueue_and_poll(lambda_client, dynamodb_table, enqueue_fn_name: str, run_id: str, question: str, poll_timeout_s: float) -> CallResult:
+    start = time.monotonic()
+    payload = json.dumps({"body": json.dumps({"user_id": _DEMO_USER, "question": question, "run_id": run_id})})
+    resp = lambda_client.invoke(FunctionName=enqueue_fn_name, Payload=payload.encode("utf-8"))
+    raw = resp["Payload"].read()
+    if resp.get("FunctionError"):
+        return CallResult(run_id, False, "ENQUEUE_ERROR", time.monotonic() - start, detail=raw.decode("utf-8", "replace")[:300])
+    enqueue_status = json.loads(raw)["statusCode"]
+    if enqueue_status != 202:
+        return CallResult(run_id, False, f"ENQUEUE_{enqueue_status}", time.monotonic() - start)
+
+    deadline = time.monotonic() + poll_timeout_s
+    while time.monotonic() < deadline:
+        item = dynamodb_table.get_item(Key={"run_id": run_id}).get("Item")
+        if item and item.get("status") not in ("QUEUED", "RUNNING"):
+            elapsed = time.monotonic() - start
+            return CallResult(
+                run_id,
+                item["status"] == "SUCCEEDED",
+                item["status"],
+                elapsed,
+                detail=str(item.get("answer", item.get("error_message", "")))[:200],
+                narrator_backend=item.get("narrator_backend"),
+                safe=item.get("safe"),
+            )
+        time.sleep(0.5)
+    return CallResult(run_id, False, "POLL_TIMEOUT", time.monotonic() - start)
+
+
+def cmd_burst_queue(args: argparse.Namespace) -> Report:
+    lambda_client = _resolve_client("lambda")
+    dynamodb_client = _resolve_client("dynamodb")
+    enqueue_fn_name = _find_function_name(lambda_client, "EnqueueJobHandler")
+    table_name = _find_table_name(dynamodb_client, "RunsTable")
+    dynamodb_table = boto3.resource("dynamodb", region_name="us-east-1").Table(table_name)
+    print(f"Target: {enqueue_fn_name} (SQS-buffered, max_concurrency=5 on the consumer)")
+    print(f"Firing {args.n} concurrent enqueue calls...")
+
+    report = Report(check="burst-queue", started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.n) as pool:
+        futures = [
+            pool.submit(
+                _enqueue_and_poll,
+                lambda_client,
+                dynamodb_table,
+                enqueue_fn_name,
+                f"stress-queue-{uuid.uuid4().hex[:8]}",
+                "What should I focus on first in my results?",
+                args.poll_timeout,
+            )
+            for _ in range(args.n)
+        ]
+        for fut in concurrent.futures.as_completed(futures):
+            report.results.append(fut.result())
+    return report
+
+
 def cmd_adversarial(args: argparse.Namespace) -> Report:
     lambda_client = _resolve_client("lambda")
     fn_name = _find_function_name(lambda_client, "AskHandler")
@@ -375,6 +432,11 @@ def main() -> int:
     p_async.add_argument("-n", type=int, default=15, help="Number of concurrent executions (default 15).")
     p_async.add_argument("--poll-timeout", type=float, default=60.0, help="Seconds to poll each execution before giving up.")
     p_async.set_defaults(func=cmd_burst_async)
+
+    p_queue = sub.add_parser("burst-queue", help="Concurrent burst of SQS-buffered jobs (POST /jobs equivalent).")
+    p_queue.add_argument("-n", type=int, default=15, help="Number of concurrent enqueue calls (default 15).")
+    p_queue.add_argument("--poll-timeout", type=float, default=90.0, help="Seconds to poll each job before giving up.")
+    p_queue.set_defaults(func=cmd_burst_queue)
 
     p_adv = sub.add_parser("adversarial", help="Curated adversarial prompts against the live Bedrock-backed Lambda.")
     p_adv.set_defaults(func=cmd_adversarial)

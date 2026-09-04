@@ -284,11 +284,29 @@ part of CI).
   every time -- confirms the conditional-write mechanism holds correctly
   in both directions, not just the one direction observed before).
 
+- ✅ **SQS-buffered path, built and load-tested head-to-head against Step
+  Functions retry.** `QueueStack`: `POST /jobs` -> SQS -> a consumer
+  Lambda capped at `max_concurrency=5` regardless of queue depth, plus a
+  DLQ. Same burst sizes as the Step Functions comparison, run for real:
+  **15/15, 50/50, and 100/100 all succeed (100%)** -- including at 100
+  concurrent, 2x the burst size where Step Functions' retry started
+  failing (41/50, 82%) -- at the cost of latency scaling roughly linearly
+  with burst size (p50 ~13s at 15 concurrent, ~60s at 100). This is a
+  genuine trade-off, not a strict improvement: Step Functions is faster
+  in the common case and operationally simpler; SQS guarantees eventual
+  success at any scale but makes callers wait longer during a real burst.
+  Both a third real bug (a DynamoDB reserved-keyword issue caught by
+  moto's fidelity on the very first test run) and this whole comparison
+  are written up in `docs/DECISIONS.md` and `docs/STRESS_TEST.md`.
+
 ⬜ Not done: no fix for Bedrock-side throttling specifically (never
-actually triggered -- every failure observed was Lambda-side); no request
-to raise the account's Lambda concurrency limit past 10; no SQS-buffered
-ingestion path. See `STRESS_TEST.md`'s closing section for why each is a
-deliberate stop point, not an oversight.
+actually triggered -- every failure observed was Lambda-side, on either
+path); no request to raise the account's Lambda concurrency limit past
+10 (discussed explicitly with the user and deliberately deferred -- no
+real traffic yet to justify it, and it wouldn't change either
+comparison's conclusion, only where the specific numbers land); no
+cancellation support for the SQS-buffered path. See `STRESS_TEST.md`'s
+closing section for the full reasoning on each.
 
 ## Phase 5 — Vector retrieval experiment (optional, lowest priority)
 

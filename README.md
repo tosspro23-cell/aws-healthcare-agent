@@ -3,8 +3,8 @@
 [![CI](https://github.com/tosspro23-cell/aws-healthcare-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/tosspro23-cell/aws-healthcare-agent/actions/workflows/ci.yml)
 
 A small, grounded health-data reasoning agent, being deployed AWS-native
-(Lambda / API Gateway / DynamoDB / Step Functions / Bedrock, built with the
-AWS CDK — see current status below). It answers questions about a user's
+(Lambda / API Gateway / DynamoDB / Step Functions / SQS / Bedrock, built
+with the AWS CDK — see current status below). It answers questions about a user's
 bloodwork, questionnaire context, and general health knowledge using
 **only** the provided sample dataset — no invented facts, no diagnoses, no
 supplement dosing, and no reliance on a paid external API for its default
@@ -19,14 +19,16 @@ for both the local-CLI call and the deployed-cloud-Lambda calls recorded
 in [`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md).
 A follow-up live stress test (adversarial input, real concurrency against
 the account's actual quotas, persistence under repeated concurrent
-access) found and fixed two real bugs — truthiness-only input validation
-letting a wrong-typed field leak a 500, and Step Functions retry only
-covering one of four Lambda tasks — both redeployed and re-verified live;
-see [`docs/STRESS_TEST.md`](docs/STRESS_TEST.md). See
-[`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md` for
-the full writeup.
+access) found and fixed three real bugs, and added a third async
+architecture path — SQS-buffered, alongside the existing Step Functions
+one — load-tested head-to-head against it at identical burst sizes: SQS
+buffering held 100% success up to 100 concurrent requests (2x the size
+where Step Functions' retry started failing), trading latency for that
+guarantee. Full numbers: [`docs/STRESS_TEST.md`](docs/STRESS_TEST.md).
+See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md`
+for the full writeup.
 A live deployment (Cognito +
-API Gateway + Lambda + DynamoDB + S3 + Step Functions + Bedrock) is
+API Gateway + Lambda + DynamoDB + S3 + Step Functions + SQS + Bedrock) is
 running in AWS end to end. The synchronous `/ask` and the async `/runs` →
 `/runs/{run_id}` → `/runs/{run_id}/cancel` path both require a real
 Cognito-issued JWT (unauthenticated and garbage-token requests are
