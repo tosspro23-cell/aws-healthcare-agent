@@ -68,10 +68,19 @@ def handler(event: dict, context: object) -> dict:
 
     user_id = body.get("user_id")
     question = body.get("question")
-    if not user_id or not question:
-        return _json_response(400, {"error": "Both 'user_id' and 'question' are required."})
+    if not isinstance(user_id, str) or not user_id or not isinstance(question, str) or not question:
+        # Covers both "missing" and "wrong type" (e.g. a number or list) --
+        # a truthiness-only check let a non-string question_text reach
+        # HealthAgent.ask() and blow up inside it (AttributeError from a
+        # `.lower()` call deep in intent classification), which the
+        # broad except below then turned into a 500 leaking that internal
+        # exception message. Wrong input type is the caller's mistake, not
+        # ours, so it belongs in this 400 branch instead.
+        return _json_response(400, {"error": "Both 'user_id' and 'question' are required and must be non-empty strings."})
 
     run_id = body.get("run_id") or str(uuid.uuid4())
+    if not isinstance(run_id, str):
+        return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
 
     try:
         response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)

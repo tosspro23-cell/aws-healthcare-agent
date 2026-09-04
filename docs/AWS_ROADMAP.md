@@ -246,6 +246,50 @@ issues wouldn't have blocked getting the skeleton running end to end first.
 scoped-IAM-in-a-deployed-Lambda requirement are done and independently
 verified against the live account.
 
+## Stress test — adversarial input, real concurrency, robustness, persistence
+
+Run after Phase 4 closed, once both the sync and async paths were
+genuinely calling Bedrock from the deployed Lambdas. Full writeup, all
+numbers, and the exact commands: [`STRESS_TEST.md`](STRESS_TEST.md).
+Tooling: `infra/scripts/stress_test.py` (live, manual, real cost -- not
+part of CI).
+
+- ✅ **Adversarial / malformed input.** 20 new permanent CI tests (moto,
+  free) covering non-string types, empty/huge/Unicode/control-character/
+  injection-shaped input; plus a live 8-prompt real-Bedrock
+  prompt-injection sweep (8/8 safe, real model refused every dosing/
+  diagnosis/jailbreak attempt directly). **Found and fixed a real bug**:
+  `adapter.py`/`start_run.py` validated input presence with a
+  truthiness-only check, letting a non-string `question`/`user_id`/
+  `run_id` reach internal code and surface as a leaky 500 (or, for
+  `start_run.py`, an uncaught boto3 error) instead of a clean 400. Fixed,
+  redeployed, live-verified.
+- ✅ **Real concurrency / capacity.** Checked the account's actual quotas
+  first (Lambda: 10 concurrent executions account-wide; Bedrock Haiku 4.5
+  cross-region: 50 RPM) rather than guessing. Burst-tested the sync `/ask`
+  path (zero built-in resilience -- 10/15 succeed with SDK retry disabled,
+  the honest real-caller number) against the async `/runs` path. **Found
+  and fixed a second real bug**: Step Functions retry was wired onto only
+  `InvokeAgent`, not the other three Lambda tasks, so the async path
+  failed identically to the unprotected sync path (10/15) on the first
+  burst. Fixed (retry on all 4 tasks), redeployed, re-verified: 15/15 and
+  30/30 succeed after the fix; 50 concurrent finds the real limit of what
+  retry alone can absorb (41/50, 82%), an honest capacity boundary, not a
+  bug.
+- ✅ **Persistence / consistency.** Repeated the Phase 3 start-then-cancel
+  race 15 times against the now-Bedrock-backed (meaningfully slower) async
+  path. 15/15 consistent terminal DynamoDB states, no double-finalization,
+  no missing record, in either race direction (cancel won 14/15 this time,
+  a flip from Phase 3's single mock-narrator observation where cancel lost
+  every time -- confirms the conditional-write mechanism holds correctly
+  in both directions, not just the one direction observed before).
+
+⬜ Not done: no fix for Bedrock-side throttling specifically (never
+actually triggered -- every failure observed was Lambda-side); no request
+to raise the account's Lambda concurrency limit past 10; no SQS-buffered
+ingestion path. See `STRESS_TEST.md`'s closing section for why each is a
+deliberate stop point, not an oversight.
+
 ## Phase 5 — Vector retrieval experiment (optional, lowest priority)
 
 - ⬜ Try vector retrieval over the existing 68-chunk `knowledge_base.jsonl`

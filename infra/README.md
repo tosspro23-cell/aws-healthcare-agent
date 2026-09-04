@@ -55,6 +55,12 @@ a real account).
   against the deployed Hosted UI (opens your browser, catches the redirect
   locally, exchanges the code for tokens) so you can get a real bearer
   token to test the protected routes with.
+- `scripts/stress_test.py` — live (not CI, real cost) adversarial/load/
+  persistence harness: concurrent bursts against the sync and async
+  paths, a curated real-Bedrock prompt-injection sweep, and a repeated
+  start-then-cancel race checking DynamoDB consistency each time. Bypasses
+  API Gateway/Cognito by design. See `../docs/STRESS_TEST.md` for the
+  methodology and results.
 - `tests/test_stacks.py` / `tests/test_orchestration_stack.py` —
   assertions against the synthesized CloudFormation (not just "does
   `cdk synth` exit 0"): correct partition key, on-demand billing, public
@@ -84,7 +90,7 @@ pip install -r requirements.txt -r requirements-dev.txt
 npm install -g aws-cdk   # if not already installed
 
 ruff check . --line-length=140
-mypy stacks app.py lambda_src build_lambda_asset.py scripts/get_dev_token.py --ignore-missing-imports
+mypy stacks app.py lambda_src build_lambda_asset.py scripts/get_dev_token.py scripts/stress_test.py --ignore-missing-imports
 pytest tests/ -v
 cdk synth   # validates the app compiles; no AWS credentials required
 ```

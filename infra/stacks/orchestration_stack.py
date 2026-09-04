@@ -6,9 +6,14 @@ goal directly (see `../../docs/AWS_ROADMAP.md` Phase 3 and
 `../../docs/DECISIONS.md`):
 
 - **start**: `MarkRunning` writes the initial `RUNNING` record.
-- **bounded retry**: `InvokeAgent`'s `add_retry` -- native Step Functions
-  retry, not a hand-rolled loop.
-- **timeout**: `InvokeAgent`'s `timeout=` -- native per-task timeout.
+- **bounded retry**: every `LambdaInvoke` task in this state machine gets
+  the same `add_retry` for transient Lambda-service throttling -- native
+  Step Functions retry, not a hand-rolled loop. Originally only wired
+  onto `InvokeAgent`; a live burst test (see `../../docs/STRESS_TEST.md`)
+  found this account's Lambda concurrency ceiling could throttle
+  `MarkRunning` too, and with no retry there the whole execution failed
+  in under 200ms without ever reaching `InvokeAgent`'s retry/catch logic.
+- **timeout**: `InvokeAgent`'s `task_timeout=` -- native per-task timeout.
 - **cancellation**: `../lambda_src/cancel_run.py`, called from outside the
   state machine (via `POST /runs/{run_id}/cancel`) at any time while a run
   is in flight.
@@ -116,6 +121,25 @@ class OrchestrationStack(Stack):
         runs_table.grant_read_write_data(self.cancel_run_handler)
 
         # -- state machine definition ---------------------------------------
+        # Bounded retry for transient Lambda-service-level throttling
+        # (as opposed to an application error inside the handler, which
+        # retrying can't fix). Applied identically to *every* LambdaInvoke
+        # task in this state machine, not just InvokeAgent -- a live burst
+        # test (see docs/STRESS_TEST.md) found this account's low Lambda
+        # concurrency ceiling throttling MarkRunning too, and since it had
+        # no retry configured, the whole execution failed within the first
+        # ~150ms without ever reaching InvokeAgent's carefully-designed
+        # Retry/Catch semantics at all.
+        _THROTTLING_ERRORS = [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+        ]
+
+        def _add_throttling_retry(task: tasks.LambdaInvoke) -> None:
+            task.add_retry(errors=_THROTTLING_ERRORS, interval=Duration.seconds(2), max_attempts=3, backoff_rate=2.0)
+
         mark_running_task = tasks.LambdaInvoke(
             self,
             "MarkRunning",
@@ -129,6 +153,7 @@ class OrchestrationStack(Stack):
             ),
             result_path=sfn.JsonPath.DISCARD,
         )
+        _add_throttling_retry(mark_running_task)
 
         invoke_agent_task = tasks.LambdaInvoke(
             self,
@@ -148,12 +173,7 @@ class OrchestrationStack(Stack):
             },
             task_timeout=sfn.Timeout.duration(Duration.seconds(25)),
         )
-        invoke_agent_task.add_retry(
-            errors=["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
-            interval=Duration.seconds(2),
-            max_attempts=3,
-            backoff_rate=2.0,
-        )
+        _add_throttling_retry(invoke_agent_task)
 
         record_success_task = tasks.LambdaInvoke(
             self,
@@ -169,6 +189,7 @@ class OrchestrationStack(Stack):
             ),
             result_path=sfn.JsonPath.DISCARD,
         )
+        _add_throttling_retry(record_success_task)
 
         record_failure_task = tasks.LambdaInvoke(
             self,
@@ -183,6 +204,7 @@ class OrchestrationStack(Stack):
             ),
             result_path=sfn.JsonPath.DISCARD,
         )
+        _add_throttling_retry(record_failure_task)
 
         record_timeout_task = tasks.LambdaInvoke(
             self,
@@ -197,6 +219,7 @@ class OrchestrationStack(Stack):
             ),
             result_path=sfn.JsonPath.DISCARD,
         )
+        _add_throttling_retry(record_timeout_task)
 
         is_timeout_choice = (
             sfn.Choice(self, "IsTimeout")

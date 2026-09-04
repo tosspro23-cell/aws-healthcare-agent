@@ -129,6 +129,31 @@ def test_start_run_missing_fields_returns_400(state_machine_arn):
     assert result["statusCode"] == 400
 
 
+def test_start_run_non_string_run_id_returns_400_not_500(state_machine_arn):
+    """Regression test: a non-string run_id used to reach `start_execution`
+    unvalidated -- `name` must be a string, so this raised an uncaught
+    boto3 ClientError (the only caught exception was
+    ExecutionAlreadyExists) instead of a clean 400. Found via the Phase 4
+    stress-test sweep, fixed in start_run.py -- see docs/DECISIONS.md."""
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = {"body": '{"user_id": "user_demo_001", "question": "hello", "run_id": 12345}'}
+        result = start_run.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+def test_start_run_non_string_question_returns_400_not_an_eventual_step_functions_failure(state_machine_arn):
+    """A non-string question used to sail through to a real Step Functions
+    execution and only fail later, inside agent_task's HealthAgent.ask()
+    (by design there -- see agent_task.py's docstring -- but wasteful and
+    less clear than rejecting it here at the API boundary)."""
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = {"body": '{"user_id": "user_demo_001", "question": 12345}'}
+        result = start_run.handler(event, None)
+    assert result["statusCode"] == 400
+
+
 def test_start_run_handles_execution_already_exists_gracefully():
     """Same run_id submitted twice -- moto doesn't actually enforce
     ExecutionAlreadyExists for duplicate names, so this exercises the

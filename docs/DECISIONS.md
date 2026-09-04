@@ -8,6 +8,118 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-04 — Stress test found two real bugs: truthiness-only input validation, and retry only wired onto one of four Lambda tasks
+
+**Context**: With Phase 4 closed (Bedrock genuinely running in the
+deployed Lambdas), the user asked directly whether the runtime was now
+"actually" cloud-native end to end, and separately whether it was worth
+deliberately stress-testing it -- adversarial input, real concurrency,
+robustness, persistence -- rather than assuming it would hold up because
+it worked in ones-of-calls testing. Built
+`infra/scripts/stress_test.py`, a live (not CI) harness with four
+subcommands, and ran all four against the real deployed account. Full
+methodology and numbers in `docs/STRESS_TEST.md`; this entry is just the
+two bugs it found and why they were fixed the way they were.
+
+**Bug 1 -- non-string `question`/`user_id`/`run_id` produced a 500 or an
+uncaught error, not a 400**: `adapter.py` and `start_run.py` both
+validated presence with `if not user_id or not question`, which is
+*truthy*-only. A number, list, or dict all pass that check. Locally
+probing `HealthAgent.ask()` directly with a non-string `question_text`
+showed it raises an unhandled `AttributeError` deep inside intent
+classification (`.lower()` on a non-`str`) -- in `adapter.py` this was
+caught by a broad `except Exception` and turned into a 500 that leaked
+the raw Python exception message to the caller; in `start_run.py` it was
+worse, since a non-string `run_id` reaches `start_execution(name=run_id,
+...)` (which requires a string) with no validation and no catch beyond
+`ExecutionAlreadyExists`, surfacing as a raw, uncaught boto3
+`ClientError`.
+
+**Decision**: Added an explicit `isinstance(..., str)` check alongside
+the existing truthiness check, in both handlers, for all three fields.
+Wrong type is the caller's mistake (400), not an internal failure (500) --
+same reasoning already applied to the `isinstance(body, dict)` fix from
+Phase 1's null-JSON-body bug. Did *not* add the same check inside
+`agent_task.py` (the Step Functions task Lambda) -- its docstring already
+documents a deliberate design choice to let exceptions propagate so Step
+Functions' own `Catch` becomes the error boundary for that path; a
+non-string `question` reaching it (which can now only happen via a
+direct, bypassing-the-API invocation, not through `start_run.py` anymore)
+still correctly lands the execution in `FAILED`, just not as cheaply as
+rejecting it at the API boundary.
+
+**Verification**: added 16 new tests across `test_adapter.py` (type
+checks + a 7-case adversarial-input sweep: empty, whitespace, 50k chars,
+multilingual Unicode, control characters, SQL-injection-shaped,
+prompt-injection-shaped) and `test_orchestration_lambdas.py` (the
+`start_run.py` equivalents); all run in CI going forward, all against the
+mock narrator (free, deterministic -- the mock is template-based and
+structurally can't be talked into anything, so these test input-handling
+robustness, not LLM safety). Redeployed and re-verified live against the
+actual deployed `AskHandler`: a real `aws lambda invoke` with
+`question: 12345` now returns a clean 400 with no leaked exception text.
+
+---
+
+## 2026-09-04 — Step Functions retry was only wired onto InvokeAgent; a live burst test found the other three tasks equally exposed
+
+**Context**: Part of the same stress-testing pass. Fired 15 concurrent
+Step Functions executions at the deployed state machine (`stress_test.py
+burst-async -n 15`) to compare the async path's resilience against the
+synchronous `/ask` path under the same load. Expected the async path,
+with Phase 3's "bounded retry" as one of its stated reliability
+properties, to clearly outperform the sync path (which has no retry at
+all). Instead: **10/15 succeeded, 5 failed -- the same failure count as
+the unprotected sync path**, which defeated the point of having retry at
+all.
+
+**Investigation**: pulled the Step Functions execution history for one of
+the 5 failures. It died at the *first* state, `MarkRunning`, within
+~150ms of `ExecutionStarted` -- a single `TaskFailed`
+(`Lambda.TooManyRequestsException`) immediately followed by
+`ExecutionFailed`, with no retry attempt visible at all.
+`orchestration_stack.py` only ever called `.add_retry(...)` on
+`invoke_agent_task`; `mark_running_task`, `record_success_task`,
+`record_failure_task`, and `record_timeout_task` had none. The account's
+Lambda concurrency ceiling (10 -- see `docs/STRESS_TEST.md` for how this
+was confirmed via `aws service-quotas`) is shared across every Lambda
+function in the account, so a burst throttles whichever task happens to
+be invoking at that moment with equal likelihood -- not just
+`InvokeAgent`, which is the only one anyone had been watching.
+
+**Decision**: Extracted the retry policy (3 attempts, 2s interval, 2x
+backoff, the same `Lambda.*`/`TooManyRequestsException` error list
+already used for `InvokeAgent`) into one shared
+`_add_throttling_retry()` helper and applied it to *all four*
+`LambdaInvoke` tasks in the state machine, not just `InvokeAgent`.
+Considered widening `MarkRunning`'s retry errors to also cover generic
+application exceptions, and rejected that -- retrying a genuine
+application bug (as opposed to transient Lambda-service throttling) just
+delays the same failure and can mask a real problem; the fix is scoped to
+exactly the error class that caused this specific incident.
+
+**Verification**: redeployed, re-ran the identical burst (n=15): 15/15
+succeeded (up from 10/15), latency p95 dropped from 13.43s to 11.68s.
+Pushed further to find where retry alone stops being enough: n=30 also
+hit 15/15 -> 30/30 (100%), n=50 dropped to 41/50 (82%), with all 9
+failures again `MarkRunning` exhausting its 3 retry attempts under
+sustained load -- an honest capacity limit (retry smooths a burst, it
+doesn't create capacity that isn't there), not a remaining bug. See
+`docs/STRESS_TEST.md` for the full numbers and what a real fix past this
+point would look like (a Lambda concurrency increase or an SQS buffer,
+neither implemented here).
+
+**Consequence**: This is the concrete, load-tested version of the
+architectural claim Phase 3 made in the abstract ("orchestration buys
+real resilience over a bare synchronous call") -- and finding it only
+*half* true on the first real burst test is exactly the value of actually
+running one instead of trusting the design read well. Also a legitimate
+comparison point against the Azure/Durable-Functions side: whatever the
+equivalent of "did we remember to apply the retry policy to every
+activity, not just the one we were testing" turns out to be there.
+
+---
+
 ## 2026-09-03 — Bedrock live call blocked by new-account verification, not by IAM or model access
 
 **Context**: Phase 4's stated highest-priority goal was one real,

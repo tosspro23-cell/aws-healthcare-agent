@@ -10,13 +10,19 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phases 0–4 complete.** Phase 4 (Bedrock) closed out
-both its acceptance items: a real, non-mocked `bedrock-runtime.Converse`
-call, and that same integration wired into the deployed Lambdas
-(`/ask` and the Step Functions run path) under IAM scoped to exactly the
-model ARNs they need — real output/trace for both the local-CLI call and
-the deployed-cloud-Lambda calls recorded in
-[`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md). See
+**Current status: Phases 0–4 complete, plus a dedicated stress-test
+pass.** Phase 4 (Bedrock) closed out both its acceptance items: a real,
+non-mocked `bedrock-runtime.Converse` call, and that same integration
+wired into the deployed Lambdas (`/ask` and the Step Functions run path)
+under IAM scoped to exactly the model ARNs they need — real output/trace
+for both the local-CLI call and the deployed-cloud-Lambda calls recorded
+in [`docs/PHASE4_BEDROCK_EVIDENCE.md`](docs/PHASE4_BEDROCK_EVIDENCE.md).
+A follow-up live stress test (adversarial input, real concurrency against
+the account's actual quotas, persistence under repeated concurrent
+access) found and fixed two real bugs — truthiness-only input validation
+letting a wrong-typed field leak a 500, and Step Functions retry only
+covering one of four Lambda tasks — both redeployed and re-verified live;
+see [`docs/STRESS_TEST.md`](docs/STRESS_TEST.md). See
 [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md` for
 the full writeup.
 A live deployment (Cognito +

@@ -52,10 +52,16 @@ def handler(event: dict, context: object) -> dict:
 
     user_id = body.get("user_id")
     question = body.get("question")
-    if not user_id or not question:
-        return _json_response(400, {"error": "Both 'user_id' and 'question' are required."})
+    if not isinstance(user_id, str) or not user_id or not isinstance(question, str) or not question:
+        return _json_response(400, {"error": "Both 'user_id' and 'question' are required and must be non-empty strings."})
 
     run_id = body.get("run_id") or str(uuid.uuid4())
+    if not isinstance(run_id, str):
+        # `start_execution`'s `name` param must be a string; an
+        # unvalidated non-string run_id would otherwise raise an uncaught
+        # boto3 ClientError below, surfacing as a raw Lambda platform
+        # error instead of a clean 400 -- the caller's mistake, not ours.
+        return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
 
     try:
         _sfn().start_execution(
