@@ -8,6 +8,50 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Found via the Workbench itself: "vitamin" hijacked trend questions into supplement_safety
+
+**Context**: Testing the newly-built Workbench end to end, a real question
+-- "Has my vitamin D changed since last time?" -- was classified as
+`supplement_safety`, not `trend_check`. Cause: `intent.py`'s
+`_SUPPLEMENT_PATTERNS` included a bare `\bvitamin\b` pattern, checked
+before trend/priority patterns get a chance -- since "Vitamin D" is also
+this project's biomarker name, *any* question naming that marker (trend,
+priority, or otherwise) got force-classified as supplement_safety. Trend
+computation (`compute_trend`) never ran, leaving `Brief.trend_result`
+unset. The LLM narrator filled that gap with an unverified prose claim
+("I don't have a previous vitamin D result to compare") -- which
+happened to be factually correct this time (the earlier panel genuinely
+has no Vitamin D reading, confirmed against `data/sample_bloodwork.json`
+directly), but was never actually checked by anything in the pipeline.
+This is a live instance of a more general, already-acknowledged gap: the
+safety checks verify *numbers*, not arbitrary narrative/procedural claims
+a narrator might add -- the same underlying limitation as the still-open
+cross-marker value/unit binding gap. Not fixed further here; noted as the
+same class of issue.
+
+**Decision**: Split `_SUPPLEMENT_PATTERNS` into the genuinely strong
+supplement/dosing signals (`supplement`, `dose`, `dosage`, `pill`,
+`mg of`) and a separate, weaker `_MARKER_NAME_ONLY_PATTERNS` (`vitamin`
+alone). The weak pattern only wins as `supplement_safety` when
+trend/priority language isn't *also* present in the same question --
+otherwise trend_check gets the chance it should have had. A bare
+supplement question with no trend language ("what vitamin should I take
+for my low levels?") is unaffected and still classifies as
+`supplement_safety`, matching prior behavior.
+
+**Verification**: New tests
+`test_vitamin_d_trend_question_is_trend_check_not_supplement_safety` and
+`test_vitamin_supplement_question_without_trend_language_is_still_supplement_safety`
+(`tests/test_intent.py`) cover both directions. Full kernel suite (143
+tests, up from 141) passes. Re-ran the exact original question locally
+(`intent: trend_check`, and the answer's data-unavailability claim is now
+sourced from `trend.reason_unavailable`, a real computed field, not an
+LLM guess) and against the live deployed `AskHandler` after redeploying
+all 5 stacks (`safe: true`, `intent: trend_check`, a grounded answer
+explicitly citing the checked prior panel).
+
+---
+
 ## 2026-09-05 — Phase 6 Workbench: minimal React/Vite frontend, scoped to `/ask` first; required adding CORS
 
 **Context**: Every phase through the stress-test pass and both

@@ -35,7 +35,20 @@ _RED_FLAG_PATTERNS = [
     r"\brapidly worsening\b",
 ]
 
-_SUPPLEMENT_PATTERNS = [r"\bsupplement", r"\bvitamin\b", r"\bdose\b", r"\bdosage\b", r"\bpill\b", r"\bmg\b of\b"]
+_SUPPLEMENT_PATTERNS = [r"\bsupplement", r"\bdose\b", r"\bdosage\b", r"\bpill\b", r"\bmg\b of\b"]
+# A bare mention of "vitamin" is a weaker signal than the patterns above --
+# "Vitamin D" is also a biomarker's *name*, so "Has my vitamin D changed
+# since last time?" used to get force-classified as supplement_safety
+# before trend_check ever got a chance, purely because the marker's own
+# name contains this word. Found live testing the Workbench: the
+# resulting answer never ran trend computation at all, and the LLM
+# narrator filled the gap with an unverified claim about data
+# availability that happened to be true by coincidence, not because
+# anything actually checked it. Kept as its own pattern list (not folded
+# into `_TREND_PATTERNS`) because a genuine supplement question like "what
+# vitamin should I take?" should still be supplement_safety when no
+# trend/priority language is also present.
+_MARKER_NAME_ONLY_PATTERNS = [r"\bvitamin\b"]
 _TREND_PATTERNS = [
     r"\bworse\b",
     r"\bbetter\b",
@@ -83,6 +96,14 @@ def classify(question_text: str) -> IntentResult:
 
     trend_hits = _matches(text, _TREND_PATTERNS)
     priority_hits = _matches(text, _PRIORITY_PATTERNS)
+    marker_name_hits = _matches(text, _MARKER_NAME_ONLY_PATTERNS)
+
+    # A marker-name-only mention (just "vitamin", no stronger supplement
+    # signal) only wins as supplement_safety when trend/priority language
+    # isn't also present -- otherwise "has my vitamin D changed since last
+    # time" would never reach the trend branch below.
+    if marker_name_hits and not trend_hits and not priority_hits:
+        return IntentResult(intent=SUPPLEMENT_SAFETY, matched_patterns=tuple(marker_name_hits))
 
     if trend_hits and not priority_hits:
         return IntentResult(intent=TREND_CHECK, matched_patterns=tuple(trend_hits))
