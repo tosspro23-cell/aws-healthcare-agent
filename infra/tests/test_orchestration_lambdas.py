@@ -360,6 +360,14 @@ def test_cancel_run_refuses_to_cancel_a_synchronous_ask_run(runs_table):
     assert result["statusCode"] == 409
     item = runs_table.get_item(Key={"run_id": "sync-1"})["Item"]
     assert item["status"] == "RUNNING"
+    # Regression test: this response used "message" instead of "error" for
+    # the human-readable reason -- every other error response in this API
+    # (start_run.py, enqueue_job.py, adapter.py, get_run.py, and this same
+    # handler's own 404) uses "error". A client reading `body.error` (the
+    # correct thing to do everywhere else) silently got nothing useful
+    # here. Found live via the Workbench: a Cancel click that lost the
+    # race showed a bare "409" with no explanation.
+    assert "error" in json.loads(result["body"])
 
 
 def test_cancel_run_loses_race_when_already_finalized(runs_table, state_machine_arn):
@@ -378,8 +386,9 @@ def test_cancel_run_loses_race_when_already_finalized(runs_table, state_machine_
         result = cancel_run.handler(_api_event(path_params={"run_id": "r1"}), None)
 
     assert result["statusCode"] == 409
-    body_status = result["body"]
-    assert "SUCCEEDED" in body_status  # reports the real status, doesn't claim cancellation
+    body = json.loads(result["body"])
+    assert body["status"] == "SUCCEEDED"  # reports the real status, doesn't claim cancellation
+    assert "error" in body  # same "error" (not "message") key convention as every other endpoint
 
 
 def test_cancel_run_missing_run_returns_404(runs_table, state_machine_arn):

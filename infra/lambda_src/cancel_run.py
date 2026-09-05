@@ -135,12 +135,21 @@ def handler(event: dict, context: object) -> dict:
                 {
                     "run_id": run_id,
                     "status": item.get("status"),
-                    "message": "Synchronous /ask runs cannot be cancelled; wait for the response.",
+                    # "error", not "message" -- every other error response
+                    # in this API (start_run.py, enqueue_job.py, adapter.py,
+                    # get_run.py) uses "error" for the human-readable
+                    # reason. This handler's two conflict responses were
+                    # the sole exception, so a client reading `body.error`
+                    # (the correct thing to do against every other
+                    # endpoint) silently got nothing useful here -- found
+                    # live via the Workbench when a Cancel click that lost
+                    # the race showed a bare "409" with no explanation.
+                    "error": "Synchronous /ask runs cannot be cancelled; wait for the response.",
                 },
             )
         return _json_response(
             409,
-            {"run_id": run_id, "status": item.get("status"), "message": "Run was already finalized; nothing to cancel."},
+            {"run_id": run_id, "status": item.get("status"), "error": "Run was already finalized; nothing to cancel."},
         )
 
     # Won the race -- best-effort stop the actual execution, but only if

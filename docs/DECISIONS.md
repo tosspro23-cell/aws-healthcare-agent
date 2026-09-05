@@ -8,6 +8,34 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — `cancel_run.py`'s two conflict responses used "message" instead of "error"
+
+**Context**: User-reported from the Workbench: a `Cancel this run` click
+that lost the race (the run had already finished, or was a synchronous
+run that can't be cancelled at all -- both legitimate, correctly-detected
+409 outcomes) showed a bare "409: Request failed with status 409" with no
+explanation. Every other error response in this API -- `start_run.py`,
+`enqueue_job.py`, `adapter.py`, `get_run.py`, and even `cancel_run.py`'s
+own 404 -- puts the human-readable reason under an `"error"` key; only
+these two specific 409 responses used `"message"` instead. The frontend
+(correctly, matching the API-wide convention) reads `body.error`, so it
+silently got nothing for exactly these two cases.
+
+**Decision**: Renamed both fields from `"message"` to `"error"`, matching
+every other response in the API. No client depended on the old key name
+(checked: no test asserted on it).
+
+**Verification**: New assertions in `tests/test_orchestration_lambdas.py`
+(`test_cancel_run_refuses_to_cancel_a_synchronous_ask_run` and
+`test_cancel_run_loses_race_when_already_finalized`) that `"error"` is
+present in the response body. Full infra suite (130 tests) passes.
+Redeployed `CareAgentOrchestrationStack` and live-verified directly
+against the deployed `CancelRunHandler`: cancelling a
+directly-seeded already-`SUCCEEDED` run now returns `{"error": "Run was
+already finalized; nothing to cancel.", ...}`, not a bare status code.
+
+---
+
 ## 2026-09-05 — Workbench: wired up the async paths (Step Functions + Queue), client-side run history
 
 **Context**: The Workbench's first version covered only the synchronous
