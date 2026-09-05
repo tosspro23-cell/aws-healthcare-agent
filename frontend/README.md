@@ -59,6 +59,20 @@ The deployed API Gateway also needs CORS configured for this origin
 specifically (`infra/stacks/api_stack.py`'s `cors_preflight`) -- already
 wired in, but if you change the dev port, that needs updating too.
 
+## Test
+
+```bash
+npm test
+```
+
+Vitest + `@testing-library/react`, `jsdom` environment. Deliberately
+narrow coverage, not a push for a blanket suite: `auth.ts`'s token-expiry
+tracking and `AskForm.tsx`'s polling generation counter, both logic
+that's already caused real bugs (see `docs/DECISIONS.md`, 2026-09-05).
+`.env.test` (committed, dummy values only) supplies the `VITE_*` vars
+`config.ts` requires at import time -- unlike `npm run build`, which
+never actually executes that module-level code, `vitest` does.
+
 ## Deploy (public hosting)
 
 This app is also deployed as a real, public HTTPS site via

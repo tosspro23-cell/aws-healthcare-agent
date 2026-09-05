@@ -122,3 +122,33 @@ jobs:
         env:
           CDK_DEFAULT_ACCOUNT: "123456789012"
           CDK_DEFAULT_REGION: "us-east-1"
+
+  frontend:
+    name: frontend (lint, type-check, vitest, build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: ESLint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Vitest
+        working-directory: frontend
+        run: npm test
+
+      - name: Build (tsc -b && vite build)
+        working-directory: frontend
+        run: npm run build

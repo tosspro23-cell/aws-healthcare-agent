@@ -8,6 +8,67 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — First frontend tests: Vitest for auth.ts's token expiry and AskForm.tsx's polling supersession
+
+**Context**: The kernel package has run at 85%+ coverage since Phase 0;
+the frontend has had zero automated tests since it was first built in
+Phase 6. That asymmetry showed: findings 3, 4, and 8 of round 3's
+independent review were all real bugs in `auth.ts`/`AskForm.tsx` found
+only by manual live-browser verification, and each fix was likewise only
+confirmed the same manual way. Picked as the third item in the post-
+review cleanup punch list, after the two backlog closures above,
+specifically because this logic (token expiry, polling generation
+counting) has already been the source of real bugs and will be touched
+again.
+
+**Decision**: `vitest` + `jsdom` + `@testing-library/react` +
+`@testing-library/jest-dom`, configured via `vite.config.ts`'s own
+`test` block (no separate config file) since this project already uses
+Vite -- no new build tool. Test files live next to their source
+(`auth.test.ts`, `AskForm.test.tsx`), covered by the existing
+`tsconfig.json`'s `"include": ["src"]` without change. `config.ts`'s
+`requireEnv` throws immediately at module-evaluation time if a `VITE_*`
+env var is missing -- true during `vitest`'s real Node/jsdom test
+execution (unlike `vite build`, which never actually runs this
+module-level code, only bundles it) -- so a new `.env.test` with dummy,
+non-sensitive values is committed (unlike `.env.local`, which holds real
+deployed identifiers and stays gitignored).
+
+**Scope, deliberately narrow**: two files, not a push for blanket
+coverage. `auth.test.ts` covers `getAccessToken`'s self-expiry check,
+`handleSessionExpired`, and `signOut` -- pure logic plus `sessionStorage`/
+`localStorage`, no rendering needed. `AskForm.test.tsx` covers exactly
+one scenario: a poll for one run still has a request in flight when the
+user selects a *different* run from history, and the stale response must
+not overwrite the newer run's state once it finally resolves -- the
+precise race finding #3 fixed. Getting there took two false starts,
+kept as the comments in the test file explain: the obvious way to
+reproduce "start a new run while the old one is pending" is resubmitting
+the form, but the submit button is correctly disabled while a run is
+pending, so that path is unreachable; the actual trigger is
+`handleSelectHistoryEntry`, which isn't gated by `pending` at all.
+Getting the deferred-promise sequencing right also required noticing
+that `handleSelectHistoryEntry` calls `getRun` directly (blocking,
+`asyncResult` stays `null` until it resolves) before ever scheduling a
+poll tick -- unlike `handleSubmit`'s async paths, which show an
+optimistic state immediately. **Verified the test actually catches the
+regression it claims to**, not just that it passes: temporarily removed
+the in-flight generation check the test targets, confirmed the test
+failed (the stale response visibly clobbered the display), then restored
+it and confirmed green again -- the same discipline as this project's
+kernel-side regression tests, just newly possible on the frontend.
+
+**CI**: a new `frontend` job in `.github/workflows/ci.yml` (lint,
+`vitest run`, `tsc -b && vite build`) -- these tests would otherwise rot
+silently, checked by no CI, the same gap that let the frontend go this
+long with zero coverage in the first place.
+
+**Verification**: `npm test` (7 tests, 2 files) passes; `tsc -b`,
+`npm run build`, and `npm run lint` all clean; the production bundle's
+content hash is unchanged from before this change (test files and
+config are never part of the app's own import graph). Not yet pushed
+through CI as of this entry.
+
 ## 2026-09-05 — Closed the two deliberately-open backlog items: cross-marker value/unit binding, SQS processing lease + DLQ reconciliation
 
 **Context**: Round 2's independent review found both gaps but explicitly
