@@ -27,13 +27,29 @@ export function AskForm() {
   const [asyncResult, setAsyncResult] = useState<RunRecord | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
+  // Set when polling had to give up (a non-tolerated error) without ever
+  // reaching a terminal status -- see `pollUntilTerminal`'s catch branch.
+  // Without this, `pending` (derived from the last-known, now-stale
+  // status) stayed true forever, permanently disabling submit and mode
+  // switching even though nothing was actually still in flight. Found by
+  // a second independent review.
+  const [pollingStalled, setPollingStalled] = useState(false);
 
-  const pollHandle = useRef<ReturnType<typeof setInterval> | null>(null);
+  // A monotonic generation counter, bumped every time polling starts or
+  // is explicitly stopped. Each poll loop closes over the generation it
+  // was started with and checks it before ever touching state, so a
+  // still-in-flight request from a *previous* loop (superseded by a new
+  // submission or a different history-entry selection) can't overwrite
+  // newer state when it finally resolves -- found by a second independent
+  // review reproducing exactly that ordering.
+  const pollGeneration = useRef(0);
+  const pollTimeoutHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function stopPolling() {
-    if (pollHandle.current !== null) {
-      clearInterval(pollHandle.current);
-      pollHandle.current = null;
+    pollGeneration.current += 1;
+    if (pollTimeoutHandle.current !== null) {
+      clearTimeout(pollTimeoutHandle.current);
+      pollTimeoutHandle.current = null;
     }
   }
 
@@ -42,35 +58,54 @@ export function AskForm() {
 
   function pollUntilTerminal(runId: string) {
     stopPolling();
-    // The Step Functions path returns from `POST /runs` as soon as
-    // `start_execution` is accepted, *before* the state machine's first
-    // task (mark_running.py) has actually written the DynamoDB record --
-    // polling immediately can genuinely 404 for the first tick or two.
-    // (The SQS path writes its record synchronously before returning
-    // 202, so this race doesn't apply there, but tolerating it uniformly
-    // is simpler than branching on execution_type here.) Found live
-    // testing this exact polling loop.
+    setPollingStalled(false);
+    const myGeneration = pollGeneration.current;
     let consecutiveNotFound = 0;
     const MAX_NOT_FOUND_TICKS = 10;
-    pollHandle.current = setInterval(async () => {
+
+    // A self-scheduling setTimeout, not setInterval: the next request is
+    // only scheduled after the current one resolves, so two requests for
+    // the same poll loop can never be in flight at once (the race a
+    // second independent review reproduced with setInterval -- a slower
+    // earlier tick resolving after a faster later one, undoing an
+    // already-terminal state).
+    async function tick() {
+      if (pollGeneration.current !== myGeneration) return; // superseded before this tick even started
       try {
         const run = await getRun(runId);
+        if (pollGeneration.current !== myGeneration) return; // superseded while this request was in flight
         consecutiveNotFound = 0;
         setAsyncResult(run);
-        if (isTerminal(run.status)) stopPolling();
+        if (!isTerminal(run.status)) {
+          pollTimeoutHandle.current = setTimeout(tick, POLL_INTERVAL_MS);
+        }
       } catch (err) {
+        if (pollGeneration.current !== myGeneration) return;
+        // The Step Functions path returns from `POST /runs` as soon as
+        // `start_execution` is accepted, *before* the state machine's
+        // first task (mark_running.py) has actually written the
+        // DynamoDB record -- polling immediately can genuinely 404 for
+        // the first tick or two. (The SQS path writes its record
+        // synchronously before returning 202, so this race doesn't
+        // apply there, but tolerating it uniformly is simpler than
+        // branching on execution_type here.) Found live testing this
+        // exact polling loop.
         if (err instanceof ApiError && err.status === 404 && ++consecutiveNotFound <= MAX_NOT_FOUND_TICKS) {
-          return; // not written yet -- keep polling rather than erroring out
+          pollTimeoutHandle.current = setTimeout(tick, POLL_INTERVAL_MS);
+          return;
         }
         setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
-        stopPolling();
+        setPollingStalled(true);
       }
-    }, POLL_INTERVAL_MS);
+    }
+
+    pollTimeoutHandle.current = setTimeout(tick, POLL_INTERVAL_MS);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     stopPolling();
+    setPollingStalled(false);
     setLoading(true);
     setError(null);
     setSyncResult(null);
@@ -113,11 +148,27 @@ export function AskForm() {
     setCancelling(true);
     try {
       await cancelRun(asyncResult.run_id);
+      // Apply the result immediately rather than "wait for the next poll
+      // tick" -- a second independent review found that if polling had
+      // already stopped (e.g. `pollingStalled`, or the run raced to a
+      // terminal state right as this fired), there might never be
+      // another tick, leaving the screen stuck showing the pre-cancel
+      // status indefinitely despite the cancellation having succeeded.
+      stopPolling();
+      const run = await getRun(asyncResult.run_id);
+      setAsyncResult(run);
     } catch (err) {
       // A 409 here is informative, not fatal -- the run may have already
-      // finished naturally, racing the cancel request. Show it and keep
-      // polling; the next poll tick will reflect whatever really happened.
+      // finished naturally, racing the cancel request. Refresh from the
+      // real current state either way instead of leaving stale data
+      // displayed.
       setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
+      try {
+        stopPolling();
+        setAsyncResult(await getRun(asyncResult.run_id));
+      } catch {
+        // Best-effort refresh only; the error above is already shown.
+      }
     } finally {
       setCancelling(false);
     }
@@ -125,6 +176,7 @@ export function AskForm() {
 
   async function handleSelectHistoryEntry(entry: HistoryEntry) {
     stopPolling();
+    setPollingStalled(false);
     setError(null);
     setSyncResult(null);
     setAsyncResult(null);
@@ -140,7 +192,13 @@ export function AskForm() {
     }
   }
 
-  const pending = asyncResult !== null && !isTerminal(asyncResult.status);
+  // `pollingStalled` overrides this: a run whose last known status is
+  // non-terminal but whose polling gave up (see `pollUntilTerminal`'s
+  // catch branch) is *not* known to still be pending -- treating it as
+  // pending forever would permanently lock submission and mode
+  // switching for no recoverable reason. Found by a second independent
+  // review.
+  const pending = asyncResult !== null && !isTerminal(asyncResult.status) && !pollingStalled;
 
   return (
     <div>

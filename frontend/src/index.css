@@ -133,6 +133,16 @@ button:disabled {
   font-size: 0.9em;
 }
 
+.markdown-image-disabled {
+  display: inline-block;
+  color: #92400e;
+  background: #fffbeb;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-style: italic;
+}
+
 .meta {
   font-size: 0.85em;
   color: #666;

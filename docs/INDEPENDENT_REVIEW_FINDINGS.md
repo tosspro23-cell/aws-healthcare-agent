@@ -18,16 +18,24 @@ against moto/unit tests. See the exact reproduction and verification
 steps in [`DECISIONS.md`](DECISIONS.md), which has the full ADR-style
 reasoning for each. This file is the tracker.
 
-There have now been two independent review passes: the first against
-commit `36a48a8` (below), and a second, verification-focused pass against
+There have now been three independent review passes: the first against
+commit `36a48a8` (below), a second, verification-focused pass against
 the fixes for the first (commit `3985ce4`) -- deliberately asked to check
 whether the round-1 fixes actually closed what they claimed, not to
-re-scan from scratch. **The second review found that several round-1
-"fixes" introduced real regressions** (most seriously: three ordinary,
-previously-safe questions -- an LDL trend, an HbA1c trend, and an eGFR
-lookup -- started failing the safety check entirely because of the exact
-value-unit-binding logic meant to make grounding *stricter*). See
-"Second independent review" below for the full list and disposition.
+re-scan from scratch -- and a third against commit `dd85976`, scoped to
+what the first two never touched at all: the entire frontend and the
+newly-public S3+CloudFront hosting. **The second review found that
+several round-1 "fixes" introduced real regressions** (most seriously:
+three ordinary, previously-safe questions -- an LDL trend, an HbA1c
+trend, and an eGFR lookup -- started failing the safety check entirely
+because of the exact value-unit-binding logic meant to make grounding
+*stricter*). **The third review found a live hotfix made the same day
+had reopened a genuine safety bypass** (a `question_text` exemption
+meant to fix a narrow false positive let a fabricated number matching
+one in the question pass as grounded) alongside four real frontend bugs
+and one incomplete exception-handling fix. See "Second independent
+review" and "Third independent review" below for the full lists and
+disposition.
 
 Severity labels are the reviewer's own.
 
@@ -105,3 +113,53 @@ client, code flow, PKCE, password policy, default token lifetimes); and
 the quality of round-1's own regression tests (meaningful behavioral
 tests, not self-referential -- their main weakness was missing adjacent
 cases, which several of the tests added in this round now cover).
+
+## Third independent review (reviewed commit `dd85976`, frontend + public hosting)
+
+Scoped explicitly to what rounds 1 and 2 never reviewed at all: the
+entire frontend (`frontend/src`) and the same day's earlier Phase 6 work
+making the Workbench a public S3+CloudFront-hosted URL, plus targeted
+verification of several hotfixes made live during that same work
+(async trace persistence's `get_run.py` exception handling, and a
+numeric-grounding false-positive fix to `safety.py`). Every finding
+below was independently reproduced before being fixed -- via direct
+Python reproduction for the two kernel/backend findings, via careful
+code reading for the frontend findings (this project has no frontend
+test framework), and via a real browser against the live hosted URL for
+live verification -- the same standard as rounds 1 and 2.
+
+| # | Severity | Finding | Fix | Live-verified? |
+|---|---|---|---|---|
+| 1 | High | A live hotfix earlier the same day added a `question_text` exemption to `verify_numeric_grounding`, meant to stop a false positive where the model declined while citing the question's own number. Reopened a genuine bypass: a bare fabricated number matching the question (`"Is my risk score 999?"` -> `"Your... risk score is 999."`) now passed outright, and irregular spacing/Markdown around a real value+unit pair (`"500  mg/dL"`, `"**500** mg/dL"`) made the strict regex miss, falling through to the exempted weak path instead of being checked at all. | Exemption reverted entirely rather than patched further -- reliably distinguishing "declining while citing" from "asserting as fact" isn't solvable with a regex, and a false positive (safe answer replaced by the template) is the acceptable side of the asymmetry, not a false negative (fabricated number reaching the user). | Yes -- reproduced both bypass shapes directly in Python before the revert; both correctly rejected after. Kernel test suite re-run clean (154 tests) after this fix and finding #7's fix together. |
+| 2 | Medium | Run history (`localStorage`, full question text) persisted across accounts in a shared browser -- signing out didn't clear it. | `signOut()` now also calls a new `clearHistory()`. | Yes -- `localStorage.getItem('care_agent_run_history')` confirmed `null` in a real browser immediately after clicking Sign Out. |
+| 3 | Medium | `AskForm`'s polling used `setInterval(async () => ...)`, which doesn't wait for the previous tick to resolve -- a slower, earlier response can resolve after a faster, later one and overwrite already-terminal state with stale data. | Rewritten as a self-scheduling `setTimeout` (next tick only scheduled once the current one resolves) plus a monotonic generation counter checked before and after each async call, so a superseded poll loop can never write state again. | Yes -- a real Step-Functions run polled cleanly through `RUNNING` to a terminal `SUCCEEDED` state in a live browser against the redeployed backend, no stale overwrite observed. |
+| 4 | Medium | A polling error that wasn't tolerated (i.e. not the expected transient 404 right after a Step-Functions start) set an error message but never reset the derived `pending` flag -- permanently disabling submit and mode-switching with nothing actually still running. `handleCancel` also wrote nothing back to the UI until the next poll tick, which might never come. | Added a `pollingStalled` state that overrides `pending`. `handleCancel` now immediately refetches and applies the real post-cancel state instead of waiting on a tick. | Yes -- forced live: a cancel request raced against the run finishing naturally, got a real `409: Run was already finalized`, and the UI correctly displayed the real `SUCCEEDED`/`SAFE` terminal state instead of staying stuck on "Cancelling...". |
+| 5 | Medium | `react-markdown` renders `![alt](url)` as a real `<img>` the browser eagerly fetches with no user interaction -- a data-exfiltration vector for text ultimately originating from an LLM completion. | `Markdown.tsx`'s `components` override for `img` now renders a plain `[image: alt -- not rendered]` badge instead, the same override pattern already used for `a`. | No -- verified by code reading and the identical, already-proven link-override pattern; not tested against a live malicious image URL. |
+| 6 | Medium | The `AccessDenied`-for-missing-trace fix from earlier the same day only wrapped `get_object()` itself in its `try` block -- reading the response body (`.read()`, which can raise `ReadTimeoutError`, a `BotoCoreError` subclass distinct from `ClientError`) and `json.loads()`-ing it happened after the `except`, unprotected. A transport-level failure mid-stream still 500'd the whole `GET /runs/{run_id}` endpoint. | Both calls moved inside the `try`; now also catches `BotoCoreError`/`ValueError`. | Yes -- redeployed `CareAgentOrchestrationStack` for this fix specifically (before the other findings' fixes existed); new test simulates a `ReadTimeoutError` mid-read and confirms a clean 200 with no `trace` field. |
+| 7 | Medium | `mock_narrator.py`'s closing personalization summary hardcoded `"nutrition" in topics or "exercise_volume" in topics` into one combined phrase regardless of which actually fired -- the same overclaim pattern round 2 (finding #8) already fixed for other topics, not extended to this pair. | Split into two independent branches, each naming the specific detail from that modifier's own grounded-fact claim. **A real regression introduced fixing this, caught by the full suite before considering it done**: reusing the `exercise_volume` claim text embedded a literal "60" never registered as grounded, failing numeric_grounding for 10 previously-passing tests -- fixed by registering it via `_numbers_in()`, the exact pattern round 2's finding #8 already established. | Kernel-level; new tests distinguish nutrition-only from exercise-volume-only firing. Full kernel suite (154 tests) re-run clean, including the fix for the self-introduced regression. |
+| 8 | Medium | A stored access token was treated as valid regardless of age; an expired token failed every API call with a 401 the app never surfaced, leaving the signed-in Workbench displayed indefinitely. | `completeSignIn` records `Date.now() + expires_in * 1000`; `getAccessToken()` self-clears an expired token; `authedFetch` forces a hard redirect to `/` on any 401 (catches server-side revocation, which client-side expiry bookkeeping alone can't). | Yes, twice -- once forced (an explicitly-expired token blocked a submit with a clean "Not signed in." before any `fetch` call), and once unforced: a real token that aged out over the course of this round's own work hit the live redeployed API, got a genuine 401, and was correctly redirected to a clean sign-in screen rather than getting stuck. |
+
+**A self-inflicted deploy bug, found and fixed during this round's own
+live verification, not a review finding**: `cdk deploy --all` without
+`CARE_AGENT_WORKBENCH_URL` set (see `app.py`'s documented two-pass
+deployment requirement) silently reset `ApiStack`'s CORS `allow_origins`
+back to just `localhost:8765`, breaking every API call from the public
+CloudFront URL. Caught immediately by testing the redeployed public URL
+in a real browser instead of only the local dev server; fixed by
+redeploying `CareAgentAuthStack`/`CareAgentApiStack` a second time with
+the env var set, confirmed via a live CORS preflight. See
+[`DECISIONS.md`](DECISIONS.md) for the full account.
+
+### Third review: what it said to keep as-is
+
+The link-override pattern in `Markdown.tsx` (`target="_blank"
+rel="noreferrer"`) as the right template to extend for the image
+override; the PKCE/S256 authorization-code flow itself (`auth.ts`) --
+the review's session-expiry findings were about tracking an already-
+correct flow's token lifetime, not a flaw in the flow; the Origin Access
+Control-based S3+CloudFront hosting (no public bucket policy, no
+website-hosting endpoint) as the right shape, independently confirmed by
+the review directly probing the S3 bucket URL and getting a clean
+`AccessDenied`; and the client-side-only run-history design (finding #2
+was about clearing it on sign-out, not about the underlying design of
+keeping history in `localStorage` rather than a new backend endpoint).

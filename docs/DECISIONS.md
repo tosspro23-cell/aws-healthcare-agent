@@ -8,6 +8,149 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Third independent review: a reopened safety bypass, a within-topic overclaim, and four frontend fixes
+
+**Context**: Requested specifically to cover what round 1 and round 2
+never touched -- the entire frontend and the newly-public S3+CloudFront
+hosting from the same day's earlier Phase 6 work -- plus verification of
+several hotfixes made live during that work. All 8 findings were
+independently reproduced against this repo's own code before being fixed
+here, the same standard rounds 1 and 2 used.
+
+**Finding 1 (High, safety bypass reopened)**: A live hotfix made earlier
+the same day added a `question_text` exemption to
+`verify_numeric_grounding` -- a bare number was accepted as grounded if
+the caller's own question already used it, meant to stop a real false
+positive where the model declined while citing the question's own
+number. The review reproduced two ways this reopened a genuine
+fabrication bypass: `"Is my cardiovascular risk score 999?"` ->
+`"Your... risk score is 999."` now passed even though 999 is never a
+real grounded value (the exemption can't distinguish declining-while-
+citing from affirming-while-fabricating); and irregular spacing
+(`"500  mg/dL"`, two spaces) or Markdown emphasis (`"**500** mg/dL"`)
+made the *strict* value+unit regex fail to match, silently falling
+through to the now-exempted weak path instead of being checked against
+real grounded values at all. **Decision: reverted the exemption
+entirely** rather than patching the regex further -- reliably telling
+"declining while citing a number" from "asserting that number as fact"
+isn't solvable with a regex, and the asymmetry matters: a false positive
+here just means a safe answer gets replaced by the deterministic
+template, while a false negative means a fabricated clinical number
+reaches the user. Confirmed via direct reproduction in Python before and
+after the revert. `run_safety_checks`'s `question_text` parameter was
+removed along with it (both `agent.py` call sites updated).
+
+**Finding 7 (Medium, within-topic overclaim)**: `mock_narrator.py`'s
+closing personalization summary hardcoded `"nutrition" in topics or
+"exercise_volume" in topics` into one combined phrase ("leans on your
+stated food and activity preferences") regardless of which of the two
+actually fired -- the same "policy written for one case, applied to a
+different case" failure mode round 2 already fixed for other topics, not
+extended to this pair. **Decision**: split into two independent
+branches, each using the specific detail already present in that
+modifier's own grounded-fact claim (a new `_claim_detail()` helper) so
+the visible sentence names the actual reported signal instead of an
+assumed one. **A real regression introduced while fixing this, caught by
+the full suite before considering the fix done**: the `exercise_volume`
+modifier's claim text ("...less than 60 minutes...") embeds a literal
+number never registered as grounded, so reusing that text in the closing
+summary broke `numeric_grounding` for 10 previously-passing tests
+(`ungrounded numbers: ['60']`). Fixed in `reasoning.py` by adding
+`numeric_values=_numbers_in(claim)` to that fact's construction, the
+same pattern finding #8 of round 2 already established for exactly this
+situation.
+
+**Findings 2-5, 8 (frontend, never previously reviewed)**: (2) Run
+history (`localStorage`, full question text) persisted across accounts
+in a shared browser -- `signOut()` now also calls a new
+`clearHistory()`. (3) `AskForm`'s polling used `setInterval(async () =>
+...)`, which doesn't wait for the previous tick's request to resolve --
+a slower, earlier response could resolve after a faster, later one and
+overwrite already-terminal state with stale data. Rewritten as a
+self-scheduling `setTimeout` (next tick only scheduled after the current
+one resolves) plus a monotonic generation counter checked before and
+after each async call, so a superseded poll loop's in-flight request can
+never write state again. (4) A polling error that wasn't tolerated (not
+the expected transient 404 right after a Step-Functions start) set
+`error` but never reset the derived `pending` flag, permanently
+disabling submit and mode-switching with nothing left running; a new
+`pollingStalled` state overrides `pending` in that case. `handleCancel`
+also now applies the real post-cancel state immediately (refetching via
+`getRun`) instead of waiting for a poll tick that might never come if
+polling had already stopped or the run raced to a terminal state.
+(5) `react-markdown` renders `![alt](url)` as a real `<img>` the browser
+eagerly fetches with no user interaction -- a data-exfiltration vector
+for any app whose text ultimately originates from an LLM completion.
+Given a `components` override for `img` (same pattern already used for
+`a`), rendering a plain `[image: alt -- not rendered]` badge instead.
+(8) A stored access token was treated as valid regardless of age; an
+expired token just failed every API call with a 401 the app never
+noticed, leaving the signed-in Workbench displayed indefinitely.
+`completeSignIn` now records `Date.now() + expires_in * 1000` alongside
+the token; `getAccessToken()` self-clears an expired one, and
+`authedFetch` forces a hard redirect to `/` on any 401 (a revocation
+server-side can't be caught by the client's own expiry bookkeeping
+alone).
+
+**Finding 6 (get_run.py, deployed before the rest of this round)**: the
+`AccessDenied`-for-missing-trace fix from the same day's earlier work
+only wrapped the `get_object()` call itself in its `try` block --
+reading the response body (`.read()`, which can raise `ReadTimeoutError`,
+a `BotoCoreError` subclass with no `.response` attribute, distinct from
+`ClientError`) and `json.loads()`-ing it happened *after* the `except`,
+unprotected. A transport-level failure while streaming an otherwise-
+successful `get_object()` response still 500'd the whole `GET /runs/
+{run_id}` endpoint. Fixed by moving both calls inside the `try` and
+catching `BotoCoreError`/`ValueError` alongside `ClientError`.
+
+**A self-inflicted deploy bug, caught during this round's own live
+verification, not left in**: redeploying all six stacks with `cdk
+deploy --all` and no `CARE_AGENT_WORKBENCH_URL` set silently reset
+`ApiStack`'s CORS `allow_origins` back to its bare default
+(`["http://localhost:8765"]`, see `app.py`'s two-pass deployment
+pattern), dropping the live CloudFront origin from the allowlist and
+breaking every API call from the public URL with a browser-level
+`TypeError: Failed to fetch` (a preflight `OPTIONS` response with zero
+CORS headers). Caught immediately by testing the redeployed public URL
+in a real browser rather than only the local dev server. Fixed by
+redeploying `CareAgentAuthStack` and `CareAgentApiStack` a second time
+with `CARE_AGENT_WORKBENCH_URL` set to the live `WorkbenchUrl` output --
+confirmed via a live CORS preflight (`curl -X OPTIONS`) that
+`Access-Control-Allow-Origin` for the CloudFront origin is present
+again. This is a deployment-process gap worth remembering, not a code
+bug: `app.py`'s docstring already documented the two-pass requirement,
+but nothing enforces it at deploy time -- a future `cdk deploy --all`
+run the same way will reproduce this exact regression.
+
+**Verification**: Full kernel suite (154 tests, up from 152 before
+finding 7's fix; coverage 90.67%, gate 85%) and full infra suite (140
+tests, up from 139) pass; `ruff`/`mypy` clean on both; frontend
+`npm run build` and `cdk synth --all` (6 stacks) both clean. All 6
+stacks redeployed live. Live-verified in a real browser against both
+`localhost:8765` and the public CloudFront URL: history is empty
+(`localStorage.getItem(...)` returns `null`) immediately after sign-out
+(finding 2); a real Step-Functions run's `Cancel this run` raced against
+natural completion, returned `409: Run was already finalized`, and the
+UI correctly displayed the real `SUCCEEDED`/`SAFE` terminal state instead
+of getting stuck (finding 4, and indirectly finding 3 -- the same run
+polled cleanly through `RUNNING` to a terminal state with no stale
+overwrite); an explicitly-expired token blocked a submit with a clean
+"Not signed in." before ever calling `fetch` (finding 8, forced); and,
+unforced, a real token that had aged out over the course of this
+session's own work hit the live redeployed API, got a real 401, and
+`handleSessionExpired()` correctly forced a clean return to the sign-in
+screen rather than leaving the signed-in shell stuck -- the same fix
+confirmed twice, once deliberately and once by accident. Finding 5 (the
+image-suppression badge) is verified by code reading and the identical,
+already-proven `a`-override pattern, not by a live malicious-image
+probe. Finding 1's revert is verified via direct reproduction and the
+kernel test suite (including a Bedrock-narrator-backed regression test),
+not via a live Bedrock call deliberately trying to reproduce the exact
+fabrication -- inherently non-deterministic to force on demand, and no
+previous round's safety-check verification relied on that either.
+
+---
+
 ## 2026-09-05 — Phase 6 finished out: async trace persistence, markdown rendering, public hosting
 
 **Context**: Requested as the last increment on the Workbench: (1) give

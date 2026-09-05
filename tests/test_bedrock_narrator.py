@@ -189,15 +189,19 @@ def test_agent_with_bedrock_narrator_falls_back_when_unsafe(data_dir):
     assert "numeric_grounding" in fallback_checks[0].detail
 
 
-def test_agent_with_bedrock_narrator_does_not_fall_back_for_a_number_echoed_from_the_question(data_dir):
-    """Regression test: found live-testing the Workbench. Bedrock correctly
-    declined to calculate a "10-year cardiovascular risk score" (not
-    something this project's data supports), but the safest possible
-    response -- explicitly refusing to fabricate a number -- used to fail
-    grounding anyway, purely because "10" (echoed from the user's own
-    "10-year" phrasing) matched no grounded fact. This must now pass
-    without falling back to the (objectively less helpful, in this case)
-    mock template."""
+def test_agent_with_bedrock_narrator_falls_back_for_a_number_echoed_from_the_question(data_dir):
+    """Documents an accepted, deliberate trade-off, not a bug: a fix was
+    briefly tried (and reverted -- see docs/DECISIONS.md) to stop this
+    exact case from falling back, because Bedrock correctly *declining*
+    to calculate a "10-year cardiovascular risk score" still failed
+    grounding purely because "10" (echoed from the user's own "10-year"
+    phrasing) matched no grounded fact. A second independent review found
+    that fix reopened a real fabrication bypass (a model *affirming* a
+    made-up number that happened to match one in the question also passed).
+    Reverted: this case now correctly falls back to the mock template
+    again -- a real but acceptable cost (a less naturally-worded but still
+    safe and correct answer), preferred over a bypass that could let a
+    fabricated clinical number reach the user."""
     from care_agent.agent import HealthAgent
 
     fake_client = _fake_bedrock_client(
@@ -221,9 +225,9 @@ def test_agent_with_bedrock_narrator_does_not_fall_back_for_a_number_echoed_from
     )
 
     assert response.safe is True
-    assert response.trace.narrator_backend == "bedrock"
+    assert response.trace.narrator_backend == "mock"
     fallback_checks = [c for c in response.trace.safety_checks if c.name == "narrator_fallback"]
-    assert fallback_checks == []
+    assert len(fallback_checks) == 1
 
 
 def test_no_content_blocks_returns_empty_string():

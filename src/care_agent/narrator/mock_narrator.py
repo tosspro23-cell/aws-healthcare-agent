@@ -70,6 +70,28 @@ def _next_steps(brief: Brief) -> list[str]:
     return steps
 
 
+_CLAIM_PREFIX = "questionnaire reports "
+
+
+def _claim_detail(brief: Brief, topic: str) -> str | None:
+    """The specific, already-correct detail from a modifier's own
+    grounded-fact claim (built in `reasoning.py` from only the
+    sub-signal(s) that actually triggered it), for reuse here instead of
+    a second, separately-hardcoded phrase. A second independent review
+    found that this function's *first* fix (checking which topics fired)
+    still hardcoded which *sub-signal* fired within a topic that can be
+    triggered by more than one -- "pacing" can fire from short sleep,
+    high stress, or both, but the summary always named "sleep and
+    stress" regardless. Reusing the claim (already fixed to name only
+    what triggered) instead of a second hardcoded phrase means the two
+    can't drift apart from each other again the same way."""
+    modifier = next((m for m in brief.questionnaire_modifiers if m.topic == topic), None)
+    if modifier is None:
+        return None
+    claim = modifier.grounded_fact.claim
+    return claim[len(_CLAIM_PREFIX) :] if claim.startswith(_CLAIM_PREFIX) else None
+
+
 def _personalization_summary(brief: Brief) -> str | None:
     """Built from whichever questionnaire modifiers actually fired this
     time, not a fixed sentence naming every possible personalization this
@@ -89,9 +111,22 @@ def _personalization_summary(brief: Brief) -> str | None:
     if "exercise" in topics:
         parts.append("steers toward accommodations for your reported exercise limitation")
     if "pacing" in topics:
-        parts.append("keeps the number of simultaneous changes small given what you reported about sleep and stress")
-    if "nutrition" in topics or "exercise_volume" in topics:
-        parts.append("leans on your stated food and activity preferences instead of a generic plan")
+        detail = _claim_detail(brief, "pacing")
+        if detail:
+            parts.append(f"keeps the number of simultaneous changes small given your reported {detail}")
+        else:
+            parts.append("paces changes given what you reported")
+    if "nutrition" in topics:
+        # Deliberately its own branch, not combined with exercise_volume
+        # below -- a second independent review found the combined version
+        # claimed "food and activity preferences" even when only one of
+        # the two (a dietary signal, or a low-activity-volume signal) had
+        # actually fired, misnaming the other every time.
+        detail = _claim_detail(brief, "nutrition")
+        parts.append(f"prioritizes your reported {detail}" if detail else "leans on your stated food preferences")
+    if "exercise_volume" in topics:
+        detail = _claim_detail(brief, "exercise_volume")
+        parts.append(f"builds up activity gradually given your reported {detail}" if detail else "builds up activity gradually")
     if "family_history" in topics:
         parts.append("gives your reported family history a bit more weight when suggesting clinician follow-up")
     if not parts:

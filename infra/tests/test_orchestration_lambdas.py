@@ -361,6 +361,30 @@ def test_get_run_tolerates_s3_access_denied_for_a_missing_trace_object(runs_tabl
     assert "trace" not in body
 
 
+def test_get_run_tolerates_a_transport_level_error_reading_the_trace(runs_table):
+    """Regression test: a second independent review found the AccessDenied
+    fix above only protected the `get_object()` call itself -- reading the
+    response stream (which can raise `ReadTimeoutError`, a `BotoCoreError`
+    subclass, not a `ClientError`) and parsing its JSON happened *outside*
+    the try block, so a transport-level failure while streaming the body
+    still 500'd the whole endpoint even though `get_object()` itself
+    succeeded. Reproduced by making `.read()` raise directly."""
+    from botocore.exceptions import ReadTimeoutError
+
+    runs_table.put_item(Item={"run_id": "r-transport-error", "status": "SUCCEEDED", "owner_sub": _DEFAULT_CALLER_SUB})
+
+    with patch("get_run._s3") as mock_s3_factory:
+        mock_body = MagicMock()
+        mock_body.read.side_effect = ReadTimeoutError(endpoint_url="https://s3.amazonaws.com")
+        mock_s3_factory.return_value.get_object.return_value = {"Body": mock_body}
+        result = get_run.handler(_api_event(path_params={"run_id": "r-transport-error"}), None)
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["status"] == "SUCCEEDED"
+    assert "trace" not in body
+
+
 def test_get_run_missing_returns_404(runs_table):
     result = get_run.handler(_api_event(path_params={"run_id": "does-not-exist"}), None)
     assert result["statusCode"] == 404

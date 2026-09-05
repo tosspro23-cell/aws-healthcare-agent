@@ -6,9 +6,11 @@
  * an in-browser redirect, not a script pretending to be one.
  */
 import { config } from "./config";
+import { clearHistory } from "./history";
 
 const CODE_VERIFIER_KEY = "care_agent_pkce_code_verifier";
 const ACCESS_TOKEN_KEY = "care_agent_access_token";
+const EXPIRES_AT_KEY = "care_agent_access_token_expires_at";
 
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
@@ -24,13 +26,50 @@ async function makePkcePair(): Promise<{ verifier: string; challenge: string }> 
   return { verifier, challenge };
 }
 
+/** Any stored token used to be treated as a valid session regardless of
+ * age -- a second independent review found that an expired token just
+ * kept failing every API call with a 401 the app never noticed, leaving
+ * the signed-in Workbench displayed indefinitely. Expiry is recorded
+ * alongside the token at exchange time (see `completeSignIn`) and
+ * checked here; an expired token is treated the same as no token,
+ * clearing itself out rather than leaving stale state around. */
 export function getAccessToken(): string | null {
-  return sessionStorage.getItem(ACCESS_TOKEN_KEY);
+  const token = sessionStorage.getItem(ACCESS_TOKEN_KEY);
+  if (!token) return null;
+  const expiresAt = Number(sessionStorage.getItem(EXPIRES_AT_KEY));
+  if (expiresAt && Date.now() >= expiresAt) {
+    clearSession();
+    return null;
+  }
+  return token;
+}
+
+function clearSession(): void {
+  sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+  sessionStorage.removeItem(EXPIRES_AT_KEY);
+  sessionStorage.removeItem(CODE_VERIFIER_KEY);
+}
+
+/** Called by `api.ts` when a request comes back 401 -- covers the case
+ * where the token is revoked or otherwise rejected server-side before
+ * its own recorded expiry (`getAccessToken`'s check alone doesn't catch
+ * that). Clears the session and reloads to "/", the simplest reliable
+ * way to force the app back to its signed-out state from anywhere
+ * (`AskForm`'s polling loop included) without threading a callback
+ * through every component that can make an API call. */
+export function handleSessionExpired(): void {
+  clearSession();
+  window.location.href = "/";
 }
 
 export function signOut(): void {
-  sessionStorage.removeItem(ACCESS_TOKEN_KEY);
-  sessionStorage.removeItem(CODE_VERIFIER_KEY);
+  clearSession();
+  // Run history (localStorage, not sessionStorage) persisted across
+  // sign-out until this fix -- a second independent review found that
+  // full question text (not just run_ids) was readable by whoever signs
+  // into the same browser next. This is convenience state for the
+  // current session's user, not something that should outlive them.
+  clearHistory();
   const params = new URLSearchParams({ client_id: config.appClientId, logout_uri: config.logoutUri });
   window.location.href = `https://${config.cognitoDomain}/logout?${params.toString()}`;
 }
@@ -74,8 +113,15 @@ export async function completeSignIn(code: string): Promise<void> {
   if (!response.ok) {
     throw new Error(`Token exchange failed: ${response.status} ${await response.text()}`);
   }
-  const tokens = (await response.json()) as { access_token: string };
+  const tokens = (await response.json()) as { access_token: string; expires_in?: number };
   sessionStorage.setItem(ACCESS_TOKEN_KEY, tokens.access_token);
+  // Cognito's default access-token lifetime is 1 hour; `expires_in` (in
+  // the token response, seconds) is the authoritative value regardless.
+  // Recorded so `getAccessToken` can detect an expired token itself,
+  // rather than only finding out via a failed API call.
+  if (tokens.expires_in) {
+    sessionStorage.setItem(EXPIRES_AT_KEY, String(Date.now() + tokens.expires_in * 1000));
+  }
   sessionStorage.removeItem(CODE_VERIFIER_KEY);
   window.history.replaceState({}, "", "/");
 }

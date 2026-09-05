@@ -30,7 +30,7 @@ from typing import Any
 
 import auth_context
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -69,7 +69,8 @@ def _fetch_trace(run_id: str) -> dict | None:
         return None
     try:
         obj = _s3().get_object(Bucket=_EVIDENCE_BUCKET_NAME, Key=f"{run_id}.json")
-    except ClientError as exc:
+        return json.loads(obj["Body"].read())
+    except (ClientError, BotoCoreError, ValueError) as exc:
         # Real, reproduced-live behavior, not a hypothetical: this
         # handler is deliberately granted only s3:GetObject, not
         # s3:ListBucket (see orchestration_stack.py -- ListBucket would
@@ -85,14 +86,24 @@ def _fetch_trace(run_id: str) -> dict | None:
         # truth, so any failure to fetch it should degrade gracefully
         # rather than fail the whole GET /runs/{run_id} response.
         #
+        # A second independent review found the original version of this
+        # fix only protected the `get_object()` call itself -- reading the
+        # response stream (which can raise a transport-level error like
+        # `ReadTimeoutError`, a `BotoCoreError` subclass, not a
+        # `ClientError`) and parsing its JSON (which raises `ValueError`
+        # on anything corrupt/truncated) both happened *outside* the try
+        # block, so either would still 500 the whole endpoint. All three
+        # failure modes are the same kind of problem for this specific,
+        # best-effort read -- caught together, not just the one that was
+        # first observed live.
+        #
         # Logged, not silent: the expected case (evidence not written
-        # yet) and a genuine misconfiguration both surface as the same
-        # ClientError, and swallowing it with no trace at all would make
-        # a real future problem invisible in CloudWatch. INFO, not
-        # ERROR/WARNING, because the expected case is the common one.
-        logger.info("No trace available for run_id=%r (%s)", run_id, exc.response["Error"].get("Code"))
+        # yet) and a genuine misconfiguration both surface the same way,
+        # and swallowing this with no trace at all would make a real
+        # future problem invisible in CloudWatch. INFO, not ERROR/WARNING,
+        # because the expected case is the common one.
+        logger.info("No trace available for run_id=%r (%s)", run_id, exc)
         return None
-    return json.loads(obj["Body"].read())
 
 
 def handler(event: dict, context: object) -> dict:

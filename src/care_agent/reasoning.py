@@ -220,14 +220,24 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
 
     aerobic = context.fact("exercise.aerobic_activity")
     if aerobic and aerobic.value == "less_than_60_min_per_week":
+        # numeric_values registers the "60" in the claim below as grounded
+        # -- found needed live while reusing this exact claim text in
+        # mock_narrator.py's closing summary: without it, that summary
+        # sentence embeds a number (from this fixed policy threshold, not
+        # invented) that verify_numeric_grounding correctly doesn't yet
+        # know is sourced, and rejects the whole answer as ungrounded.
+        # Same pattern already used for exercise_limitation/
+        # family_history_context's caution-detail text below.
+        claim = "questionnaire reports less than 60 minutes of aerobic activity per week"
         modifiers.append(
             QuestionnaireModifier(
                 topic="exercise_volume",
                 text="start with small, achievable increases in activity rather than a large jump in volume",
                 grounded_fact=GroundedFact(
-                    claim="questionnaire reports less than 60 minutes of aerobic activity per week",
+                    claim=claim,
                     source_type="questionnaire",
                     source_ref="facts.exercise.aerobic_activity",
+                    numeric_values=_numbers_in(claim),
                 ),
             )
         )

@@ -286,7 +286,7 @@ class HealthAgent:
 
         # -- narrate + verify --------------------------------------------------
         answer_text = self.narrator.compose(brief, question_text, profile)
-        report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates, question_text)
+        report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
 
         used_fallback = False
         if not report.passed and self.narrator.backend_name != "mock":
@@ -299,7 +299,7 @@ class HealthAgent:
             rejected_draft = answer_text
             rejected_report = report
             answer_text = self._mock_narrator.compose(brief, question_text, profile)
-            report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates, question_text)
+            report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
             used_fallback = True
             # trace.narrator_backend was set above to the *selected*
             # backend (e.g. "bedrock") before we knew a fallback would

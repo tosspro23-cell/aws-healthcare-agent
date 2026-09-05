@@ -1,5 +1,5 @@
 import { config } from "./config";
-import { getAccessToken } from "./auth";
+import { getAccessToken, handleSessionExpired } from "./auth";
 
 export interface SafetyCheck {
   name: string;
@@ -100,6 +100,14 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<unknow
 
   const body = response.status === 204 ? {} : await response.json();
   if (!response.ok) {
+    // A second independent review found that a 401 (the token expired or
+    // was revoked server-side, distinct from `getAccessToken`'s own
+    // expiry check, which only catches the token's *recorded* lifetime)
+    // was treated as an ordinary error and left the app displaying its
+    // signed-in state indefinitely, with every subsequent request
+    // failing the same way. Force back to a real signed-out state
+    // instead of leaving that stuck.
+    if (response.status === 401) handleSessionExpired();
     throw new ApiError(response.status, body.error ?? `Request failed with status ${response.status}`);
   }
   return body;

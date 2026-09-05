@@ -152,35 +152,36 @@ def test_numeric_grounding_still_does_not_bind_value_unit_pairs_to_a_specific_ma
     assert check.passed is True  # documents the gap; would ideally be False
 
 
-def test_numeric_grounding_allows_a_bare_number_echoed_from_the_question():
-    """Regression test: found live-testing the Workbench. Asked to
-    calculate a "10-year cardiovascular risk score" (not something this
-    project computes), the LLM correctly *declined* -- "I can't calculate
-    your 10-year cardiovascular risk score, that requires..." -- but this
-    safest-possible response still failed grounding, because "10" (from
-    the user's own "10-year" phrasing) matched no grounded fact. The
-    number wasn't invented; it was echoed back from the question while
-    explaining why the model can't answer. Passing `question_text` lets a
-    bare (no-unit) number that the caller already used count as grounded."""
+def test_numeric_grounding_does_not_exempt_a_fabricated_bare_number_matching_the_question():
+    """Regression test: a "question-echo" exemption (a bare, no-unit
+    number was treated as grounded if the caller's own question already
+    used it) was briefly added and then reverted -- a second independent
+    review found it let a model *affirm* a fabricated number as long as
+    the question happened to mention the same one first, not just
+    *decline* while referencing it: "Is my risk score 999?" ->
+    "Your... risk score is 999." passed safety before this revert. See
+    docs/DECISIONS.md for why this was reverted rather than patched
+    further (reliably telling "declining while citing" from "asserting as
+    fact" isn't solvable with a regex, and the risk is asymmetric)."""
     facts: list[GroundedFact] = []
-    text = "I can't calculate your 10-year cardiovascular risk score -- that requires a clinical assessment."
-    question = "Can you calculate my 10-year cardiovascular risk score from these results?"
-    check = verify_numeric_grounding(text, facts, question_text=question)
-    assert check.passed is True
-
-
-def test_numeric_grounding_question_echo_exemption_does_not_weaken_the_value_unit_check():
-    """The exemption above must stay narrow: a number that also appears in
-    the question must NOT let a *value+unit* claim (the stronger check)
-    through. "Your LDL is 500 mg/dL" must still be rejected even if the
-    question happened to mention "500" -- only bare, unit-less numbers can
-    be exempted this way."""
-    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
-    text = "Your LDL is 500 mg/dL."
-    question = "Is it true my LDL is 500?"
-    check = verify_numeric_grounding(text, facts, question_text=question)
+    text = "Your cardiovascular risk score is 999."
+    check = verify_numeric_grounding(text, facts)
     assert check.passed is False
-    assert "500mg/dL" in check.detail
+
+
+def test_numeric_grounding_rejects_irregular_spacing_and_markdown_around_a_fabricated_value():
+    """The same review found that the (now-reverted) exemption also
+    indirectly weakened the *strict* value+unit path: irregular spacing
+    ("500  mg/dL", two spaces) or Markdown emphasis ("**500** mg/dL")
+    makes `_VALUE_UNIT_RE` fail to match, so the number fell through to
+    the weaker (then-exempted) bare-number path instead of being checked
+    against real grounded values at all. With the exemption reverted, a
+    fabricated value in either irregular form must still be rejected --
+    confirmed directly rather than assumed from the revert alone."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    for text in ["Your LDL-C is 500  mg/dL.", "Your LDL-C is **500** mg/dL."]:
+        check = verify_numeric_grounding(text, facts)
+        assert check.passed is False, f"expected rejection for {text!r}"
 
 
 def test_numeric_grounding_ignores_dates_when_allowed():

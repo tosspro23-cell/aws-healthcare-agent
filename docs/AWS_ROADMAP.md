@@ -485,6 +485,28 @@ Entra/MSAL?
   review passes: [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md);
   full reasoning: `DECISIONS.md`.
 
+  **A third independent review, scoped to the frontend and public
+  hosting neither earlier pass had touched, found that a live hotfix
+  made the same day (a `question_text` numeric-grounding exemption) had
+  reopened a genuine fabrication bypass** — reverted outright rather than
+  patched further, given the asymmetry between a false positive (safe
+  answer replaced by the template) and a false negative (a fabricated
+  number reaching the user). It also found a within-topic overclaim in
+  the personalization summary (the same bug pattern round 2 had already
+  fixed elsewhere, not extended to this pair — fixing it introduced a new
+  numeric-grounding regression, caught by the full suite before calling
+  it done), four real frontend bugs (run history surviving sign-out, a
+  polling race from `setInterval`'s overlapping callbacks, a stuck-pending
+  state after a tolerated polling error, unrendered images as a data-
+  exfiltration vector, and undetected access-token expiry), and one
+  incomplete exception boundary in `get_run.py`. All 8 fixed and
+  re-verified — most live, in a real browser against both the local dev
+  server and the redeployed public URL. Redeploying all 6 stacks during
+  this round's own verification also surfaced and fixed a self-inflicted
+  CORS regression (see `DECISIONS.md`) from omitting the two-pass
+  deployment's `CARE_AGENT_WORKBENCH_URL` env var. Full findings:
+  [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md).
+
 ## Cost notes
 
 - Lambda / DynamoDB / API Gateway / Step Functions / Cognito are effectively

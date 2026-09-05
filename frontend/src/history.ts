@@ -12,6 +12,15 @@
  * cleared site data will show an empty history even though the runs
  * themselves are still sitting in DynamoDB, retrievable directly by
  * run_id if you know it.
+ *
+ * Cleared on sign-out (see `auth.ts`'s `signOut()`), not just the access
+ * token: an independent review found that signing out only cleared
+ * `sessionStorage` (the token, the PKCE verifier), leaving this
+ * `localStorage` history -- including full question text -- readable by
+ * whoever signs into the same browser next. The backend's ownership
+ * check still stops a second account from *fetching* the first
+ * account's run result, but the question text itself was already
+ * exposed here without any backend call at all.
  */
 
 const STORAGE_KEY = "care_agent_run_history";
@@ -42,4 +51,12 @@ export function addHistoryEntry(entry: HistoryEntry): HistoryEntry[] {
     // run itself is still safely in DynamoDB regardless
   }
   return next;
+}
+
+export function clearHistory(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // best-effort, same as addHistoryEntry above
+  }
 }
