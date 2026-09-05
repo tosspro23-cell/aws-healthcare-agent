@@ -170,6 +170,35 @@ def test_start_run_handler_can_start_executions():
     assert "states:StartExecution" in actions
 
 
+def test_start_run_handler_can_describe_executions():
+    """Regression test: a second independent review found that
+    start_run.py's ExecutionAlreadyExists handling calls DescribeExecution
+    to compare the existing run's real input/status, but the handler's IAM
+    role only ever had grant_start_execution (StartExecution only). A real
+    deployment would 403 on every duplicate run_id submission --
+    undetected by moto-mocked lambda tests, which don't enforce IAM. This
+    is checked against the *specific* role attached to StartRunHandler's
+    function, not "some policy somewhere has this action," so a grant
+    accidentally attached to the wrong handler wouldn't pass by accident.
+    """
+    template = _synth_stacks()
+    functions = template.find_resources("AWS::Lambda::Function")
+    start_run_logical_id = next(lid for lid, res in functions.items() if "StartRunHandler" in lid)
+    start_run_role_ref = functions[start_run_logical_id]["Properties"]["Role"]["Fn::GetAtt"][0]
+
+    policies = template.find_resources("AWS::IAM::Policy")
+    matching_actions: list[str] = []
+    for policy in policies.values():
+        roles = policy["Properties"].get("Roles", [])
+        if not any(isinstance(r, dict) and r.get("Ref") == start_run_role_ref for r in roles):
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            matching_actions.extend(action if isinstance(action, list) else [action])
+
+    assert "states:DescribeExecution" in matching_actions
+
+
 def test_cancel_run_handler_can_stop_executions():
     template = _synth_stacks()
     policies = template.find_resources("AWS::IAM::Policy")

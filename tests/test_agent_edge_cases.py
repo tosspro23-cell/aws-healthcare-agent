@@ -95,6 +95,51 @@ def test_trend_unit_mismatch_does_not_invent_direction(dataset_builder):
     assert "different units" in response.answer.lower()
 
 
+def test_trend_answer_for_a_non_focus_marker_is_safe(dataset_builder):
+    """Regression test: a second independent review found that the trend
+    intent's `latest value`/`previous value` GroundedFacts were built
+    without a `unit`, even though `verify_numeric_grounding` requires a
+    (value, unit) pair for any number immediately followed by a recognized
+    unit. When the marker isn't also a "focus item" (i.e. its
+    classification isn't elevated/borderline, so it never gets a
+    unit-carrying fact from the focus-ranking path either), the *only*
+    grounding for that value came from these trend facts -- so a real
+    answer like "148 mg/dL" failed grounding purely because the trend fact
+    that legitimately sourced it had no unit attached. Reproduced live
+    against this project's own shipped sample data before the fix
+    (`Is my LDL getting worse?` returned `safe=False`)."""
+    bloodwork = {
+        "user_id": "user_demo_001",
+        "dataset_version": "v1",
+        "latest_panel": {
+            "panel_id": "panel_new",
+            "measurement_date": "2026-05-06",
+            "overall_flags": [],
+            "biomarkers": [
+                {
+                    "concept_id": "ldl_c_mg_dl",
+                    "display_name": "LDL-C",
+                    "value": 95,
+                    "unit": "mg/dL",
+                    "classification": "optimal",  # not a focus item -- severity_weight <= 0
+                    "action_fields": [],
+                }
+            ],
+        },
+        "previous_panels": [
+            {
+                "panel_id": "panel_old",
+                "measurement_date": "2025-01-01",
+                "biomarkers": [{"concept_id": "ldl_c_mg_dl", "display_name": "LDL-C", "value": 105, "unit": "mg/dL"}],
+            }
+        ],
+    }
+    path = dataset_builder(bloodwork=bloodwork)
+    agent = _agent_for(path)
+    response = agent.ask(user_id="user_demo_001", question_text="Is my LDL getting worse?")
+    assert response.safe is True
+
+
 # -- 4. Extreme value -----------------------------------------------------
 def test_extreme_value_is_reported_verbatim_not_altered(dataset_builder):
     bloodwork = {

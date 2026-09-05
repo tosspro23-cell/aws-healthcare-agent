@@ -14,6 +14,7 @@ Keeping reasoning and narration separate means:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from care_agent.catalog import BiomarkerCatalog
@@ -84,6 +85,21 @@ def importance_weight(catalog_entry: CatalogEntry | None) -> float:
     return _IMPORTANCE_WEIGHTS.get(catalog_entry.importance.lower(), 1.0)
 
 
+_DETAIL_NUMBER_RE = re.compile(r"\d+\.?\d*")
+
+
+def _numbers_in(text: str) -> tuple[float, ...]:
+    """Extract any numbers literally present in a questionnaire caution's
+    own ``detail`` text (e.g. the "2" in "type 2 diabetes"), so a
+    ``GroundedFact`` that quotes that detail verbatim in its rendered
+    ``text`` doesn't get flagged as containing an *ungrounded* number by
+    ``safety.verify_numeric_grounding``. This number came from the actual
+    reported data, not a narrator inventing it -- it just needs to be
+    registered as grounded like any other sourced value.
+    """
+    return tuple(float(m) for m in _DETAIL_NUMBER_RE.findall(text))
+
+
 @dataclass(frozen=True)
 class FocusItem:
     marker: Biomarker
@@ -124,17 +140,25 @@ class QuestionnaireModifier:
 def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[QuestionnaireModifier]:
     modifiers: list[QuestionnaireModifier] = []
 
-    if context.has_caution_kind("exercise_limitation"):
+    exercise_caution = context.caution("exercise_limitation")
+    if exercise_caution is not None:
         pref = next((p for p in context.preferences if p.field == "exercise.preference"), None)
         pref_text = f" ({pref.value.replace('_', ' ')} preferred)" if pref else ""
+        # Render the caution's own reported detail rather than a hardcoded
+        # "knee pain with running/jumping" -- an independent review caught
+        # that this modifier asserted a specific limitation regardless of
+        # what the questionnaire actually reported (the same "policy for
+        # one case applied to a different case" failure mode as the
+        # medication/allergy cautions below).
         modifiers.append(
             QuestionnaireModifier(
                 topic="exercise",
-                text=f"prefer low-impact activity{pref_text} over running or jumping, given reported knee pain",
+                text=f"prefer low-impact activity{pref_text}, given the reported exercise limitation: {exercise_caution.detail}",
                 grounded_fact=GroundedFact(
-                    claim="questionnaire reports knee pain with running/jumping",
+                    claim=f"questionnaire reports exercise limitation: {exercise_caution.detail}",
                     source_type="questionnaire",
                     source_ref="cautions.exercise_limitation",
+                    numeric_values=_numbers_in(exercise_caution.detail),
                 ),
             )
         )
@@ -159,10 +183,20 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
             source_refs.append("facts.nutrition.vegetables")
         pref = next((p for p in context.preferences if p.field == "nutrition.preference"), None)
         pref_text = f", leaning on {pref.value.replace('_', ' ')}" if pref else ""
+        # The visible modifier text, like the claim above it, must reflect
+        # only the signal(s) that actually triggered -- an independent
+        # review caught that round 2's fix corrected `claim`/`source_ref`
+        # but left this `text` (what the narrator actually renders into the
+        # answer) unconditionally naming both signals.
+        nutrition_action_parts = []
+        if sugary_triggered:
+            nutrition_action_parts.append("reducing sugary foods")
+        if veg_triggered:
+            nutrition_action_parts.append("adding vegetables")
         modifiers.append(
             QuestionnaireModifier(
                 topic="nutrition",
-                text=f"prioritize reducing sugary foods and adding vegetables{pref_text}",
+                text=f"prioritize {' and '.join(nutrition_action_parts)}{pref_text}",
                 grounded_fact=GroundedFact(
                     claim=f"questionnaire reports {' and '.join(reported_parts)}",
                     source_type="questionnaire",
@@ -203,7 +237,7 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
         modifiers.append(
             QuestionnaireModifier(
                 topic="pacing",
-                text="keep the plan to a small number of simultaneous changes given reported short sleep and high stress",
+                text=f"keep the plan to a small number of simultaneous changes given reported {' and '.join(reported_parts)}",
                 grounded_fact=GroundedFact(
                     claim=f"questionnaire reports {' and '.join(reported_parts)}",
                     source_type="questionnaire",
@@ -212,23 +246,48 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
             )
         )
 
-    if context.has_caution_kind("family_history_context"):
+    family_history_caution = context.caution("family_history_context")
+    if family_history_caution is not None:
+        # Same fix as the exercise-limitation modifier above: render the
+        # caution's actual reported detail instead of a hardcoded "type 2
+        # diabetes" claim that would be wrong for any other family-history
+        # detail this caution kind might carry.
         modifiers.append(
             QuestionnaireModifier(
                 topic="family_history",
                 text=(
-                    "treat clinician follow-up as a bit more of a priority given the reported "
-                    "family history, without treating it as proof of a condition"
+                    f"treat clinician follow-up as a bit more of a priority given the reported "
+                    f"family history ({family_history_caution.detail}), without treating it as "
+                    "proof of a condition"
                 ),
                 grounded_fact=GroundedFact(
-                    claim="questionnaire reports first-degree family history of type 2 diabetes",
+                    claim=f"questionnaire reports family history context: {family_history_caution.detail}",
                     source_type="questionnaire",
                     source_ref="cautions.family_history_context",
+                    numeric_values=_numbers_in(family_history_caution.detail),
                 ),
             )
         )
 
     return modifiers
+
+
+_NEGATION_CUES = ("denies", "denied", "no ", "not ", "without", "negative for", "does not")
+
+
+def _affirmatively_mentions(detail: str, keyword: str) -> bool:
+    """True only if ``detail`` mentions ``keyword`` as a positive report,
+    not a denial. A bare substring match on ``keyword`` alone used to treat
+    "Patient denies levothyroxine use" the same as "Reports levothyroxine
+    use" -- an independent review caught this. This is a coarse heuristic
+    (a negation cue anywhere in the same short caution sentence suppresses
+    the claim), not full negation parsing, but it makes silence the safe
+    default instead of a confident wrong claim.
+    """
+    lowered = detail.lower()
+    if keyword not in lowered:
+        return False
+    return not any(cue in lowered for cue in _NEGATION_CUES)
 
 
 def build_supplement_cautions(context: QuestionnaireContext, profile: UserProfile) -> list[QuestionnaireModifier]:
@@ -250,7 +309,7 @@ def build_supplement_cautions(context: QuestionnaireContext, profile: UserProfil
     cautions: list[QuestionnaireModifier] = []
     medication_caution = context.caution("medication_context")
     levothyroxine_reported = any(m.name == "levothyroxine" for m in profile.medications) or (
-        medication_caution is not None and "levothyroxine" in medication_caution.detail.lower()
+        medication_caution is not None and _affirmatively_mentions(medication_caution.detail, "levothyroxine")
     )
     if levothyroxine_reported:
         cautions.append(
@@ -270,7 +329,7 @@ def build_supplement_cautions(context: QuestionnaireContext, profile: UserProfil
 
     allergy_caution = context.caution("allergy_context")
     shellfish_allergy_reported = any(a.name == "shellfish" for a in profile.allergies) or (
-        allergy_caution is not None and "shellfish" in allergy_caution.detail.lower()
+        allergy_caution is not None and _affirmatively_mentions(allergy_caution.detail, "shellfish")
     )
     if shellfish_allergy_reported:
         cautions.append(

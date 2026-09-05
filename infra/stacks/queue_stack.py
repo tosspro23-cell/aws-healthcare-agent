@@ -89,7 +89,9 @@ class QueueStack(Stack):
             timeout=Duration.seconds(10),
             environment={"RUNS_TABLE_NAME": runs_table.table_name, "JOBS_QUEUE_URL": self.queue.queue_url},
         )
-        runs_table.grant_write_data(self.enqueue_job_handler)
+        # `enqueue_job.py` `put_item`s the initial record and `update_item`s
+        # a compensating failure write -- never deletes or batch-writes.
+        runs_table.grant(self.enqueue_job_handler, "dynamodb:PutItem", "dynamodb:UpdateItem")
         self.queue.grant_send_messages(self.enqueue_job_handler)
 
         process_job_handler = _lambda.Function(
@@ -102,7 +104,9 @@ class QueueStack(Stack):
             memory_size=512,
             environment={"RUNS_TABLE_NAME": runs_table.table_name, "CARE_AGENT_NARRATOR_BACKEND": "bedrock"},
         )
-        runs_table.grant_write_data(process_job_handler)
+        # `process_job.py` only ever `update_item`s (conditional writes for
+        # the RUNNING/terminal transitions).
+        runs_table.grant(process_job_handler, "dynamodb:UpdateItem")
         grant_bedrock_invoke(process_job_handler)
         process_job_handler.add_event_source(
             lambda_event_sources.SqsEventSource(self.queue, batch_size=1, max_concurrency=_MAX_CONCURRENT_CONSUMERS)

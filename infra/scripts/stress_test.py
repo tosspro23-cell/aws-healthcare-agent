@@ -300,9 +300,15 @@ def _start_and_poll_execution(
         item = dynamodb_table.get_item(Key={"run_id": run_id}).get("Item")
         if item and item.get("status") not in (None, "RUNNING"):
             elapsed = time.monotonic() - start
+            # `status == "SUCCEEDED"` alone isn't enough: the application
+            # can complete and still return an unsafe answer (`safe=False`),
+            # and this harness's own success definition must not count that
+            # as a success -- otherwise it disagrees with `_invoke_ask_handler`
+            # (the sync path), which already requires `safe is True`. A
+            # second independent review caught this inconsistency.
             return CallResult(
                 run_id,
-                item["status"] == "SUCCEEDED",
+                item["status"] == "SUCCEEDED" and item.get("safe") is True,
                 item["status"],
                 elapsed,
                 detail=str(item.get("answer", item.get("error_message", "")))[:200],
@@ -360,9 +366,12 @@ def _enqueue_and_poll(lambda_client, dynamodb_table, enqueue_fn_name: str, run_i
         item = dynamodb_table.get_item(Key={"run_id": run_id}).get("Item")
         if item and item.get("status") not in ("QUEUED", "RUNNING"):
             elapsed = time.monotonic() - start
+            # Same fix as `_start_and_poll_execution`: require `safe=True`,
+            # not just a terminal `SUCCEEDED` status, to agree with the
+            # sync path's success definition.
             return CallResult(
                 run_id,
-                item["status"] == "SUCCEEDED",
+                item["status"] == "SUCCEEDED" and item.get("safe") is True,
                 item["status"],
                 elapsed,
                 detail=str(item.get("answer", item.get("error_message", "")))[:200],

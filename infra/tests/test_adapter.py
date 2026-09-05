@@ -103,6 +103,29 @@ def test_happy_path_writes_s3_evidence_object(aws_resources):
     assert len(trace["grounded_facts"]) > 0
 
 
+def test_s3_write_failure_marks_the_run_failed_not_falsely_succeeded(aws_resources):
+    """Regression test: a second independent review found that the
+    DynamoDB record used to be marked SUCCEEDED *before* the S3 evidence
+    write, with no handling if that write then failed -- leaving a record
+    that permanently claims success with no evidence ever written, and
+    (because the run_id is already claimed by the conditional-create
+    guard) not even retryable under the same run_id. The fix writes
+    evidence first and marks the record FAILED, not SUCCEEDED, if it
+    doesn't land."""
+    from unittest.mock import patch
+
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "What should I focus on first?", "run_id": "s3-fail-1"})
+    with patch.object(adapter, "_s3") as mock_s3_factory:
+        mock_s3_factory.return_value.put_object.side_effect = Exception("simulated S3 failure")
+        result = adapter.handler(event, None)
+
+    assert result["statusCode"] == 500
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(os.environ["RUNS_TABLE_NAME"])
+    item = table.get_item(Key={"run_id": "s3-fail-1"})["Item"]
+    assert item["status"] == "FAILED"
+    assert "answer" not in item
+
+
 def test_missing_user_id_returns_400(aws_resources):
     event = _api_gateway_event({"question": "hello"})
     result = adapter.handler(event, None)

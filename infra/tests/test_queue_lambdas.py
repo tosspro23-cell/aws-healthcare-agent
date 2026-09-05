@@ -143,6 +143,40 @@ def test_enqueue_writes_failed_status_instead_of_orphaning_the_record_when_send_
     assert "error_message" in item
 
 
+def test_enqueue_compensating_write_does_not_clobber_a_job_a_consumer_already_finished(aws_resources):
+    """Regression test: a second independent review found that the
+    compensating write above was unconditional -- but an SDK exception
+    from send_message doesn't prove SQS rejected the message. It can mean
+    the send actually succeeded and only the *response* was lost (e.g. a
+    read timeout), in which case a consumer can already be processing --
+    or have finished -- the job by the time this handler's except block
+    runs. An unconditional overwrite would clobber that real outcome back
+    to FAILED. Simulated here by having a consumer finish the job (write
+    SUCCEEDED) *before* the compensating write's conditional update runs;
+    the fix (conditioned on the record still being QUEUED) must leave that
+    SUCCEEDED record alone."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": "job-ambiguous-send"})
+
+    def _consumer_finishes_then_raise(*args, **kwargs):
+        table.update_item(
+            Key={"run_id": "job-ambiguous-send"},
+            UpdateExpression="SET #status = :s, answer = :a, safe = :safe",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":s": "SUCCEEDED", ":a": "a real answer", ":safe": True},
+        )
+        raise RuntimeError("simulated response-loss timeout after the message actually sent")
+
+    with patch("enqueue_job._sqs") as mock_sqs_fn:
+        mock_sqs_fn.return_value.send_message.side_effect = _consumer_finishes_then_raise
+        result = enqueue_job.handler(event, None)
+
+    assert result["statusCode"] == 500
+    item = table.get_item(Key={"run_id": "job-ambiguous-send"})["Item"]
+    assert item["status"] == "SUCCEEDED"
+    assert item["answer"] == "a real answer"
+
+
 def test_enqueue_invalid_json_body_returns_400(aws_resources):
     result = enqueue_job.handler({"body": "{not valid json"}, None)
     assert result["statusCode"] == 400

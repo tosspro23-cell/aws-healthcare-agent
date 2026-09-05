@@ -119,6 +119,39 @@ def test_numeric_grounding_still_flags_a_number_matching_an_ordinal_value_used_e
     assert "5mg/dL" in check.detail or "5" in check.detail
 
 
+def test_numeric_grounding_does_not_flag_digits_embedded_in_the_unit_itself():
+    """Regression test: a second independent review found that the fix for
+    the previous finding only excluded the *value*'s own span from the
+    fallback bare-number scan, not the full value+unit match -- so a unit
+    that itself contains digits (eGFR's "mL/min/1.73m2") had its embedded
+    "1.73" re-discovered as a second, unrelated "number" and rejected as
+    ungrounded. Reproduced live: a real eGFR answer ("Your latest eGFR is
+    91 mL/min/1.73m2") failed grounding for exactly this reason. The fix
+    excludes the *entire* value+unit match span, not just the value."""
+    facts = [GroundedFact(claim="egfr", source_type="bloodwork", source_ref="p1:egfr", numeric_values=(91.0,), unit="mL/min/1.73m2")]
+    check = verify_numeric_grounding("Your latest eGFR is 91 mL/min/1.73m2 (adequate).", facts)
+    assert check.passed is True
+
+
+def test_numeric_grounding_still_does_not_bind_value_unit_pairs_to_a_specific_marker():
+    """Known, deliberately unfixed limitation (see
+    docs/INDEPENDENT_REVIEW_FINDINGS.md, finding #6 of the second
+    independent review): value+unit grounding checks that *some* fact
+    carries this exact (value, unit) pair, not that the text's claimed
+    marker (e.g. "LDL-C") is the one that actually has it. Two markers
+    sharing a unit (very common -- LDL/HDL/triglycerides/total cholesterol
+    are all mg/dL) can still be swapped without detection. Closing this
+    needs structured claim rendering (binding concept + value + unit +
+    date together), not a quick patch -- documented as an open backlog
+    item, the same way finding #3's outbox gap is."""
+    facts = [
+        GroundedFact(claim="triglycerides", source_type="bloodwork", source_ref="p1:trig", numeric_values=(188.0,), unit="mg/dL"),
+        GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(130.0,), unit="mg/dL"),
+    ]
+    check = verify_numeric_grounding("Your LDL-C is 188 mg/dL.", facts)
+    assert check.passed is True  # documents the gap; would ideally be False
+
+
 def test_numeric_grounding_ignores_dates_when_allowed():
     facts: list[GroundedFact] = []
     check = verify_numeric_grounding("Measured on 2026-05-06.", facts, allowed_dates={"2026-05-06"})

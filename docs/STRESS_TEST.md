@@ -334,8 +334,9 @@ Closed:
   load-tested head-to-head against Step Functions' retry-based approach
   at identical burst sizes, not just discussed as a hypothetical --
   proved the two have a genuine, quantified trade-off (latency vs
-  guaranteed eventual success) rather than one strictly dominating the
-  other.
+  substantially higher measured success capacity, not an unconditional
+  guarantee -- see the 2026-09-05 correction above) rather than one
+  strictly dominating the other.
 
 Still open / deliberately not done here (see `docs/AWS_ROADMAP.md`):
 - No fix for Bedrock-side throttling specifically (a `ThrottlingException`
@@ -357,9 +358,10 @@ Still open / deliberately not done here (see `docs/AWS_ROADMAP.md`):
   synthetic one. Discussed explicitly with the user and deliberately
   deferred: no real traffic exists yet to justify it, and raising it
   wouldn't have changed either comparison's conclusion (Step Functions
-  retry still has a bounded budget; SQS buffering still trades latency
-  for guaranteed success) -- it would only move where the specific
-  numbers land.
+  retry still has a bounded budget; SQS buffering still trades latency for
+  substantially higher measured success capacity, not a guarantee -- see
+  the 2026-09-05 correction above) -- it would only move where the
+  specific numbers land.
 - `enqueue_job.py` itself has no explicit throttling retry (there's no
   Step-Functions-style `add_retry` equivalent for a Lambda invoked
   directly by API Gateway) -- in practice its own concurrent-execution

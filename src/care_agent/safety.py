@@ -193,7 +193,15 @@ def verify_numeric_grounding(
 
     for match in _VALUE_UNIT_RE.finditer(text_without_dates):
         raw_value, raw_unit = match.group(1), match.group(2)
-        consumed_spans.append(match.span(1))
+        # The *full* match span (value + unit) is what must be excluded from
+        # the bare-number scan below, not just the value's own span: a unit
+        # like "mL/min/1.73m2" contains digits of its own ("1.73"), which
+        # `_NUMBER_RE` would otherwise re-discover as a second, unrelated
+        # "number" and reject as ungrounded -- a real regression an
+        # independent review caught (a live eGFR answer like "91 mL/min/
+        # 1.73m2" failed grounding solely because of the "1.73" inside the
+        # unit string itself).
+        consumed_spans.append(match.span())
         try:
             value = float(raw_value)
         except ValueError:
@@ -203,7 +211,7 @@ def verify_numeric_grounding(
 
     for match in _NUMBER_RE.finditer(text_without_dates):
         span = match.span()
-        if span in ordinal_spans or span in consumed_spans:
+        if span in ordinal_spans or any(start <= span[0] and span[1] <= end for start, end in consumed_spans):
             continue
         raw = match.group()
         try:

@@ -341,6 +341,27 @@ def test_cancel_run_cancels_a_queued_sqs_job_without_attempting_stop_execution(r
     assert item["status"] == "CANCELLED"
 
 
+def test_cancel_run_refuses_to_cancel_a_synchronous_ask_run(runs_table):
+    """Regression test: a second independent review found that cancelling
+    a synchronous /ask run (execution_type=SYNC) used to be accepted (its
+    condition only checked owner+status, not execution_type) and reported
+    200 CANCELLED -- but adapter.py's own terminal write for that run is
+    unconditional, so the moment the in-flight agent call finished, the
+    CANCELLED record was silently overwritten back to SUCCEEDED/FAILED.
+    There's also no execution to actually stop for a synchronous call.
+    Correct behavior: refuse the cancellation outright (409), not report a
+    success that won't stick."""
+    runs_table.put_item(Item={"run_id": "sync-1", "status": "RUNNING", "owner_sub": _DEFAULT_CALLER_SUB, "execution_type": "SYNC"})
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": "arn:aws:states:us-east-1:123456789012:stateMachine:fake"}):
+        cancel_run._sfn_client = None
+        result = cancel_run.handler(_api_event(path_params={"run_id": "sync-1"}), None)
+
+    assert result["statusCode"] == 409
+    item = runs_table.get_item(Key={"run_id": "sync-1"})["Item"]
+    assert item["status"] == "RUNNING"
+
+
 def test_cancel_run_loses_race_when_already_finalized(runs_table, state_machine_arn):
     runs_table.put_item(
         Item={

@@ -8,6 +8,142 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — A second independent review, scoped to *verify* round-1's fixes, found real regressions in them; fixed
+
+**Context**: After the first independent review's 13 findings were fixed
+(see the entries below), a second independent review was deliberately
+scoped as a verification pass rather than a from-scratch re-scan: for
+each "fixed" finding, does the fix actually close the gap, or only the
+specific reproduction originally reported -- and did fixing it introduce
+a new problem? Every claim below was independently reproduced against
+this repo's own code before being trusted, the same standard applied
+throughout this project.
+
+**What it found, confirmed real**:
+
+1. **A regression that broke ordinary, previously-safe answers.**
+   Finding #4's value+unit binding fix (see the numeric-grounding entry
+   below) required a `GroundedFact.unit` to be populated for the strict
+   check to apply -- but the trend intent's `latest value`/`previous
+   value` facts were never given one, even though `trend.py` already
+   computed it. Reproduced live against this project's own sample data at
+   commit `3985ce4`: `Is my LDL getting worse?`, `Is my HbA1c getting
+   worse?`, and `What is my eGFR?` all returned `safe=False`, each for a
+   different reason under the same root cause (a value's only grounding
+   source lacked a unit) plus a second bug (the eGFR unit string
+   `mL/min/1.73m2` contains its own digits, which the fallback bare-number
+   scan re-discovered as a second, unrelated "ungrounded number" because
+   only the *value*'s span, not the full value+unit match, was excluded
+   from that scan).
+2. **A synchronous run's cancellation could be silently undone.** The
+   ownership+status condition added for finding #1 never excluded
+   `execution_type = "SYNC"`, so a `/ask` run in flight could be marked
+   `CANCELLED` -- and then have that overwritten back to `SUCCEEDED`/
+   `FAILED` the moment `adapter.py`'s own unconditional terminal write
+   landed, since there was never an execution to actually stop.
+3. **A new IAM gap in code added to close finding #13.** `start_run.py`'s
+   `ExecutionAlreadyExists` handling calls `DescribeExecution` to compare
+   the existing run's real input, but `StartRunHandler`'s role only ever
+   had `StartExecution`. This would `AccessDenied` on every duplicate
+   `run_id` submission against the real account -- invisible to
+   moto-mocked tests, which don't enforce IAM.
+4. **The finding-#3 compensating write could clobber a real outcome.** An
+   SDK exception from `send_message` doesn't prove SQS rejected the
+   message -- it can mean the send succeeded and only the *response* was
+   lost, in which case a consumer could already be processing or have
+   finished the job. The unconditional compensating write would clobber
+   that back to `FAILED`.
+5. **A new inconsistency in `adapter.py`'s write order.** The DynamoDB
+   record was marked `SUCCEEDED` before the S3 evidence write, with no
+   handling if that write then failed -- leaving a record permanently
+   claiming success with no evidence, and (because the conditional-create
+   guard added for finding #2 now blocks it) not retryable under the same
+   `run_id`.
+6. **Finding #4's fix incompletely closes the original gap.** The
+   value+unit check verifies *some* fact carries that exact pair, not
+   that the text's claimed marker is the one that actually has it -- two
+   markers sharing a unit (LDL/HDL/triglycerides/total cholesterol are
+   all `mg/dL`) can still be swapped without detection.
+7. **Finding #5's fix was incomplete.** It corrected the pacing/nutrition
+   modifiers' `GroundedFact.claim` (metadata) but left `text` -- what the
+   narrator actually renders -- still unconditionally naming both
+   signals. The existing regression test for this only asserted on
+   `claim`, not `text`, so it passed despite the bug. Separately, the
+   medication/allergy cautions treated a bare substring match as positive
+   evidence, so a denial ("Patient denies levothyroxine use") still
+   produced an affirmative claim.
+8. **The same bug pattern as finding #5, in two modifiers round 1 didn't
+   touch.** `exercise_limitation` and `family_history_context` hardcoded
+   a specific claim regardless of what the caution's own `detail` said.
+9. **Finding #2's conditional-write fix doesn't cover overlapping
+   deliveries or reconciliation.** `RUNNING -> RUNNING` is still allowed,
+   so two concurrent SQS deliveries can both invoke the agent; a record
+   stuck `RUNNING` after repeated consumer failures has no reconciliation
+   against the DLQ.
+10. **The stress-harness unification (see the entry below) was itself
+    incomplete.** Both async success checks still accepted
+    `status == "SUCCEEDED"` alone, without also requiring `safe is True`
+    -- disagreeing with the sync path, which already required both.
+11. **`run_id_validation.py` missed some of AWS's own documented invalid
+    characters**: the surrogate range and the two Unicode noncharacters,
+    reachable via a JSON body's `\uXXXX` escapes.
+12. **Finding #11's IAM narrowing was itself incomplete.**
+    `grant_write_data` still includes `DeleteItem`/`BatchWriteItem`,
+    unused by `adapter.py`; the same over-grant pattern was untouched on
+    every other DynamoDB-writing handler.
+13. **Several documentation claims overstated the post-fix state**:
+    `README.md`'s "provably grounded" and "never echoes the question"
+    (true for the deterministic narrator's own output construction, not a
+    structural guarantee about what reaches an LLM narrator as input,
+    since `llm_narrator.py` puts the raw question directly into the
+    prompt); a few remaining "guaranteed eventual success" phrases the
+    original correction missed; and a CloudWatch `Invocations` count
+    presented as proof of Lambda origin when that metric is model-level,
+    not caller-level.
+
+**Decision**: Fixed all of 1-5 (the regressions), 7, 8, 10, 11, 12, and 13
+directly, each with a new or extended regression test reproducing the
+specific failure mode. Did **not** attempt 6 (cross-marker value/unit
+binding) or 9 (a processing lease + DLQ reconciliation) in this pass --
+both need a real design change (structured claim rendering; a reclaimable
+lease with attempt ownership), not a quick patch, and forcing one in
+without the same care given to the rest of this project's architecture
+would risk the same class of regression this whole review cycle just
+caught. Documented both as open backlog items in
+`docs/INDEPENDENT_REVIEW_FINDINGS.md`, the same way finding #3's
+crash-between-calls gap already was, rather than silently left unrecorded.
+
+**A note on how #8 was fixed, since it introduced its own near-miss**:
+rendering the caution's raw `detail` text directly (instead of an assumed
+specific claim) means any number literally present in that text --
+e.g. the "2" in "type 2 diabetes" -- now appears in the visible answer.
+The first version of this fix broke `test_agent_edge_cases.py` and
+`test_agent_main_question.py` because that "2" wasn't registered as a
+grounded value and `verify_numeric_grounding` correctly flagged it as
+ungrounded. Fixed by extracting any numbers present in the caution's own
+`detail` into the corresponding `GroundedFact.numeric_values` -- they're
+sourced from real reported data, not narrator invention, so they should
+be grounded, just like any other sourced value. Noted here because it's
+exactly the kind of self-inflicted regression this whole review cycle is
+about, caught by running the full test suite before considering the fix
+done rather than only the specific new test written for it.
+
+**Verification**: Full kernel suite (141 tests, up from 135) and full
+infra suite (129 tests, up from 125) both pass; `ruff`/`ruff format`/
+`mypy` clean on both; `cdk synth --all` succeeds with the new IAM grants.
+The three originally-failing live questions (LDL trend, HbA1c trend,
+eGFR) were re-run against the real pipeline after the fix and now return
+`safe=True`. The `states:DescribeExecution` grant and the per-handler IAM
+narrowing were verified against the real synthesized CloudFormation
+template, not assumed from the CDK call alone. No new `cdk deploy` was
+made in this pass -- unlike the two rounds before it, these fixes were
+verified against synthesized templates and moto-mocked/kernel tests, not
+re-deployed and re-exercised against the live account. That's a smaller
+verification bar than the first two rounds held themselves to, disclosed
+here rather than implied otherwise.
+
+---
+
 ## 2026-09-05 — `stress_test.py`'s success definition was inconsistent across commands; unified
 
 **Context**: An independent review pointed out that `burst-async`'s
@@ -729,9 +865,13 @@ Phase 3's live verification -- no browser login needed):
    exactly the kind of thing worth actually measuring, not assuming).
 4. Cross-checked all three against `CloudWatch`'s `AWS/Bedrock`
    `Invocations` metric for the model: 3 → 6 across exactly these 3 calls,
-   re-queried before and after -- independent confirmation the calls
-   originated from AWS-side infrastructure (the Lambdas), not from a local
-   process again.
+   re-queried before and after. **Correction (2026-09-05)**: a second
+   independent review correctly noted this metric is model-level, not
+   caller-level -- it confirms 3 real Bedrock calls happened, not
+   specifically that they came from the Lambdas rather than a local
+   process using the same account. The actual evidence of Lambda origin is
+   that each call was made by invoking the Lambda/state machine directly
+   by name, not the CloudWatch count alone.
 
 **Consequence**: This closes Phase 4 completely -- both "at least one
 real, non-mocked call" and "scoped IAM in a deployed Lambda" are done and

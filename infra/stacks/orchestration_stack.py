@@ -77,7 +77,12 @@ class OrchestrationStack(Stack):
             timeout=Duration.seconds(10),
             environment=common_env,
         )
-        runs_table.grant_write_data(mark_running_handler)
+        # `mark_running.py` only ever `put_item`s (a conditional create) --
+        # `grant_write_data` also grants UpdateItem/DeleteItem/BatchWriteItem,
+        # none of which this handler calls. A second independent review
+        # found this same over-grant pattern (already fixed for AskHandler)
+        # applied to every other write-only handler here too.
+        runs_table.grant(mark_running_handler, "dynamodb:PutItem")
 
         agent_task_handler = _lambda.Function(
             self,
@@ -100,7 +105,8 @@ class OrchestrationStack(Stack):
             timeout=Duration.seconds(10),
             environment=common_env,
         )
-        runs_table.grant_write_data(record_result_handler)
+        # `record_result.py` only ever `update_item`s the terminal state.
+        runs_table.grant(record_result_handler, "dynamodb:UpdateItem")
 
         self.start_run_handler = _lambda.Function(
             self,
@@ -120,7 +126,10 @@ class OrchestrationStack(Stack):
             timeout=Duration.seconds(10),
             environment=common_env,
         )
-        runs_table.grant_read_data(self.get_run_handler)
+        # `get_run.py` only ever `get_item`s by exact key -- `grant_read_data`
+        # also grants Scan/Query/BatchGetItem/ConditionCheckItem/DescribeTable,
+        # none of which this handler calls.
+        runs_table.grant(self.get_run_handler, "dynamodb:GetItem")
 
         self.cancel_run_handler = _lambda.Function(
             self,
@@ -131,7 +140,11 @@ class OrchestrationStack(Stack):
             timeout=Duration.seconds(10),
             environment=common_env,
         )
-        runs_table.grant_read_write_data(self.cancel_run_handler)
+        # `cancel_run.py` only ever `get_item`s (the not-found/conflict
+        # fallback path) and `update_item`s (the conditional cancellation
+        # write) -- `grant_read_write_data` also grants PutItem/DeleteItem/
+        # BatchWriteItem/Scan/Query/BatchGetItem, none of which it calls.
+        runs_table.grant(self.cancel_run_handler, "dynamodb:GetItem", "dynamodb:UpdateItem")
 
         # -- state machine definition ---------------------------------------
         # Bounded retry for transient Lambda-service-level throttling
@@ -256,6 +269,12 @@ class OrchestrationStack(Stack):
         )
 
         self.state_machine.grant_start_execution(self.start_run_handler)
+        # start_run.py's ExecutionAlreadyExists handling calls DescribeExecution
+        # to compare the existing run's real input/status -- grant_start_execution
+        # alone only grants StartExecution, so that call would fail with
+        # AccessDenied against a real deployment (undetected by moto-mocked
+        # tests, which don't enforce IAM). An independent review caught this.
+        self.state_machine.grant_execution(self.start_run_handler, "states:DescribeExecution")
         self.state_machine.grant_execution(self.cancel_run_handler, "states:StopExecution")
 
         self.start_run_handler.add_environment("STATE_MACHINE_ARN", self.state_machine.state_machine_arn)

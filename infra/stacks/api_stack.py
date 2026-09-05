@@ -62,11 +62,15 @@ class ApiStack(Stack):
             },
         )
         # adapter.py only ever put_item/update_item (never reads a run
-        # record back) and put_object (never reads evidence back) --
-        # grant_write_data/grant_put, not the broader read_write grants
-        # this originally had. An independent review found these grants
-        # exceeded what the handler actually does; see docs/DECISIONS.md.
-        runs_table.grant_write_data(ask_handler)
+        # record back, never deletes, never batch-writes) and put_object
+        # (never reads evidence back) -- an independent review found the
+        # original grant_read_write_data/grant_read_write exceeded what the
+        # handler does, and a second review found that even
+        # grant_write_data still over-grants: it includes DeleteItem and
+        # BatchWriteItem, neither of which this handler calls. Enumerating
+        # exactly the two actions used keeps the grant tied to actual
+        # behavior instead of a broader convenience bucket.
+        runs_table.grant(ask_handler, "dynamodb:PutItem", "dynamodb:UpdateItem")
         evidence_bucket.grant_put(ask_handler)
         grant_bedrock_invoke(ask_handler)
 

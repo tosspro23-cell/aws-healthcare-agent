@@ -30,12 +30,18 @@ failing), trading latency for that. Full numbers:
 An independent, second AI review of the whole repository then found 15
 issues ranging High to Low severity — including a real authorization
 vulnerability (any authenticated caller could read or cancel any other
-caller's run) and exploitable gaps in the safety checks. **13 of 15 are
-fixed and re-verified** against the real deployed account (ownership
-enforcement, tightened IAM, `run_id` validation, corrected safety checks,
-a unified success definition in the stress-testing harness, and more);
-the remaining 2 need a fully-atomic queue-write redesign and one
-live-login re-verification step. See
+caller's run) and exploitable gaps in the safety checks. 13 of 15 were
+fixed and re-verified against the real deployed account. A follow-up
+review then verified those fixes specifically (rather than re-scanning
+from scratch) and found that a few of them had introduced real
+regressions — including three previously-safe questions that started
+failing the safety check because of the fix meant to make grounding
+stricter. Those regressions, plus one incompletely-closed finding and one
+new instance of an already-fixed bug pattern, are now fixed and covered
+by regression tests; two items (a cross-marker value/unit binding gap,
+and a queue processing-lease/reconciliation gap) remain deliberately
+open, documented rather than silently left unfixed, because closing them
+needs a real design change, not a quick patch. See
 [`docs/INDEPENDENT_REVIEW_FINDINGS.md`](docs/INDEPENDENT_REVIEW_FINDINGS.md).
 See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md`
 for the full writeup.
@@ -177,9 +183,16 @@ enough trace/debug information" requirement.
 - **The default narrator is deterministic, not a fallback.** Many agent
   demos treat "mock mode" as a degraded stand-in for the real thing. Here
   the opposite is true: the template narrator is the primary, fully-tested
-  path, because it is provably grounded and needs no external dependency.
-  The LLM path exists to show the integration is straightforward, not
-  because it's required for a good answer.
+  path, because it's grounded by construction (every sentence is a
+  template filled in directly from `Brief.grounded_facts`, not text an LLM
+  had to be independently checked afterward) and needs no external
+  dependency. The LLM path exists to show the integration is
+  straightforward, not because it's required for a good answer. (An
+  independent review correctly flagged "provably grounded" as overstating
+  this -- it's grounded by construction for the template narrator, not a
+  formal proof, and the numeric-grounding check that verifies *any*
+  narrator's output has its own known, documented limits; see
+  `docs/INDEPENDENT_REVIEW_FINDINGS.md`.)
 - **BM25 + topic-tag boosting instead of embeddings.** 68 documents doesn't
   justify a vector store; a small, transparent, dependency-free ranker is
   easier to review, debug, and test exhaustively (see `tests/test_retrieval.py`).
@@ -187,11 +200,19 @@ enough trace/debug information" requirement.
   a `classification` field. The catalog's numeric ranges are read for
   context (importance ranking, safety notes) but the agent trusts the
   dataset's own labels, per this project's own policy note.
-- **The agent never echoes the raw question back into the answer.** Because
-  every composer is a template over the `Brief`, there's no code path where
-  user-supplied text can bleed into the "grounded" answer content — a
-  structural mitigation against prompt injection, exercised in
+- **The deterministic (mock) narrator never echoes the raw question back
+  into the answer.** Because its composer is a template over the `Brief`,
+  there's no code path where user-supplied text can bleed into that
+  narrator's answer content, exercised in
   `tests/test_agent_edge_cases.py::test_prompt_injection_is_not_obeyed`.
+  This is *not* a structural guarantee for the optional LLM narrators: an
+  independent review correctly pointed out that `llm_narrator.py` puts the
+  raw question text directly into the prompt sent to the model, so a
+  prompt-injection attempt does reach the LLM as input. The actual
+  mitigation for that path is downstream, not structural avoidance of the
+  input: `run_safety_checks` re-verifies the LLM's *output* regardless of
+  what its input contained, and `agent.py` falls back to the deterministic
+  narrator on any failure.
 - **Per-user data isolation.** Every data accessor takes a `user_id` and
   raises if the stored record doesn't match, rather than trusting the
   caller. The sample bundle only has one user, but the guard is there so a

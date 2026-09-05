@@ -127,16 +127,32 @@ def handler(event: dict, context: object) -> dict:
         # pattern, not a try/except), but it closes the common case: a
         # `send_message` call that fails synchronously no longer leaves a
         # silently orphaned record.
-        table.update_item(
-            Key={"run_id": run_id},
-            UpdateExpression="SET #status = :failed, error_message = :e, completed_at = :t",
-            ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":failed": "FAILED",
-                ":e": f"Failed to enqueue job: {exc}",
-                ":t": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+        #
+        # The compensating write is conditioned on the record still being
+        # `QUEUED`: an SDK exception here does not prove SQS rejected the
+        # message -- it can mean the send actually succeeded and the
+        # response was merely lost (a timeout), in which case a consumer
+        # can already be processing (or have finished) the job. An
+        # unconditional overwrite would clobber that outcome back to
+        # `FAILED`. A second independent review caught this exact
+        # regression. If the condition fails, this handler lost the race,
+        # which is fine -- something else already resolved the run.
+        try:
+            table.update_item(
+                Key={"run_id": run_id},
+                UpdateExpression="SET #status = :failed, error_message = :e, completed_at = :t",
+                ConditionExpression="#status = :queued",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":failed": "FAILED",
+                    ":queued": "QUEUED",
+                    ":e": f"Failed to enqueue job: {exc}",
+                    ":t": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except ClientError as compensate_exc:
+            if compensate_exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
         return _json_response(500, {"error": f"Failed to enqueue job: {exc}"})
 
     return _json_response(202, {"run_id": run_id, "status": "QUEUED"})

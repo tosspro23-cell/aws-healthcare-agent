@@ -238,6 +238,7 @@ class HealthAgent:
                             source_type="bloodwork",
                             source_ref=f"trend:{concept_id}:latest",
                             numeric_values=(float(trend.latest_value),),
+                            unit=trend.unit,
                         )
                     )
                 if trend.previous_value is not None:
@@ -247,6 +248,7 @@ class HealthAgent:
                             source_type="bloodwork",
                             source_ref=f"trend:{concept_id}:previous",
                             numeric_values=(float(trend.previous_value),),
+                            unit=trend.unit,
                         )
                     )
                 if not trend.available and not mentioned_concepts:

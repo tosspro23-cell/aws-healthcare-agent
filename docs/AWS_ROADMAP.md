@@ -238,9 +238,16 @@ issues wouldn't have blocked getting the skeleton running end to end first.
   Functions run `SUCCEEDED` in ~9.5s, comfortably inside the 25s task
   timeout despite Bedrock's added latency. CloudWatch's `AWS/Bedrock`
   `Invocations` metric for the model went from 3 → 6 across exactly these
-  3 calls, confirmed by re-querying before and after — independent proof
-  the calls came from AWS-side infrastructure, not a local process. Full
-  evidence: [`PHASE4_BEDROCK_EVIDENCE.md`](PHASE4_BEDROCK_EVIDENCE.md).
+  3 calls, confirmed by re-querying before and after. **Correction
+  (2026-09-05)**: a second independent review correctly pointed out that
+  this metric is model-level, not caller-level -- it confirms 3 real
+  Bedrock calls happened on this account, but doesn't by itself
+  distinguish a Lambda-originated call from a local CLI call using the
+  same account's credentials. The actual evidence these three specific
+  calls came from the deployed Lambdas is that each was invoked directly
+  by service name (`aws lambda invoke --function-name AgentTaskHandler...`,
+  a real Step Functions `start-execution`), not the CloudWatch count on its
+  own. Full evidence: [`PHASE4_BEDROCK_EVIDENCE.md`](PHASE4_BEDROCK_EVIDENCE.md).
 
 **Phase 4: complete.** Both the real-call requirement and the
 scoped-IAM-in-a-deployed-Lambda requirement are done and independently
@@ -293,8 +300,13 @@ part of CI).
   failing (41/50, 82%) -- at the cost of latency scaling roughly linearly
   with burst size (p50 ~13s at 15 concurrent, ~60s at 100). This is a
   genuine trade-off, not a strict improvement: Step Functions is faster
-  in the common case and operationally simpler; SQS guarantees eventual
-  success at any scale but makes callers wait longer during a real burst.
+  in the common case and operationally simpler; SQS measurably sustains
+  much higher success rates under load (100% at every burst size tested,
+  up to 2x the burst where Step Functions' retry alone started failing)
+  but makes callers wait longer during a real burst -- not an unconditional
+  guarantee at any scale (finite retries, retention, and a shared
+  account-wide Lambda concurrency pool still apply; see the correction in
+  `docs/STRESS_TEST.md`).
   Both a third real bug (a DynamoDB reserved-keyword issue caught by
   moto's fidelity on the very first test run) and this whole comparison
   are written up in `docs/DECISIONS.md` and `docs/STRESS_TEST.md`.
@@ -364,14 +376,29 @@ Cognito than against Azure Functions + Entra/MSAL?
   the stress-testing harness, missing narrator-backend provenance,
   overly-broad IAM grants, an incorrect ADR premise about JWT token
   types, missing `run_id` validation, several stale/self-fulfilling
-  tests, and a hardcoded account ID. **13 of 15 fixed and re-verified**
-  (against real deployed AWS resources for anything about deployed
-  behavior, not just moto); the remaining 2 are a fully-atomic
-  queue-write pattern (needs a real outbox design, not a quick fix) and
-  one item's live login-flow re-verification (needs a human at a real
-  browser). Full findings and disposition:
-  [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md); full
-  reasoning: `DECISIONS.md`.
+  tests, and a hardcoded account ID. 13 of 15 were fixed and re-verified
+  against real deployed AWS resources; the remaining 2 were a fully-atomic
+  queue-write pattern and one item's live login-flow re-verification.
+
+  **A second independent review then verified those fixes rather than
+  re-scanning from scratch, and found that several of them introduced real
+  regressions** — most seriously, three ordinary questions (an LDL trend,
+  an HbA1c trend, an eGFR lookup) that were safe before round 1 started
+  failing the safety check entirely, because of the exact fix meant to
+  make grounding *stricter*. It also found one fix incomplete in a way
+  that mattered (a cross-marker value/unit mixup the original safety fix
+  was specifically supposed to close is still only partially closed), one
+  new instance of a bug pattern round 1 had already fixed elsewhere but
+  missed extending to two more code paths, and several documentation
+  claims that overstated the post-fix state. All confirmed regressions and
+  the newly-found instance were fixed and covered by new regression tests;
+  two items (the cross-marker binding gap, and a processing-lease/
+  reconciliation gap for duplicate SQS deliveries) were deliberately left
+  open, the same way the queue-write pattern above was — they need a
+  real design change, not a quick patch, and are documented honestly as
+  open rather than silently fixed. Full findings and disposition for both
+  review passes: [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md);
+  full reasoning: `DECISIONS.md`.
 
 ## Cost notes
 

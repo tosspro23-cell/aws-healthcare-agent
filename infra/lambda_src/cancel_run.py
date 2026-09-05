@@ -98,12 +98,21 @@ def handler(event: dict, context: object) -> dict:
         result = table.update_item(
             Key={"run_id": run_id},
             UpdateExpression="SET #status = :cancelled, completed_at = :t",
-            ConditionExpression="owner_sub = :owner_sub AND (#status = :queued OR #status = :running)",
+            # `execution_type <> :sync` excludes the synchronous `/ask` path
+            # entirely: a SYNC record's terminal write (in adapter.py) is
+            # unconditional, so a cancellation that "won" here would just get
+            # silently overwritten the moment the in-flight agent call
+            # returned -- reporting a cancellation that doesn't actually
+            # stick. An independent review reproduced this exact regression.
+            # There is also no execution to stop for a synchronous call in
+            # the first place; the caller has to wait for the response.
+            ConditionExpression="owner_sub = :owner_sub AND execution_type <> :sync AND (#status = :queued OR #status = :running)",
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={
                 ":cancelled": "CANCELLED",
                 ":queued": "QUEUED",
                 ":running": "RUNNING",
+                ":sync": "SYNC",
                 ":owner_sub": owner_sub,
                 ":t": now,
             },
@@ -112,13 +121,23 @@ def handler(event: dict, context: object) -> dict:
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        # Lost the race, the run never existed, already finished, or
-        # belongs to someone else. A non-owner gets the same 404 as a
-        # missing run_id -- confirming "this exists but isn't yours" would
-        # itself leak information a non-owner shouldn't be able to learn.
+        # Lost the race, the run never existed, already finished, belongs to
+        # someone else, or is a synchronous run that can't be cancelled at
+        # all. A non-owner gets the same 404 as a missing run_id --
+        # confirming "this exists but isn't yours" would itself leak
+        # information a non-owner shouldn't be able to learn.
         item = table.get_item(Key={"run_id": run_id}).get("Item")
         if item is None or item.get("owner_sub") != owner_sub:
             return _json_response(404, {"error": f"No run found for run_id={run_id!r}."})
+        if item.get("execution_type") == "SYNC":
+            return _json_response(
+                409,
+                {
+                    "run_id": run_id,
+                    "status": item.get("status"),
+                    "message": "Synchronous /ask runs cannot be cancelled; wait for the response.",
+                },
+            )
         return _json_response(
             409,
             {"run_id": run_id, "status": item.get("status"), "message": "Run was already finalized; nothing to cancel."},

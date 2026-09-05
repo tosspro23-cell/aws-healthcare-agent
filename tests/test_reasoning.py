@@ -133,6 +133,14 @@ def test_pacing_modifier_claims_only_the_signal_that_actually_triggered(profile)
     assert "high stress" in pacing.grounded_fact.claim
     assert "short sleep" not in pacing.grounded_fact.claim
     assert "sleep" not in pacing.grounded_fact.source_ref
+    # A second independent review found this test checked only the
+    # metadata (`claim`/`source_ref`) while `text` -- what the narrator
+    # actually renders into the visible answer -- still unconditionally
+    # named both signals. Reproduced live: a questionnaire reporting only
+    # high stress still produced a safe=True answer stating "given
+    # reported short sleep and high stress."
+    assert "high stress" in pacing.text
+    assert "short sleep" not in pacing.text
 
 
 def test_nutrition_modifier_claims_only_the_signal_that_actually_triggered():
@@ -154,6 +162,48 @@ def test_nutrition_modifier_claims_only_the_signal_that_actually_triggered():
     assert "low vegetable intake" in nutrition.grounded_fact.claim
     assert "sugary" not in nutrition.grounded_fact.claim
     assert "sugary" not in nutrition.grounded_fact.source_ref
+    # Same additional check as the pacing test above: the rendered text,
+    # not just the claim metadata, must reflect only the triggered signal.
+    assert "adding vegetables" in nutrition.text
+    assert "sugary" not in nutrition.text
+
+
+def test_exercise_limitation_modifier_reflects_the_actual_reported_detail():
+    """A second independent review found this modifier hardcoded "knee
+    pain with running/jumping" regardless of what the questionnaire's
+    `exercise_limitation` caution actually reported -- the same "policy
+    for one case applied to a different case" bug already fixed for the
+    medication/allergy cautions, just not this one. A caution reporting a
+    different limitation must not produce a claim about knee pain."""
+    from care_agent.models import QuestionnaireCaution, QuestionnaireContext
+
+    context = QuestionnaireContext(
+        user_id="u1",
+        completed_at=None,
+        cautions=(QuestionnaireCaution(kind="exercise_limitation", detail="Reports shoulder pain with overhead lifting."),),
+    )
+    modifiers = build_questionnaire_modifiers(context)
+    exercise = next(m for m in modifiers if m.topic == "exercise")
+    assert "shoulder pain" in exercise.text
+    assert "knee" not in exercise.text
+    assert "knee" not in exercise.grounded_fact.claim
+
+
+def test_family_history_modifier_reflects_the_actual_reported_detail():
+    """Same bug, the family-history modifier: it hardcoded "first-degree
+    family history of type 2 diabetes" regardless of the caution's actual
+    detail."""
+    from care_agent.models import QuestionnaireCaution, QuestionnaireContext
+
+    context = QuestionnaireContext(
+        user_id="u1",
+        completed_at=None,
+        cautions=(QuestionnaireCaution(kind="family_history_context", detail="Reports family history of hypertension."),),
+    )
+    modifiers = build_questionnaire_modifiers(context)
+    family_history = next(m for m in modifiers if m.topic == "family_history")
+    assert "hypertension" in family_history.text
+    assert "diabetes" not in family_history.text
 
 
 def test_supplement_caution_does_not_claim_levothyroxine_for_an_unrelated_medication_caution():
@@ -174,6 +224,27 @@ def test_supplement_caution_does_not_claim_levothyroxine_for_an_unrelated_medica
     no_meds_profile = UserProfile(user_id="u1", display_name="Test", age=None, sex=None, country=None)
     cautions = build_supplement_cautions(context, no_meds_profile)
     assert not any(c.topic == "medication" for c in cautions)
+
+
+def test_supplement_caution_does_not_claim_medication_use_from_a_denial():
+    """A second independent review found that a bare substring match on
+    the medication/allergy name treated a denial the same as a positive
+    report -- "Patient denies levothyroxine use" still triggered the
+    levothyroxine-specific caution. Correct behavior: silence, the same as
+    an unrelated medication."""
+    from care_agent.models import QuestionnaireCaution, QuestionnaireContext, UserProfile
+
+    context = QuestionnaireContext(
+        user_id="u1",
+        completed_at=None,
+        cautions=(
+            QuestionnaireCaution(kind="medication_context", detail="Patient denies levothyroxine use."),
+            QuestionnaireCaution(kind="allergy_context", detail="No shellfish allergy reported."),
+        ),
+    )
+    no_meds_profile = UserProfile(user_id="u1", display_name="Test", age=None, sex=None, country=None)
+    cautions = build_supplement_cautions(context, no_meds_profile)
+    assert cautions == []
 
 
 def test_alcohol_limitation_only_when_triglycerides_flagged(bloodwork, catalog, questionnaire):

@@ -155,6 +155,35 @@ def handler(event: dict, context: object) -> dict:
     trace_dict = response.trace.as_dict()
     created_at = datetime.now(timezone.utc).isoformat()
 
+    if _EVIDENCE_BUCKET_NAME:
+        # Written *before* the DynamoDB record is marked SUCCEEDED, and its
+        # failure is now handled explicitly. The old order (DynamoDB
+        # SUCCEEDED, then an unguarded S3 write) let a real S3 failure leave
+        # a record that permanently claims success with no evidence ever
+        # written -- and because the run_id is already claimed by the
+        # conditional-create guard above, the caller couldn't even retry the
+        # same run_id afterward. An independent review reproduced this.
+        try:
+            _s3().put_object(
+                Bucket=_EVIDENCE_BUCKET_NAME,
+                Key=f"{run_id}.json",
+                Body=json.dumps(trace_dict, default=str).encode("utf-8"),
+                ContentType="application/json",
+            )
+        except Exception as exc:  # noqa: BLE001
+            if table is not None:
+                table.update_item(
+                    Key={"run_id": run_id},
+                    UpdateExpression="SET #status = :failed, error_message = :e, completed_at = :t",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":failed": "FAILED",
+                        ":e": f"Answer computed but evidence write failed: {exc}",
+                        ":t": created_at,
+                    },
+                )
+            return _json_response(500, {"error": f"Failed to persist evidence: {exc}"})
+
     if table is not None:
         table.update_item(
             Key={"run_id": run_id},
@@ -167,14 +196,6 @@ def handler(event: dict, context: object) -> dict:
                 ":nb": response.trace.narrator_backend,
                 ":t": created_at,
             },
-        )
-
-    if _EVIDENCE_BUCKET_NAME:
-        _s3().put_object(
-            Bucket=_EVIDENCE_BUCKET_NAME,
-            Key=f"{run_id}.json",
-            Body=json.dumps(trace_dict, default=str).encode("utf-8"),
-            ContentType="application/json",
         )
 
     return _json_response(
