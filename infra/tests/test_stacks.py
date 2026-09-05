@@ -178,6 +178,21 @@ def test_http_api_has_cors_scoped_to_the_workbench_dev_origin_not_a_wildcard():
     assert "GET" in cors["AllowMethods"] and "POST" in cors["AllowMethods"]
 
 
+def test_default_stage_has_a_throttle_configured():
+    """This API has no per-user rate limiting of its own, and every route
+    is either free/cheap or billed per-token via Bedrock -- a leaked
+    credential or a client bug stuck retrying has no in-app ceiling on
+    Bedrock spend otherwise. A stage-wide throttle is a coarse backstop:
+    this just confirms one is actually configured (not the specific
+    numbers, which are a judgment call, not a security invariant)."""
+    _, _, api_template = _synth_stacks()
+    stages = api_template.find_resources("AWS::ApiGatewayV2::Stage")
+    (stage,) = stages.values()
+    settings = stage["Properties"]["DefaultRouteSettings"]
+    assert settings["ThrottlingRateLimit"] > 0
+    assert settings["ThrottlingBurstLimit"] > 0
+
+
 def test_no_iam_policy_uses_wildcard_resource():
     """Regression guard: every IAM policy statement this stack creates must
     scope `Resource` to specific ARNs (or a stack-ref/GetAtt to one), never

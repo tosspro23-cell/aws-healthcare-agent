@@ -8,6 +8,69 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Bedrock cost protection: API-wide throttle + an opt-in monthly Budget alert
+
+**Context**: The last item in the post-review cleanup punch list. This
+app has no per-user rate limiting of its own, and every route is either
+free/cheap (API Gateway, Lambda, DynamoDB) or billed per-token via
+Bedrock (`/ask`, `/runs`, `/jobs`) -- a leaked credential or a client bug
+stuck in a retry loop had no in-app ceiling on how fast, or how much,
+Bedrock spend it could run up. Two independent, complementary layers:
+one caps the *rate*, the other catches the *trend*.
+
+**Decision, API throttle**: `ApiStack`'s `HttpApi` uses API Gateway v2
+(`HttpApi`), not the v1 REST API's Usage Plans + API Keys -- the v2
+equivalent is a stage-level `DefaultRouteSettings` throttle
+(`ThrottlingRateLimit`/`ThrottlingBurstLimit`), 5 req/s sustained, burst
+10, applied uniformly across every route. Getting there took a live
+mistake, not just a design choice: `HttpApiProps` has no way to pass
+`throttle` through to the default stage it auto-creates, so the first
+attempt set `create_default_stage=False` and created a new, explicit
+`HttpStage` construct with `stage_name="$default"` -- which CloudFormation
+rejected outright once deployed (`Resource of type
+'AWS::ApiGatewayV2::Stage' ... already exists`), since the new construct's
+logical ID differs from the one the already-deployed auto-created stage
+uses, and CloudFormation won't let two different logical resources both
+claim the physical stage name `$default`. Confirmed by inspecting the
+live stack's actual `LogicalResourceId` before retrying. Fixed with an L1
+property override (`add_property_override("DefaultRouteSettings...", ...)`)
+on `http_api.default_stage`'s underlying `CfnStage` instead -- same
+logical ID as what's already deployed, so CloudFormation applies it as an
+in-place property update, not a replacement.
+
+**Decision, monthly Budget alert**: an `AWS::Budgets::Budget` ($10/month,
+COST type) with two notifications -- `ACTUAL` at 80% (something already
+happened) and `FORECASTED` at 100% (the current trend would exceed the
+budget by month's end, an earlier warning than waiting for actual spend
+to cross the line). **Deliberately opt-in, not always deployed**: a new
+`CARE_AGENT_BUDGET_EMAIL` env var (unset by default) gates whether
+`BudgetStack` gets built into the app at all -- an email address is
+committed nowhere in source, since this repository is public and an
+email is more personal than the account IDs this project already avoids
+hardcoding (see this file's earlier ADR on `auth_stack.py`'s domain
+prefix). A budget with no meaningful subscriber isn't worth deploying at
+all, so the stack is simply absent rather than half-configured when the
+env var isn't set -- confirmed both ways via `cdk synth --all`
+(`CareAgentBudgetStack` appears in the stack list only when the env var
+is set).
+
+**Verification**: New tests for both -- `test_default_stage_has_a_throttle_configured`
+(the throttle exists; the exact numbers are a judgment call, not a
+security invariant, so not pinned to specific values) and four
+`test_budget_stack.py` tests (a positive monthly limit, the configured
+email -- not a placeholder -- on every notification, both notification
+types present, exactly one budget resource). Full infra suite (152
+tests, up from 148) and `cdk synth --all` (both with and without the env
+var) pass. Deployed live: `aws apigatewayv2 get-stage` confirms
+`ThrottlingRateLimit: 5.0` / `ThrottlingBurstLimit: 10` on the real
+`$default` stage; a CORS preflight against the CloudFront origin still
+succeeds (unaffected by the throttle fix, re-confirmed given the CORS
+regression earlier this same day). `aws budgets describe-budgets` /
+`describe-notifications-for-budget` / `describe-subscribers-for-notification`
+confirm the live budget, both notification thresholds, and the correct
+subscriber email -- AWS Budgets' email notifications need no separate
+opt-in confirmation click, unlike an SNS topic subscription.
+
 ## 2026-09-05 — First frontend tests: Vitest for auth.ts's token expiry and AskForm.tsx's polling supersession
 
 **Context**: The kernel package has run at 85%+ coverage since Phase 0;

@@ -27,6 +27,17 @@ from constructs import Construct
 
 from stacks.bedrock_grant import grant_bedrock_invoke
 
+# Every route here is either free/cheap (API Gateway, Lambda, DynamoDB) or
+# billed per-token (Bedrock, via /ask, /runs, and /jobs). This app has no
+# per-user rate limiting of its own -- a leaked credential or a client bug
+# stuck in a retry loop has no in-app ceiling on how fast it can run up
+# Bedrock cost. A stage-wide throttle is a coarse, blunt backstop for
+# exactly that: well above anything a human clicking through the Workbench
+# would ever hit, far below what would let a runaway loop matter much
+# before someone notices.
+_STAGE_THROTTLE_RATE_LIMIT = 5.0  # sustained requests/second, across all routes
+_STAGE_THROTTLE_BURST_LIMIT = 10
+
 
 class ApiStack(Stack):
     def __init__(
@@ -93,6 +104,21 @@ class ApiStack(Stack):
                 allow_headers=["authorization", "content-type"],
             ),
         )
+
+        # HttpApi's own `HttpStageProps` has a `throttle` field, but
+        # HttpApi's constructor (used above) has no way to pass it through
+        # to the default stage it auto-creates -- and re-creating that
+        # stage explicitly (`create_default_stage=False` + a new
+        # `HttpStage` construct) is a logical-ID change CloudFormation
+        # rejects outright once the original auto-created stage is already
+        # deployed ("Resource ... already exists", confirmed live against
+        # this exact stack). An L1 property override on the existing
+        # auto-created stage updates it in place instead.
+        assert http_api.default_stage is not None
+        cfn_stage = http_api.default_stage.node.default_child
+        assert isinstance(cfn_stage, apigwv2.CfnStage)
+        cfn_stage.add_property_override("DefaultRouteSettings.ThrottlingRateLimit", _STAGE_THROTTLE_RATE_LIMIT)
+        cfn_stage.add_property_override("DefaultRouteSettings.ThrottlingBurstLimit", _STAGE_THROTTLE_BURST_LIMIT)
 
         authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
             "CognitoAuthorizer",

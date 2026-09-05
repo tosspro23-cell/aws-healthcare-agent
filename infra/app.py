@@ -2,7 +2,9 @@
 """CDK entrypoint. Wires AuthStack (identity), DataStack (state),
 OrchestrationStack (async Step Functions run path), and QueueStack
 (async SQS-buffered run path) into ApiStack (compute + routing), plus
-FrontendStack (the hosted Workbench itself).
+FrontendStack (the hosted Workbench itself). BudgetStack (a monthly cost
+alert) is opt-in via `CARE_AGENT_BUDGET_EMAIL` -- see this function's own
+comment on why it isn't always present.
 
 Environment is picked up from the CLI's current AWS profile/region
 (`CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION`, set automatically by the CDK
@@ -37,6 +39,7 @@ from build_frontend_asset import build_frontend_asset
 from build_lambda_asset import build_lambda_asset
 from stacks.api_stack import ApiStack
 from stacks.auth_stack import AuthStack
+from stacks.budget_stack import BudgetStack
 from stacks.data_stack import DataStack
 from stacks.frontend_stack import FrontendStack
 from stacks.orchestration_stack import OrchestrationStack
@@ -52,6 +55,10 @@ class AppStacks:
     queue_stack: QueueStack
     api_stack: ApiStack
     frontend_stack: FrontendStack
+    # Only built when CARE_AGENT_BUDGET_EMAIL is set -- see build_app()'s
+    # own comment and budget_stack.py's docstring for why this one is
+    # opt-in rather than always present.
+    budget_stack: BudgetStack | None = None
 
 
 def build_app() -> AppStacks:
@@ -126,6 +133,14 @@ def build_app() -> AppStacks:
         env=env,
     )
 
+    # Opt-in, not hardcoded: this repository is public, and an email
+    # address is more personal than the account IDs this project already
+    # avoids committing (see docs/DECISIONS.md). A budget with no
+    # meaningful subscriber isn't worth deploying, so the stack is simply
+    # absent rather than half-configured when this isn't set.
+    budget_email = os.getenv("CARE_AGENT_BUDGET_EMAIL")
+    budget_stack = BudgetStack(app, "CareAgentBudgetStack", notification_email=budget_email, env=env) if budget_email else None
+
     return AppStacks(
         app=app,
         auth_stack=auth_stack,
@@ -134,6 +149,7 @@ def build_app() -> AppStacks:
         queue_stack=queue_stack,
         api_stack=api_stack,
         frontend_stack=frontend_stack,
+        budget_stack=budget_stack,
     )
 
 
