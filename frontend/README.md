@@ -6,14 +6,24 @@ has so far only exercised from a terminal (login, ask a question, inspect
 the grounding trace and safety checks) are visible and usable, not just
 provable via curl/pytest.
 
-**Scope of this first version, deliberately minimal**: sign in through a
-real browser redirect to the Cognito Hosted UI (Authorization Code +
-PKCE -- the actual flow, not `infra/scripts/get_dev_token.py`'s local
-script standing in for one), submit a question to `POST /ask`, and render
-the answer plus its full grounding trace (safety checks, grounded facts,
-limitations, retrieved sources). The async `/runs` and `/jobs` paths,
-cancellation, and a run-history view are not built yet -- see
-`docs/AWS_ROADMAP.md`'s Phase 6 section for what's still open.
+Sign in through a real browser redirect to the Cognito Hosted UI
+(Authorization Code + PKCE -- the actual flow, not
+`infra/scripts/get_dev_token.py`'s local script standing in for one),
+then ask a question against any of the three backend paths from one form
+(a mode switcher at the top): synchronous `POST /ask` (full grounding
+trace -- safety checks, grounded facts, sources), the Step-Functions-
+orchestrated `POST /runs` (polled via `GET /runs/{run_id}` until
+terminal, cancellable while pending), or the SQS-buffered `POST /jobs`
+(same polling). A client-side run history (localStorage) lets any past
+run be revisited by `run_id` after a reload.
+
+Only the synchronous path shows a full grounding trace -- the async
+paths' DynamoDB records only ever carry
+`answer`/`safe`/`narrator_backend`, not safety checks or grounded facts,
+so that's genuinely all there is to show for them today. Markdown
+rendering for LLM prose and real hosting (beyond a local dev server)
+aren't built -- see `docs/AWS_ROADMAP.md`'s Phase 6 section for the full
+list of what's still open.
 
 ## Setup
 

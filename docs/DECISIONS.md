@@ -8,6 +8,60 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Workbench: wired up the async paths (Step Functions + Queue), client-side run history
+
+**Context**: The Workbench's first version covered only the synchronous
+`/ask` path. Requested next: bring the async Step Functions and SQS
+paths, cancellation, and persistence into the UI too, so the Workbench
+covers what the backend phases actually built rather than just the
+simplest path.
+
+**Decision**: One form, a mode switcher (`Ask` / `Start run (Step
+Functions)` / `Enqueue job (Queue)`) instead of three separate pages --
+all three share the same user_id/question inputs and differ only in
+which endpoint starts the run and whether polling is needed. The two
+async modes poll `GET /runs/{run_id}` every second until a terminal
+status, with a `Cancel this run` button visible while pending. Run
+history is client-side only (`frontend/src/history.ts`, localStorage):
+a `run_id` list per browser lets a past run be revisited via `GET /runs/
+{run_id}` after a reload, which demonstrates real DynamoDB persistence
+without building a new backend "list my runs" endpoint -- the runs
+table's only key is `run_id`, so that would need a new GSI + Lambda +
+route, a meaningfully larger piece of infra work than wiring up what
+already exists. Left for later if it's ever worth doing.
+
+**A real race condition found live-testing this**: `POST /runs` returns
+as soon as Step Functions accepts `start_execution`, before its first
+task (`mark_running.py`) has actually written the DynamoDB record --
+polling immediately after start reliably produced a real `404`
+(reproduced, not theoretical). Fixed by tolerating a bounded run of
+404s (10 poll ticks) at the start of a poll loop rather than treating an
+immediate fetch as authoritative, and by not doing a blocking `getRun`
+call synchronously right after starting -- the UI shows an optimistic
+pending state from the start call's own response instead. The SQS path
+doesn't have this specific race (`enqueue_job.py`'s conditional create
+happens synchronously before it returns 202), but the fix applies to
+both paths uniformly rather than branching on `execution_type`, since
+tolerating a transient 404 is harmless either way.
+
+**Verification**: `tsc -b` and `eslint .` clean, production build
+succeeds. Live end-to-end in a real browser (signed in through the
+actual Cognito Hosted UI): both async modes correctly transitioned
+`RUNNING`/`QUEUED` -> `SUCCEEDED` with the real Bedrock-backed answer;
+clicking a past history entry after a full page reload correctly
+re-fetched and displayed it, proving the data survives independent of
+any client-side state. Cancellation was verified via the exact HTTP
+calls the UI's `Cancel this run` button makes (a manual click reliably
+lost the race against Bedrock's ~1-2 second response time -- a
+UI-testing limitation, not a functional gap, and the underlying
+conditional-write mechanism was already race-tested repeatedly earlier
+in this project): started a run, cancelled it immediately, and confirmed
+the record stayed `CANCELLED` -- not overwritten by the agent's own
+completion -- when re-checked 3 seconds later, well past when it would
+normally have finished.
+
+---
+
 ## 2026-09-05 — Numeric grounding rejected a model correctly declining to fabricate a number
 
 **Context**: Testing fallback behavior via the Workbench, asked Bedrock to

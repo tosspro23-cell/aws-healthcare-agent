@@ -62,22 +62,87 @@ export class ApiError extends Error {
   }
 }
 
-export async function askQuestion(userId: string, question: string): Promise<AskResponse> {
+/** `RunRecord` is the *compact* DynamoDB item `GET /runs/{run_id}` returns
+ * (see `infra/lambda_src/get_run.py` -- it just returns whatever's under
+ * the key, schema-agnostic across all three execution paths). Only the
+ * synchronous `/ask` path also persists a *full* grounding trace (to S3,
+ * returned inline in `AskResponse.trace` above) -- the Step Functions and
+ * SQS paths only ever persist `answer`/`safe`/`narrator_backend`, not the
+ * safety checks or grounded facts, so a polled async run can't show the
+ * same depth of trace an `/ask` call can. */
+export interface RunRecord {
+  run_id: string;
+  status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMED_OUT" | "CANCELLED";
+  execution_type: "SYNC" | "STEP_FUNCTIONS" | "SQS";
+  user_id: string;
+  question: string;
+  started_at?: string;
+  queued_at?: string;
+  completed_at?: string;
+  answer?: string;
+  safe?: boolean;
+  narrator_backend?: string;
+  error_message?: string;
+}
+
+async function authedFetch(path: string, init: RequestInit = {}): Promise<unknown> {
   const token = getAccessToken();
   if (!token) throw new Error("Not signed in.");
 
-  const response = await fetch(`${config.apiBaseUrl}/ask`, {
-    method: "POST",
+  const response = await fetch(`${config.apiBaseUrl}${path}`, {
+    ...init,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
+      ...init.headers,
     },
-    body: JSON.stringify({ user_id: userId, question }),
   });
 
-  const body = await response.json();
+  const body = response.status === 204 ? {} : await response.json();
   if (!response.ok) {
     throw new ApiError(response.status, body.error ?? `Request failed with status ${response.status}`);
   }
-  return body as AskResponse;
+  return body;
+}
+
+export async function askQuestion(userId: string, question: string): Promise<AskResponse> {
+  return (await authedFetch("/ask", { method: "POST", body: JSON.stringify({ user_id: userId, question }) })) as AskResponse;
+}
+
+/** Starts the Step Functions-orchestrated async path. Returns immediately
+ * with `status: "RUNNING"` (or the real current status, if `runId` was
+ * already submitted before) -- poll with `getRun` to see it finish. */
+export async function startRun(userId: string, question: string, runId?: string): Promise<{ run_id: string; status: string }> {
+  return (await authedFetch("/runs", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, question, ...(runId ? { run_id: runId } : {}) }),
+  })) as { run_id: string; status: string };
+}
+
+/** Starts the SQS-buffered async path (the direct comparison to `startRun`
+ * above -- see docs/STRESS_TEST.md for the load-tested trade-off between
+ * the two: this one trades latency under load for higher measured success
+ * capacity). Returns immediately with `status: "QUEUED"`. */
+export async function enqueueJob(userId: string, question: string, runId?: string): Promise<{ run_id: string; status: string }> {
+  return (await authedFetch("/jobs", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, question, ...(runId ? { run_id: runId } : {}) }),
+  })) as { run_id: string; status: string };
+}
+
+export async function getRun(runId: string): Promise<RunRecord> {
+  return (await authedFetch(`/runs/${encodeURIComponent(runId)}`)) as RunRecord;
+}
+
+/** Only meaningful for a Step-Functions-orchestrated run still `RUNNING`
+ * or `QUEUED` -- see `infra/lambda_src/cancel_run.py`: a synchronous
+ * `/ask` run can't be cancelled at all (there's no execution to stop, and
+ * the caller is already blocked waiting for the response), and an
+ * already-finished run returns 409 with its real terminal status. */
+export async function cancelRun(runId: string): Promise<{ run_id: string; status: string; message?: string }> {
+  return (await authedFetch(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" })) as {
+    run_id: string;
+    status: string;
+    message?: string;
+  };
 }

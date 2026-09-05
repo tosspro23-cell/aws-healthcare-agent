@@ -328,7 +328,7 @@ closing section for the full reasoning on each.
   it isn't — but as a hands-on learning exercise.
 - ⬜ Tear down whatever gets provisioned afterward to avoid ongoing cost.
 
-## Phase 6 — Frontend / Workbench (core loop live, not feature-complete)
+## Phase 6 — Frontend / Workbench (all three backend paths live; hosting and async trace depth still open)
 
 Everything through Phase 5 was backend-only: real auth existed (Cognito
 Hosted UI is a genuine login page), but nothing called it except this
@@ -355,14 +355,46 @@ that into something usable in a browser, deliberately scoped to the
   authorization code twice, and the second exchange failed with a real
   `400` from Cognito -- harmless (the first exchange had already
   succeeded) but a genuine race, fixed with a mount-guard ref.
-- ⬜ **Not done yet**: the async paths (`POST /runs` + polling +
-  `POST /runs/{run_id}/cancel`, and `POST /jobs`), a run-history view,
-  and markdown rendering for the answer text (Bedrock's prose includes
-  literal `**bold**` markers right now, shown as-is rather than rendered).
-  Also not done: hosting this anywhere real -- it only runs as a local
-  dev server today (`npm run dev` on the one port, 8765, Cognito's App
-  Client currently allows as a redirect URI); an S3+CloudFront deployment
-  needs its own CDK stack and a second registered callback URL.
+- ✅ **Async paths wired up**: a mode switcher (`Ask` / `Start run (Step
+  Functions)` / `Enqueue job (Queue)`) covers all three backend paths from
+  one form. The two async modes poll `GET /runs/{run_id}` every second
+  until a terminal status, with a `Cancel this run` button while pending
+  (`cancel_run.py`, already load-tested and race-verified in
+  `docs/STRESS_TEST.md`, now reachable from the UI). Client-side run
+  history (`frontend/src/history.ts`, localStorage-backed) lets any past
+  run -- sync, Step Functions, or queued -- be revisited by `run_id` after
+  a page reload, demonstrating the backend's actual persistence rather
+  than an in-memory response. Deliberately *not* a new "list my runs"
+  backend endpoint: the runs table's only key is `run_id`, so a real
+  server-side history view would need a new GSI + Lambda + route -- a
+  separate, larger piece of infra work than wiring up what already
+  exists, left for later if it's ever worth doing.
+- ✅ **Live-verified**, including a real race condition caught this way:
+  `POST /runs` returns as soon as `start_execution` is accepted, *before*
+  the state machine's first task has written the DynamoDB record --
+  polling immediately produced a real `404`. Fixed by tolerating a
+  bounded run of 404s at the start of a poll loop instead of treating the
+  first tick as authoritative. The SQS path doesn't have this race
+  (`enqueue_job.py` writes its record synchronously before returning
+  202), but the fix applies uniformly rather than branching on
+  `execution_type`. Cancellation verified via the exact HTTP calls the UI
+  makes (a manual click reliably lost the race against Bedrock's ~1-2s
+  response time, a UI-testing limitation, not a functional gap): started
+  a run, cancelled it immediately, and confirmed the record stayed
+  `CANCELLED` -- not overwritten by the agent's own completion -- 3
+  seconds later, well past when it would normally have finished.
+- ⬜ **Still not done**: markdown rendering for the answer text (Bedrock's
+  prose includes literal `**bold**` markers right now, shown as-is rather
+  than rendered), and real hosting -- it only runs as a local dev server
+  today (`npm run dev` on the one port, 8765, Cognito's App Client
+  currently allows as a redirect URI); an S3+CloudFront deployment needs
+  its own CDK stack and a second registered callback URL. Note also that
+  only the synchronous `/ask` path persists a full grounding trace (to
+  S3); the async paths' `GET /runs/{run_id}` response only ever has
+  `answer`/`safe`/`narrator_backend`, not safety checks or grounded facts
+  -- extending `agent_task.py`/`process_job.py` to also write S3 evidence
+  would need its own IAM/infra changes and wasn't done as part of this
+  pass.
 
 Deliberately scoped this way rather than building the full surface at
 once, per the same "ship the core loop, verify it live, then expand"
