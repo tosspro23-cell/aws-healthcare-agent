@@ -61,8 +61,13 @@ class ApiStack(Stack):
                 "CARE_AGENT_NARRATOR_BACKEND": "bedrock",
             },
         )
-        runs_table.grant_read_write_data(ask_handler)
-        evidence_bucket.grant_read_write(ask_handler)
+        # adapter.py only ever put_item/update_item (never reads a run
+        # record back) and put_object (never reads evidence back) --
+        # grant_write_data/grant_put, not the broader read_write grants
+        # this originally had. An independent review found these grants
+        # exceeded what the handler actually does; see docs/DECISIONS.md.
+        runs_table.grant_write_data(ask_handler)
+        evidence_bucket.grant_put(ask_handler)
         grant_bedrock_invoke(ask_handler)
 
         http_api = apigwv2.HttpApi(self, "CareAgentApi", api_name="care-agent-api")

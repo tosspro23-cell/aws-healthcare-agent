@@ -184,6 +184,7 @@ class OrchestrationStack(Stack):
             result_selector={
                 "answer": sfn.JsonPath.string_at("$.Payload.answer"),
                 "safe": sfn.JsonPath.string_at("$.Payload.safe"),
+                "narrator_backend": sfn.JsonPath.string_at("$.Payload.trace.narrator_backend"),
             },
             task_timeout=sfn.Timeout.duration(Duration.seconds(25)),
         )
@@ -199,6 +200,7 @@ class OrchestrationStack(Stack):
                     "outcome": "SUCCEEDED",
                     "answer": sfn.JsonPath.string_at("$.agent_result.answer"),
                     "safe": sfn.JsonPath.string_at("$.agent_result.safe"),
+                    "narrator_backend": sfn.JsonPath.string_at("$.agent_result.narrator_backend"),
                 }
             ),
             result_path=sfn.JsonPath.DISCARD,

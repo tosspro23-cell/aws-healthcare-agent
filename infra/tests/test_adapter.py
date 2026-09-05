@@ -169,6 +169,18 @@ def test_non_string_run_id_returns_400(aws_resources):
     assert result["statusCode"] == 400
 
 
+@pytest.mark.parametrize("bad_run_id", ["has spaces", "has/slash", "x" * 81, "quote\"mark"])
+def test_invalid_run_id_characters_return_400(aws_resources, bad_run_id):
+    """Regression test: an independent review found no validation existed
+    on run_id's character set/length at all -- only start_run.py needed
+    it to be a valid Step Functions execution name, but since /ask, /runs,
+    and /jobs share the same run_id keyspace, the same constraint applies
+    consistently across all three creation points now."""
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": bad_run_id})
+    result = adapter.handler(event, None)
+    assert result["statusCode"] == 400
+
+
 def test_empty_string_question_returns_400(aws_resources):
     """Empty string is falsy, same as missing entirely -- covered by the
     existing 'required' check, not the adversarial-but-non-empty sweep

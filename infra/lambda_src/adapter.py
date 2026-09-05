@@ -31,6 +31,7 @@ import auth_context
 import boto3
 from agent_runtime import agent as _agent
 from botocore.exceptions import ClientError
+from run_id_validation import is_valid_run_id
 
 from care_agent.data_store import UnknownUserError
 
@@ -90,6 +91,12 @@ def handler(event: dict, context: object) -> dict:
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
+    if not is_valid_run_id(run_id):
+        # /ask, /runs, and /jobs share this run_id keyspace; only /runs
+        # actually needs it to be a valid Step Functions execution name,
+        # but validating the same constraint everywhere means a run_id
+        # accepted on any one path is usable on all three.
+        return _json_response(400, {"error": "'run_id', if supplied, must be 1-80 characters with no whitespace or special characters."})
 
     owner_sub = auth_context.owner_sub_from_event(event)
     table = _dynamodb().Table(_RUNS_TABLE_NAME) if _RUNS_TABLE_NAME else None

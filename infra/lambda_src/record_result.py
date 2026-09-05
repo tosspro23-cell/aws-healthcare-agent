@@ -42,9 +42,16 @@ def handler(event: dict, context: object) -> dict:
     values: dict[str, object] = {":outcome": outcome, ":running": "RUNNING", ":t": now}
 
     if outcome == "SUCCEEDED":
-        update_parts += ["answer = :a", "safe = :safe"]
+        update_parts += ["answer = :a", "safe = :safe", "narrator_backend = :nb"]
         values[":a"] = event["answer"]
         values[":safe"] = event["safe"]
+        # Persisted here so a consumer reading only the DynamoDB record
+        # (not the full trace) can tell which backend's output this is --
+        # already the *effective* backend (agent.py corrects it to "mock"
+        # on a safety-check fallback, not the originally-selected one).
+        # An independent review found this field was dropped entirely on
+        # this path before this fix. See docs/DECISIONS.md.
+        values[":nb"] = event["narrator_backend"]
     else:
         update_parts.append("error_message = :e")
         values[":e"] = event.get("error", "unknown error")

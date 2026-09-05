@@ -111,6 +111,71 @@ def test_supplement_cautions_include_medication_and_allergy(questionnaire, profi
     assert topics == {"medication", "allergy"}
 
 
+def test_pacing_modifier_claims_only_the_signal_that_actually_triggered(profile):
+    """Regression test: an independent review found that the pacing
+    modifier's OR trigger (short sleep OR high stress) was correctly an
+    OR, but the resulting claim text unconditionally asserted *both* were
+    reported regardless of which one(s) actually triggered it -- a
+    questionnaire reporting only high stress (normal sleep) would still
+    generate a grounded fact claiming short sleep was also reported."""
+    from care_agent.models import QuestionnaireContext, QuestionnaireFact
+
+    context = QuestionnaireContext(
+        user_id="u1",
+        completed_at=None,
+        facts=(
+            QuestionnaireFact(field="mind.sleep_duration", value="7_8_hours"),
+            QuestionnaireFact(field="mind.stress", value="high"),
+        ),
+    )
+    modifiers = build_questionnaire_modifiers(context)
+    pacing = next(m for m in modifiers if m.topic == "pacing")
+    assert "high stress" in pacing.grounded_fact.claim
+    assert "short sleep" not in pacing.grounded_fact.claim
+    assert "sleep" not in pacing.grounded_fact.source_ref
+
+
+def test_nutrition_modifier_claims_only_the_signal_that_actually_triggered():
+    """Same bug, the nutrition modifier: only low vegetable intake
+    reported (sugary-food frequency normal) used to still claim frequent
+    sugary foods too."""
+    from care_agent.models import QuestionnaireContext, QuestionnaireFact
+
+    context = QuestionnaireContext(
+        user_id="u1",
+        completed_at=None,
+        facts=(
+            QuestionnaireFact(field="nutrition.sugary_foods", value="1_2_days_per_week"),
+            QuestionnaireFact(field="nutrition.vegetables", value="0_1_servings_per_day"),
+        ),
+    )
+    modifiers = build_questionnaire_modifiers(context)
+    nutrition = next(m for m in modifiers if m.topic == "nutrition")
+    assert "low vegetable intake" in nutrition.grounded_fact.claim
+    assert "sugary" not in nutrition.grounded_fact.claim
+    assert "sugary" not in nutrition.grounded_fact.source_ref
+
+
+def test_supplement_caution_does_not_claim_levothyroxine_for_an_unrelated_medication_caution():
+    """Regression test: an independent review found that any
+    medication_context caution -- regardless of which medication it was
+    actually about -- triggered a hardcoded claim of "user reports
+    levothyroxine use." A future questionnaire flagging a caution about a
+    completely different medication would have this code confidently
+    assert levothyroxine use that was never reported. Correct behavior:
+    no claim at all (silence) rather than a wrong one."""
+    from care_agent.models import QuestionnaireCaution, QuestionnaireContext, UserProfile
+
+    context = QuestionnaireContext(
+        user_id="u1",
+        completed_at=None,
+        cautions=(QuestionnaireCaution(kind="medication_context", detail="Reports metformin use for blood sugar management."),),
+    )
+    no_meds_profile = UserProfile(user_id="u1", display_name="Test", age=None, sex=None, country=None)
+    cautions = build_supplement_cautions(context, no_meds_profile)
+    assert not any(c.topic == "medication" for c in cautions)
+
+
 def test_alcohol_limitation_only_when_triglycerides_flagged(bloodwork, catalog, questionnaire):
     items = rank_focus_markers(bloodwork.latest_panel, catalog, set())
     limitation = alcohol_unknown_limitation(questionnaire, items)

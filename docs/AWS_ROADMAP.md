@@ -356,14 +356,22 @@ Cognito than against Azure Functions + Entra/MSAL?
   after Phases 0–4 and the stress-test pass, not per-phase as originally
   scoped here (this checklist item went unactioned through every earlier
   phase — worth naming directly rather than quietly backfilling a
-  checkmark). Found a real authorization vulnerability (any authenticated
-  caller could read/cancel any other caller's run) and exploitable gaps
-  in the numeric-grounding/diagnosis/dosing safety checks, both fixed and
-  live-verified, plus corrections to two previously-published stress-test
-  claims. Full findings and disposition:
+  checkmark). Found 15 issues ranging High to Low severity: a real
+  authorization vulnerability (any authenticated caller could read/cancel
+  any other caller's run), exploitable gaps in the numeric-grounding/
+  diagnosis/dosing safety checks, a non-atomic queue write, incorrect
+  questionnaire-claim attribution, an inconsistent success definition in
+  the stress-testing harness, missing narrator-backend provenance,
+  overly-broad IAM grants, an incorrect ADR premise about JWT token
+  types, missing `run_id` validation, several stale/self-fulfilling
+  tests, and a hardcoded account ID. **13 of 15 fixed and re-verified**
+  (against real deployed AWS resources for anything about deployed
+  behavior, not just moto); the remaining 2 are a fully-atomic
+  queue-write pattern (needs a real outbox design, not a quick fix) and
+  one item's live login-flow re-verification (needs a human at a real
+  browser). Full findings and disposition:
   [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md); full
-  reasoning: `DECISIONS.md`. Ten lower-severity findings remain open,
-  tracked in that same file rather than fixed in this pass.
+  reasoning: `DECISIONS.md`.
 
 ## Cost notes
 

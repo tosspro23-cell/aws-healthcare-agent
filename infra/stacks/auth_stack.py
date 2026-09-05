@@ -17,19 +17,29 @@ from aws_cdk import CfnOutput, RemovalPolicy, Stack
 from aws_cdk import aws_cognito as cognito
 from constructs import Construct
 
-# Cognito Hosted UI domain prefixes are globally unique across all AWS
-# accounts (they live under *.auth.<region>.amazoncognito.com). Bound to
-# this project's specific AWS account by default; override via the
-# constructor if redeploying to a different account and this collides.
-DEFAULT_DOMAIN_PREFIX = "care-agent-470293170577"
-
 LOCAL_REDIRECT_URI = "http://localhost:8765/callback"
 LOCAL_LOGOUT_URI = "http://localhost:8765/logout"
 
 
 class AuthStack(Stack):
-    def __init__(self, scope: Construct, construct_id: str, *, domain_prefix: str = DEFAULT_DOMAIN_PREFIX, **kwargs) -> None:
+    def __init__(self, scope: Construct, construct_id: str, *, domain_prefix: str | None = None, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        if domain_prefix is None:
+            # Cognito Hosted UI domain prefixes are globally unique across
+            # all AWS accounts (they live under
+            # *.auth.<region>.amazoncognito.com), so the default needs
+            # *some* account-specific component to avoid colliding with
+            # every other deployment of this same open-source project.
+            # `self.account` is a CDK token resolved to the real deploying
+            # account at synth/deploy time -- not a hardcoded literal in
+            # source, unlike the account ID this project's own account
+            # used to have committed here directly. An independent review
+            # flagged that as an unnecessary disclosure/portability issue
+            # (not a credential leak -- an account ID alone grants no
+            # access -- but anyone forking this repo had to notice and
+            # change it before they could deploy). See docs/DECISIONS.md.
+            domain_prefix = f"care-agent-{self.account}"
 
         self.user_pool = cognito.UserPool(
             self,

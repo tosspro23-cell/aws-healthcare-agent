@@ -8,6 +8,100 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — `stress_test.py`'s success definition was inconsistent across commands; unified
+
+**Context**: An independent review pointed out that `burst-async`'s
+success check (`desc["status"] == "SUCCEEDED"`, the raw Step Functions
+execution status) can disagree with what actually happened to the agent
+run. `RecordFailure`/`RecordTimeout` are both plain `End: true` states
+reached via `InvokeAgent`'s `Catch` branch, not an unhandled execution
+error -- so a run where the agent genuinely failed, and the state machine
+correctly caught and recorded that failure, still reports its own
+top-level execution status as `SUCCEEDED` (exactly right for "did the
+*workflow* complete as designed," wrong for "did the *agent's answer*
+succeed," which is what this harness's `ok` field is supposed to mean).
+`burst-queue` already checked the DynamoDB application-level status
+instead -- meaning the two async paths weren't even measuring the same
+thing when compared against each other in `docs/STRESS_TEST.md`.
+Separately, `burst-sync`/`adversarial` (`_invoke_ask_handler`) counted
+HTTP 200 alone as success, not also requiring `safe: true` from the
+response body.
+
+**Decision**: `_start_and_poll_execution` (`burst-async`) now polls the
+DynamoDB record directly, the same approach `_enqueue_and_poll`
+(`burst-queue`) already used, so both async paths share one definition.
+`_invoke_ask_handler` (`burst-sync`, `adversarial`) now requires
+`status == 200 and safe is True`. Did not extend this to a full
+transport/workflow/application/safety-level breakdown in the reporting
+(the review's fuller suggestion) -- unifying the single `ok` definition
+across commands was the load-bearing gap; splitting it into multiple
+reported dimensions is a further, separate improvement not done here.
+
+**Verification**: re-ran `burst-async -n 5` live against the real
+deployed state machine after the fix -- 5/5, with the harness's own
+output now correctly showing the DynamoDB-sourced `narrator_backend`
+(`"bedrock"`) and `safe` (`true`) fields, which the old
+execution-status-only check never surfaced at all. Checked whether this
+retroactively changes any previously-published `STRESS_TEST.md` numbers:
+no -- every failure observed in that pass was `Lambda.TooManyRequestsException`
+at the `MarkRunning` step, which has no `Catch` and so fails the
+*execution* outright (not caught and gracefully recorded) -- meaning the
+old and new checks agree for every run actually measured. The bug was
+real, but it happened not to distort the specific numbers already
+published; it would have mattered for any run where the agent's own
+logic (not Lambda-service throttling) was what failed.
+
+---
+
+## 2026-09-05 — Switched `get_dev_token.py` from the ID token to the access token; the original ADR's technical claim was wrong
+
+**Context**: An earlier decision (below, "App Client is a public client...
+ID token not access token") chose the ID token specifically because
+"the access token carries a `client_id` claim instead and isn't the
+conventional shape for this check." An independent review flagged this
+as factually incorrect: API Gateway's HTTP API JWT authorizer checks the
+configured audience list against the token's `aud` claim when present,
+and automatically falls back to checking `client_id` when it isn't --
+exactly the shape a Cognito access token has. This is documented AWS
+behavior, not an assumption. Access tokens (meant to carry scopes
+authorizing API calls) are also the more conventional OAuth2 choice for
+this purpose than ID tokens (meant to represent user identity to the
+client application that requested them, not to authorize a downstream
+API) -- the original choice was backwards from OAuth2 convention on top
+of resting on an incorrect technical premise.
+
+**Decision**: `get_dev_token.py` now exports `CARE_AGENT_ACCESS_TOKEN`
+(the OAuth2 access token) instead of `CARE_AGENT_ID_TOKEN`. **No change
+was needed to `api_stack.py`'s `HttpJwtAuthorizer` configuration** --
+`jwt_audience=[app_client.user_pool_client_id]` already works for both
+token shapes, since the authorizer itself handles the `aud`-vs-`client_id`
+fallback. This is a real example of a fix that turned out to be far
+smaller in scope than the finding suggested: correcting the actual
+premise showed the "bug" was entirely in which token a client chose to
+send, not in how the deployed infrastructure validates it.
+
+**Not done**: this switch does not add per-route OAuth scopes (e.g. a
+custom Cognito resource server with `runs.read`/`runs.write`-style
+scopes, enforced via `authorizationScopes` on each HTTP API route). The
+independent review's finding was specifically about the *token type*
+being suboptimal, not about the *absence* of scope-based route
+authorization -- today, any successfully authenticated caller (regardless
+of token type) can call any route; ownership is enforced at the
+application/data layer (`owner_sub`, see the authorization-vulnerability
+fix elsewhere in this log), not via OAuth scopes. Adding real per-route
+scopes would be a legitimate further improvement, not done here.
+
+**Verification**: `tests/test_get_dev_token.py` (PKCE math, URL/request
+construction) is unaffected -- it never touched the token-exchange
+response shape. `infra/tests/test_live_endpoint_smoke.py` renamed its
+env var accordingly. The actual live login flow (an interactive browser
+step through the real Cognito Hosted UI) needs to be re-run once by
+whoever next uses `get_dev_token.py` to confirm the resulting access
+token is accepted end-to-end against the deployed API -- that step needs
+a human at a real browser and wasn't done as part of this fix.
+
+---
+
 ## 2026-09-05 — Independent review found a real authorization vulnerability and a run-record data-integrity bug; fixed both
 
 **Context**: Per the challenge brief's own process checklist ("get a second,

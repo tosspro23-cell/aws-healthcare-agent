@@ -150,6 +150,9 @@ class QuestionnaireContext(DictMixin):
     def has_caution_kind(self, kind: str) -> bool:
         return any(c.kind == kind for c in self.cautions)
 
+    def caution(self, kind: str) -> QuestionnaireCaution | None:
+        return next((c for c in self.cautions if c.kind == kind), None)
+
 
 @dataclass(frozen=True)
 class KnowledgeChunk(DictMixin):

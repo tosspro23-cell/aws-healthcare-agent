@@ -229,9 +229,17 @@ def _invoke_ask_handler(lambda_client, function_name: str, run_id: str, question
             return CallResult(run_id, False, resp["FunctionError"], elapsed, detail=raw.decode("utf-8", "replace")[:300])
         body = json.loads(json.loads(raw)["body"])
         status = json.loads(raw)["statusCode"]
+        # "ok" means the application actually succeeded, not just that the
+        # transport layer returned *a* response -- a 200 with safe=False
+        # would mean run_safety_checks somehow failed even after the
+        # mock-narrator fallback, which should never happen by
+        # construction, but this harness shouldn't silently call that
+        # "success" if it ever did. An independent review found this
+        # command counting transport status alone (finding #7).
+        ok = status == 200 and body.get("safe") is True
         return CallResult(
             run_id,
-            status == 200,
+            ok,
             str(status),
             elapsed,
             detail=body.get("answer", body.get("error", ""))[:200],
@@ -261,7 +269,22 @@ def cmd_burst_sync(args: argparse.Namespace) -> Report:
     return report
 
 
-def _start_and_poll_execution(sfn_client, state_machine_arn: str, run_id: str, question: str, poll_timeout_s: float) -> CallResult:
+def _start_and_poll_execution(
+    sfn_client, dynamodb_table, state_machine_arn: str, run_id: str, question: str, poll_timeout_s: float
+) -> CallResult:
+    """ "ok" is based on the DynamoDB record's *application-level* status,
+    not the raw Step Functions execution status -- an independent review
+    found these can disagree (finding #7). `RecordFailure`/`RecordTimeout`
+    both end the state machine *normally* (they're plain `End: true`
+    states reached via the Catch branch, not an unhandled error), so a
+    Step Functions execution that caught a real agent failure and
+    gracefully recorded it still reports its own top-level status as
+    `SUCCEEDED` -- exactly as intended for the *workflow*, but wrong to
+    treat as "the agent's answer succeeded" for this harness's purposes.
+    Checking the DynamoDB record directly (same approach `_enqueue_and_poll`
+    already used for the SQS path) makes both async paths use the same
+    success definition.
+    """
     start = time.monotonic()
     try:
         sfn_client.start_execution(
@@ -272,21 +295,19 @@ def _start_and_poll_execution(sfn_client, state_machine_arn: str, run_id: str, q
     except Exception as exc:  # noqa: BLE001
         return CallResult(run_id, False, type(exc).__name__, time.monotonic() - start, detail=str(exc)[:300])
 
-    exec_arn = f"{state_machine_arn.replace(':stateMachine:', ':execution:')}:{run_id}"
     deadline = time.monotonic() + poll_timeout_s
     while time.monotonic() < deadline:
-        desc = sfn_client.describe_execution(executionArn=exec_arn)
-        if desc["status"] != "RUNNING":
+        item = dynamodb_table.get_item(Key={"run_id": run_id}).get("Item")
+        if item and item.get("status") not in (None, "RUNNING"):
             elapsed = time.monotonic() - start
-            output = json.loads(desc.get("output") or "{}")
-            answer = output.get("agent_result", {}).get("answer", desc.get("error", ""))
             return CallResult(
                 run_id,
-                desc["status"] == "SUCCEEDED",
-                desc["status"],
+                item["status"] == "SUCCEEDED",
+                item["status"],
                 elapsed,
-                detail=str(answer)[:200],
-                safe=output.get("agent_result", {}).get("safe"),
+                detail=str(item.get("answer", item.get("error_message", "")))[:200],
+                narrator_backend=item.get("narrator_backend"),
+                safe=item.get("safe"),
             )
         time.sleep(0.5)
     return CallResult(run_id, False, "POLL_TIMEOUT", time.monotonic() - start)
@@ -295,7 +316,10 @@ def _start_and_poll_execution(sfn_client, state_machine_arn: str, run_id: str, q
 def cmd_burst_async(args: argparse.Namespace) -> Report:
     cfn_client = _resolve_client("cloudformation")
     sfn_client = _resolve_client("stepfunctions")
+    dynamodb_client = _resolve_client("dynamodb")
     state_machine_arn = _stack_output(cfn_client, "CareAgentOrchestrationStack", "StateMachineArn")
+    table_name = _find_table_name(dynamodb_client, "RunsTable")
+    dynamodb_table = boto3.resource("dynamodb", region_name="us-east-1").Table(table_name)
     print(f"Target state machine: {state_machine_arn}")
     print(f"Firing {args.n} concurrent Step Functions executions...")
 
@@ -305,6 +329,7 @@ def cmd_burst_async(args: argparse.Namespace) -> Report:
             pool.submit(
                 _start_and_poll_execution,
                 sfn_client,
+                dynamodb_table,
                 state_machine_arn,
                 f"stress-async-{uuid.uuid4().hex[:8]}",
                 "What should I focus on first in my results?",

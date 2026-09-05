@@ -10,6 +10,8 @@ from aws_cdk.assertions import Match, Template
 from stacks.data_stack import DataStack
 from stacks.queue_stack import QueueStack
 
+from tests.iam_assertions import assert_no_overly_broad_iam_policy
+
 _LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 
 
@@ -77,10 +79,4 @@ def test_enqueue_lambda_uses_python312_runtime_and_expected_handler():
 
 
 def test_no_iam_policy_uses_wildcard_resource():
-    template = _synth_queue_stack()
-    policies = template.find_resources("AWS::IAM::Policy")
-    for policy in policies.values():
-        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-            resource = statement.get("Resource")
-            if resource == "*":
-                raise AssertionError(f"Wildcard IAM resource found in statement: {statement}")
+    assert_no_overly_broad_iam_policy(_synth_queue_stack())

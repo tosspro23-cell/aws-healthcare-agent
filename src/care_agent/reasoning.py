@@ -141,7 +141,22 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
 
     sugary = context.fact("nutrition.sugary_foods")
     veg = context.fact("nutrition.vegetables")
-    if sugary and sugary.value in {"3_4_days_per_week", "5_6_days_per_week", "daily"} or (veg and veg.value in {"0_1_servings_per_day"}):
+    sugary_triggered = bool(sugary and sugary.value in {"3_4_days_per_week", "5_6_days_per_week", "daily"})
+    veg_triggered = bool(veg and veg.value in {"0_1_servings_per_day"})
+    if sugary_triggered or veg_triggered:
+        # The trigger is OR (either signal alone is enough to raise this
+        # modifier), but the claim text used to unconditionally assert
+        # *both* were reported regardless of which one(s) actually
+        # triggered -- an independent review caught this. Build the claim
+        # and its source_ref from only the signal(s) that actually fired.
+        reported_parts = []
+        source_refs = []
+        if sugary_triggered:
+            reported_parts.append("frequent sugary foods")
+            source_refs.append("facts.nutrition.sugary_foods")
+        if veg_triggered:
+            reported_parts.append("low vegetable intake")
+            source_refs.append("facts.nutrition.vegetables")
         pref = next((p for p in context.preferences if p.field == "nutrition.preference"), None)
         pref_text = f", leaning on {pref.value.replace('_', ' ')}" if pref else ""
         modifiers.append(
@@ -149,9 +164,9 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
                 topic="nutrition",
                 text=f"prioritize reducing sugary foods and adding vegetables{pref_text}",
                 grounded_fact=GroundedFact(
-                    claim="questionnaire reports frequent sugary foods and low vegetable intake",
+                    claim=f"questionnaire reports {' and '.join(reported_parts)}",
                     source_type="questionnaire",
-                    source_ref="facts.nutrition.sugary_foods,facts.nutrition.vegetables",
+                    source_ref=",".join(source_refs),
                 ),
             )
         )
@@ -172,15 +187,27 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
 
     sleep = context.fact("mind.sleep_duration")
     stress = context.fact("mind.stress")
-    if (sleep and sleep.value in {"5_6_hours", "less_than_5_hours"}) or (stress and stress.value == "high"):
+    sleep_triggered = bool(sleep and sleep.value in {"5_6_hours", "less_than_5_hours"})
+    stress_triggered = bool(stress and stress.value == "high")
+    if sleep_triggered or stress_triggered:
+        # Same fix as the nutrition modifier above: build the claim from
+        # only the signal(s) that actually triggered, not both unconditionally.
+        reported_parts = []
+        source_refs = []
+        if sleep_triggered:
+            reported_parts.append("short sleep duration")
+            source_refs.append("facts.mind.sleep_duration")
+        if stress_triggered:
+            reported_parts.append("high stress")
+            source_refs.append("facts.mind.stress")
         modifiers.append(
             QuestionnaireModifier(
                 topic="pacing",
                 text="keep the plan to a small number of simultaneous changes given reported short sleep and high stress",
                 grounded_fact=GroundedFact(
-                    claim="questionnaire reports short sleep duration and high stress",
+                    claim=f"questionnaire reports {' and '.join(reported_parts)}",
                     source_type="questionnaire",
-                    source_ref="facts.mind.sleep_duration,facts.mind.stress",
+                    source_ref=",".join(source_refs),
                 ),
             )
         )
@@ -205,8 +232,27 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
 
 
 def build_supplement_cautions(context: QuestionnaireContext, profile: UserProfile) -> list[QuestionnaireModifier]:
+    """Note the trigger condition for each caution below is deliberately
+    the *specific* medication/allergy name, not just "some caution of this
+    general kind exists." `has_caution_kind("medication_context")` alone
+    used to be enough to trigger the levothyroxine-specific claim below,
+    even though a `medication_context` caution about a completely
+    different medication would make that claim false -- an independent
+    review caught this ("policy written for one case getting applied to a
+    different case by accident," exactly the failure mode
+    `docs/AWS_ROADMAP.md`'s own process checklist calls out). Checking the
+    actual caution's `detail` text (or the structured `profile.medications`/
+    `profile.allergies` list) for the specific name means a future
+    questionnaire with an unrelated `medication_context`/`allergy_context`
+    caution correctly produces *no* claim here rather than a wrong one --
+    silence is the safe failure mode, not a confident wrong claim.
+    """
     cautions: list[QuestionnaireModifier] = []
-    if context.has_caution_kind("medication_context") or any(m.name == "levothyroxine" for m in profile.medications):
+    medication_caution = context.caution("medication_context")
+    levothyroxine_reported = any(m.name == "levothyroxine" for m in profile.medications) or (
+        medication_caution is not None and "levothyroxine" in medication_caution.detail.lower()
+    )
+    if levothyroxine_reported:
         cautions.append(
             QuestionnaireModifier(
                 topic="medication",
@@ -221,7 +267,12 @@ def build_supplement_cautions(context: QuestionnaireContext, profile: UserProfil
                 ),
             )
         )
-    if context.has_caution_kind("allergy_context") or any(a.name == "shellfish" for a in profile.allergies):
+
+    allergy_caution = context.caution("allergy_context")
+    shellfish_allergy_reported = any(a.name == "shellfish" for a in profile.allergies) or (
+        allergy_caution is not None and "shellfish" in allergy_caution.detail.lower()
+    )
+    if shellfish_allergy_reported:
         cautions.append(
             QuestionnaireModifier(
                 topic="allergy",

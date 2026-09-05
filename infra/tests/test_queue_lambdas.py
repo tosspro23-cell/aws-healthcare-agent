@@ -119,6 +119,30 @@ def test_enqueue_rejects_invalid_input_with_400(aws_resources, body):
     assert result["statusCode"] == 400
 
 
+@pytest.mark.parametrize("bad_run_id", ["has spaces", "has/slash", "x" * 81])
+def test_enqueue_rejects_invalid_run_id_characters(aws_resources, bad_run_id):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": bad_run_id})
+    result = enqueue_job.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+def test_enqueue_writes_failed_status_instead_of_orphaning_the_record_when_send_fails(aws_resources):
+    """Regression test: an independent review found that a send_message
+    failure after the DynamoDB record was already created left it QUEUED
+    forever with no message ever coming. Fixed with a compensating write."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": "job-send-fail"})
+
+    with patch("enqueue_job._sqs") as mock_sqs_fn:
+        mock_sqs_fn.return_value.send_message.side_effect = RuntimeError("simulated SQS outage")
+        result = enqueue_job.handler(event, None)
+
+    assert result["statusCode"] == 500
+    item = table.get_item(Key={"run_id": "job-send-fail"})["Item"]
+    assert item["status"] == "FAILED"
+    assert "error_message" in item
+
+
 def test_enqueue_invalid_json_body_returns_400(aws_resources):
     result = enqueue_job.handler({"body": "{not valid json"}, None)
     assert result["statusCode"] == 400

@@ -92,7 +92,7 @@ a real account).
 - `tests/test_live_endpoint_smoke.py` — end-to-end checks against a
   *deployed* endpoint: no-token/garbage-token → 401 always run if
   `CARE_AGENT_API_URL` is set; the authenticated behavioral checks
-  additionally need `CARE_AGENT_ID_TOKEN`. Never runs in CI.
+  additionally need `CARE_AGENT_ACCESS_TOKEN`. Never runs in CI.
 
 ## Local setup
 
@@ -124,7 +124,7 @@ export CARE_AGENT_API_URL="$(aws cloudformation describe-stacks \
     --output text)"
 
 python scripts/get_dev_token.py   # opens your browser to sign up / sign in
-eval "$(python scripts/get_dev_token.py | grep ^export)"   # sets CARE_AGENT_ID_TOKEN
+eval "$(python scripts/get_dev_token.py | grep ^export)"   # sets CARE_AGENT_ACCESS_TOKEN
 
 pytest tests/test_live_endpoint_smoke.py -v
 ```

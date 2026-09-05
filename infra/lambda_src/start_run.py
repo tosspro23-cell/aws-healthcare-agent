@@ -10,6 +10,19 @@ window) as `ExecutionAlreadyExists` rather than starting a second run --
 a free idempotency property for "the same run_id submitted twice" on top
 of the DynamoDB conditional-write terminal-state protection the state
 machine itself does (see `../stacks/orchestration_stack.py`).
+
+On `ExecutionAlreadyExists`, this compares the *input* of the existing
+execution against what this request would have submitted, and reports the
+execution's *real* current status -- not a hardcoded "RUNNING". Both of
+these used to be wrong: any `run_id` reuse was treated as a harmless
+retry regardless of whether the input actually matched (so a second,
+different request silently piggybacked on the first one's already-running
+or already-finished execution instead of being told about the conflict),
+and the response always claimed "RUNNING" even for an execution that had
+already finished. AWS's own `StartExecution` API distinguishes exactly
+this: matching input against a still-running execution is idempotent;
+anything else is a real conflict. See docs/INDEPENDENT_REVIEW_FINDINGS.md
+(finding #13).
 """
 
 from __future__ import annotations
@@ -21,6 +34,7 @@ from typing import Any
 
 import auth_context
 import boto3
+from run_id_validation import is_valid_run_id
 
 _STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
 
@@ -32,6 +46,12 @@ def _sfn():
     if _sfn_client is None:
         _sfn_client = boto3.client("stepfunctions")
     return _sfn_client
+
+
+def _execution_arn_for(run_id: str) -> str:
+    parts = _STATE_MACHINE_ARN.split(":")
+    parts[5] = "execution"
+    return ":".join(parts) + f":{run_id}"
 
 
 def _json_response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -63,18 +83,30 @@ def handler(event: dict, context: object) -> dict:
         # boto3 ClientError below, surfacing as a raw Lambda platform
         # error instead of a clean 400 -- the caller's mistake, not ours.
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
+    if not is_valid_run_id(run_id):
+        return _json_response(400, {"error": "'run_id', if supplied, must be 1-80 characters with no whitespace or special characters."})
 
     owner_sub = auth_context.owner_sub_from_event(event)
+    submitted_input = {"run_id": run_id, "user_id": user_id, "question": question, "owner_sub": owner_sub}
 
     try:
         _sfn().start_execution(
             stateMachineArn=_STATE_MACHINE_ARN,
             name=run_id,
-            input=json.dumps({"run_id": run_id, "user_id": user_id, "question": question, "owner_sub": owner_sub}),
+            input=json.dumps(submitted_input),
         )
+        return _json_response(202, {"run_id": run_id, "status": "RUNNING"})
     except _sfn().exceptions.ExecutionAlreadyExists:
-        # Same run_id submitted twice -- not an error, just point the
-        # caller at the (already in-flight or finished) existing run.
         pass
 
-    return _json_response(202, {"run_id": run_id, "status": "RUNNING"})
+    # Same run_id submitted before -- find out whether this is a genuine
+    # idempotent retry (same input, matching AWS's own definition) or a
+    # real conflict (a different request reusing someone else's run_id),
+    # and report the execution's actual current status either way.
+    existing = _sfn().describe_execution(executionArn=_execution_arn_for(run_id))
+    existing_input = json.loads(existing["input"])
+    if existing_input != submitted_input:
+        return _json_response(
+            409, {"error": f"run_id={run_id!r} is already in use by a different request.", "status": existing["status"]}
+        )
+    return _json_response(202, {"run_id": run_id, "status": existing["status"]})

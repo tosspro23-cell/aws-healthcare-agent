@@ -294,6 +294,15 @@ class HealthAgent:
             answer_text = self._mock_narrator.compose(brief, question_text, profile)
             report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
             used_fallback = True
+            # trace.narrator_backend was set above to the *selected*
+            # backend (e.g. "bedrock") before we knew a fallback would
+            # happen -- it must be corrected to "mock" here, since that's
+            # what actually produced `answer_text`. An independent review
+            # found that leaving it unchanged meant any consumer reading
+            # only this field (not also checking for a `narrator_fallback`
+            # entry in safety_checks) would wrongly conclude the real
+            # model's output was returned. See docs/DECISIONS.md.
+            trace.narrator_backend = self._mock_narrator.backend_name
 
         trace.safety_checks = list(report.checks)
         if used_fallback:

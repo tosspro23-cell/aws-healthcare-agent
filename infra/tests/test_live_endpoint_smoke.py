@@ -6,7 +6,7 @@ and never runs as part of a normal `pytest` invocation.
 Since Phase 2, `/ask` requires a valid Cognito JWT (see
 `../stacks/api_stack.py`): a request with no/invalid token never reaches
 the Lambda at all, so most of these cases additionally need
-CARE_AGENT_ID_TOKEN to actually exercise Lambda-level behavior. The
+CARE_AGENT_ACCESS_TOKEN to actually exercise Lambda-level behavior. The
 no-token case is deliberately its own always-runs-if-URL-is-set test.
 
 Usage, after `cdk deploy` (see docs/AWS_ROADMAP.md):
@@ -30,20 +30,20 @@ import urllib.request
 import pytest
 
 API_URL = os.environ.get("CARE_AGENT_API_URL")
-ID_TOKEN = os.environ.get("CARE_AGENT_ID_TOKEN")
+ACCESS_TOKEN = os.environ.get("CARE_AGENT_ACCESS_TOKEN")
 
 pytestmark = pytest.mark.skipif(not API_URL, reason="CARE_AGENT_API_URL not set -- no deployed endpoint to test against")
 
 requires_token = pytest.mark.skipif(
-    not ID_TOKEN, reason="CARE_AGENT_ID_TOKEN not set -- run infra/scripts/get_dev_token.py first"
+    not ACCESS_TOKEN, reason="CARE_AGENT_ACCESS_TOKEN not set -- run infra/scripts/get_dev_token.py first"
 )
 
 
 def _post_ask(payload: dict, *, authorized: bool = True) -> tuple[int, dict]:
     url = API_URL.rstrip("/") + "/ask"
     headers = {"Content-Type": "application/json"}
-    if authorized and ID_TOKEN:
-        headers["Authorization"] = f"Bearer {ID_TOKEN}"
+    if authorized and ACCESS_TOKEN:
+        headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -66,7 +66,7 @@ def _post_ask(payload: dict, *, authorized: bool = True) -> tuple[int, dict]:
 def test_live_ask_without_token_returns_401():
     """Phase 2 acceptance check: the route now actually enforces auth --
     this must fail *before* ever reaching the Lambda, regardless of whether
-    a valid CARE_AGENT_ID_TOKEN happens to be set for other tests in this
+    a valid CARE_AGENT_ACCESS_TOKEN happens to be set for other tests in this
     file (deliberately calls with authorized=False)."""
     status, _payload = _post_ask({"user_id": "user_demo_001", "question": "hello"}, authorized=False)
     assert status == 401
@@ -88,7 +88,20 @@ def test_live_ask_with_garbage_token_returns_401():
 
 
 @requires_token
-def test_live_main_question_matches_local_behavior():
+def test_live_main_question_returns_a_real_safe_grounded_answer():
+    """Regression test: this originally asserted the deployed endpoint's
+    answer byte-for-byte matched a local mock-narrator run, including
+    `narrator_backend == "mock"` -- true when this was written (Phase 1/2,
+    before Bedrock was wired into the deployed Lambda), but stale ever
+    since: the deployed AskHandler now defaults to
+    CARE_AGENT_NARRATOR_BACKEND=bedrock (see docs/PHASE4_BEDROCK_EVIDENCE.md),
+    a real LLM whose exact phrasing isn't byte-reproducible run to run. An
+    independent review caught this test asserting something no longer
+    true about the deployed system. What's still verifiable without
+    assuming exact phrasing: the response is safe, actually answers the
+    question (the grounded numeric values appear, since the safety net
+    would otherwise have forced a fallback), and reports which backend
+    actually produced it."""
     status, payload = _post_ask(
         {
             "user_id": "user_demo_001",
@@ -100,7 +113,14 @@ def test_live_main_question_matches_local_behavior():
     assert "162" in payload["answer"]
     assert "6.1" in payload["answer"]
     assert payload["trace"]["intent"] == "priority_focus"
-    assert payload["trace"]["narrator_backend"] == "mock"
+    assert payload["trace"]["narrator_backend"] in ("mock", "bedrock")
+    fallback_checks = [c for c in payload["trace"]["safety_checks"] if c["name"] == "narrator_fallback"]
+    if payload["trace"]["narrator_backend"] == "bedrock":
+        # If Bedrock's own output was used, it must not have needed the
+        # fallback -- a fallback would mean narrator_backend was already
+        # corrected to "mock" (see agent.py), so this is really asserting
+        # internal consistency, not a new claim.
+        assert not fallback_checks
 
 
 @requires_token

@@ -21,13 +21,12 @@ persisted so `get_run.py`/`cancel_run.py` can enforce that only the run's
 creator may read or cancel it. See
 `docs/INDEPENDENT_REVIEW_FINDINGS.md` (findings #1/#2).
 
-Known remaining gap, deliberately not fixed here (tracked in
-`docs/INDEPENDENT_REVIEW_FINDINGS.md`, finding #3): the DynamoDB write and
-the SQS `send_message` below are two separate, non-atomic operations. If
-the send fails after the record is created, the run is left `QUEUED`
-forever with no message behind it. Fixing that properly needs an
-outbox-style pattern or an explicit reconciliation sweep, not just a
-try/except here.
+The DynamoDB write and the SQS `send_message` below are still two
+separate, non-atomic calls (finding #3) -- a `send_message` failure now
+gets a compensating write (`FAILED`, not a silently orphaned `QUEUED`
+record forever), but a Lambda crash *between* the two calls is still an
+unhandled gap. Closing that fully needs a real outbox/reconciliation
+pattern, not a try/except; see `docs/INDEPENDENT_REVIEW_FINDINGS.md`.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ from typing import Any
 import auth_context
 import boto3
 from botocore.exceptions import ClientError
+from run_id_validation import is_valid_run_id
 
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
 _QUEUE_URL = os.environ["JOBS_QUEUE_URL"]
@@ -88,11 +88,14 @@ def handler(event: dict, context: object) -> dict:
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
+    if not is_valid_run_id(run_id):
+        return _json_response(400, {"error": "'run_id', if supplied, must be 1-80 characters with no whitespace or special characters."})
 
     owner_sub = auth_context.owner_sub_from_event(event)
+    table = _dynamodb().Table(_RUNS_TABLE_NAME)
     now = datetime.now(timezone.utc).isoformat()
     try:
-        _dynamodb().Table(_RUNS_TABLE_NAME).put_item(
+        table.put_item(
             Item={
                 "run_id": run_id,
                 "status": "QUEUED",
@@ -109,9 +112,31 @@ def handler(event: dict, context: object) -> dict:
             raise
         return _json_response(409, {"error": f"run_id={run_id!r} is already in use by another run."})
 
-    _sqs().send_message(
-        QueueUrl=_QUEUE_URL,
-        MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question}),
-    )
+    try:
+        _sqs().send_message(
+            QueueUrl=_QUEUE_URL,
+            MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question}),
+        )
+    except Exception as exc:  # noqa: BLE001 -- compensating write below, then report failure
+        # The DynamoDB record above and this send are two separate calls,
+        # not one transaction. Without this, a send failure here used to
+        # leave the record `QUEUED` forever with no message ever coming --
+        # an independent review caught this (finding #3). This doesn't
+        # make the pair atomic (a Lambda crash between the two calls still
+        # isn't covered -- that needs a real outbox/reconciliation
+        # pattern, not a try/except), but it closes the common case: a
+        # `send_message` call that fails synchronously no longer leaves a
+        # silently orphaned record.
+        table.update_item(
+            Key={"run_id": run_id},
+            UpdateExpression="SET #status = :failed, error_message = :e, completed_at = :t",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":failed": "FAILED",
+                ":e": f"Failed to enqueue job: {exc}",
+                ":t": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return _json_response(500, {"error": f"Failed to enqueue job: {exc}"})
 
     return _json_response(202, {"run_id": run_id, "status": "QUEUED"})

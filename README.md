@@ -27,12 +27,15 @@ concurrent requests (2x the size where Step Functions' retry started
 failing), trading latency for that. Full numbers:
 [`docs/STRESS_TEST.md`](docs/STRESS_TEST.md).
 
-An independent, second AI review of the whole repository then found a
-real authorization vulnerability (any authenticated caller could read or
-cancel any other caller's run) and exploitable gaps in the safety checks
-— both fixed and live-verified against the real account, alongside
-corrections to two previously-published stress-test claims. Ten
-lower-severity findings remain tracked as open work. See
+An independent, second AI review of the whole repository then found 15
+issues ranging High to Low severity — including a real authorization
+vulnerability (any authenticated caller could read or cancel any other
+caller's run) and exploitable gaps in the safety checks. **13 of 15 are
+fixed and re-verified** against the real deployed account (ownership
+enforcement, tightened IAM, `run_id` validation, corrected safety checks,
+a unified success definition in the stress-testing harness, and more);
+the remaining 2 need a fully-atomic queue-write redesign and one
+live-login re-verification step. See
 [`docs/INDEPENDENT_REVIEW_FINDINGS.md`](docs/INDEPENDENT_REVIEW_FINDINGS.md).
 See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md`
 for the full writeup.

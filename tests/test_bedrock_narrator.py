@@ -167,6 +167,12 @@ def test_agent_with_bedrock_narrator_falls_back_when_unsafe(data_dir):
     assert "500 mg" not in response.answer.lower()
     fallback_checks = [c for c in response.trace.safety_checks if c.name == "narrator_fallback"]
     assert len(fallback_checks) == 1
+    # Regression: narrator_backend used to stay "bedrock" even after a
+    # fallback (it's set once, before the fallback decision, and was
+    # never corrected) -- a consumer reading only this field, not also
+    # checking for the narrator_fallback entry above, would wrongly
+    # conclude Bedrock's own output was returned. See docs/DECISIONS.md.
+    assert response.trace.narrator_backend == "mock"
 
 
 def test_no_content_blocks_returns_empty_string():

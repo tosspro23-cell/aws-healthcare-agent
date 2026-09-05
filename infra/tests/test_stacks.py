@@ -14,6 +14,8 @@ from stacks.data_stack import DataStack
 from stacks.orchestration_stack import OrchestrationStack
 from stacks.queue_stack import QueueStack
 
+from tests.iam_assertions import assert_no_overly_broad_iam_policy
+
 _LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 
 
@@ -163,15 +165,11 @@ def test_no_iam_policy_uses_wildcard_resource():
     """Regression guard: every IAM policy statement this stack creates must
     scope `Resource` to specific ARNs (or a stack-ref/GetAtt to one), never
     a bare "*" -- catches an accidental switch from `grant_read_write_data`
-    to a broader `grant_full_access`-style call.
+    to a broader `grant_full_access`-style call. See `iam_assertions.py`
+    for what specifically counts as "overly broad" here.
     """
     _, _, api_template = _synth_stacks()
-    policies = api_template.find_resources("AWS::IAM::Policy")
-    for policy in policies.values():
-        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-            resource = statement.get("Resource")
-            if resource == "*":
-                raise AssertionError(f"Wildcard IAM resource found in statement: {statement}")
+    assert_no_overly_broad_iam_policy(api_template)
 
 
 def test_user_pool_client_is_public_no_secret_pkce_shaped():
@@ -203,40 +201,29 @@ def test_auth_stack_has_exactly_one_user_pool():
     auth_template.resource_count_is("AWS::Cognito::UserPoolClient", 1)
 
 
-def test_api_stack_depends_on_data_stack_and_auth_stack_and_orch_stack():
-    app = cdk.App()
-    auth_stack = AuthStack(app, "TestAuthStack2", domain_prefix="care-agent-test-synth-only-2")
-    data_stack = DataStack(app, "TestDataStack2")
-    orch_stack = OrchestrationStack(
-        app,
-        "TestOrchStack2",
-        runs_table=data_stack.runs_table,
-        lambda_asset_dir=_LAMBDA_ASSET_DIR,
-    )
-    queue_stack = QueueStack(
-        app,
-        "TestQueueStack2",
-        runs_table=data_stack.runs_table,
-        lambda_asset_dir=_LAMBDA_ASSET_DIR,
-    )
-    api_stack = ApiStack(
-        app,
-        "TestApiStack2",
-        lambda_asset_dir=_LAMBDA_ASSET_DIR,
-        runs_table=data_stack.runs_table,
-        evidence_bucket=data_stack.evidence_bucket,
-        user_pool=auth_stack.user_pool,
-        app_client=auth_stack.app_client,
-        start_run_handler=orch_stack.start_run_handler,
-        get_run_handler=orch_stack.get_run_handler,
-        cancel_run_handler=orch_stack.cancel_run_handler,
-        enqueue_job_handler=queue_stack.enqueue_job_handler,
-    )
-    api_stack.add_stack_dependency(data_stack)
-    api_stack.add_stack_dependency(auth_stack)
-    api_stack.add_stack_dependency(orch_stack)
-    api_stack.add_stack_dependency(queue_stack)
-    assert data_stack in api_stack.dependencies
-    assert auth_stack in api_stack.dependencies
-    assert orch_stack in api_stack.dependencies
-    assert queue_stack in api_stack.dependencies
+def test_app_py_actually_wires_api_stack_dependencies():
+    """Regression test: the previous version of this test built its own,
+    separate set of stacks and called `add_stack_dependency` *itself*,
+    then asserted the dependency existed -- which only proves CDK's own
+    `add_stack_dependency`/`.dependencies` mechanism works, not that
+    `app.py` (the actual entry point `cdk deploy` runs) calls it. If
+    someone deleted the `add_stack_dependency` calls from `app.py` itself,
+    this test would still have passed. An independent review caught this;
+    see docs/DECISIONS.md.
+
+    Confirmed empirically (not assumed) that this distinction matters:
+    building the same stacks *without* calling `add_stack_dependency`
+    leaves `.dependencies` empty even though ApiStack's constructor
+    receives cross-stack resource references -- CDK does not infer a
+    stack dependency from that alone. So this is testing a real,
+    necessary mechanism, and it needs to run against `app.py`'s own code
+    to mean anything."""
+    from app import build_app
+
+    stacks = build_app()
+    assert stacks.data_stack in stacks.api_stack.dependencies
+    assert stacks.auth_stack in stacks.api_stack.dependencies
+    assert stacks.orchestration_stack in stacks.api_stack.dependencies
+    assert stacks.queue_stack in stacks.api_stack.dependencies
+    assert stacks.data_stack in stacks.orchestration_stack.dependencies
+    assert stacks.data_stack in stacks.queue_stack.dependencies

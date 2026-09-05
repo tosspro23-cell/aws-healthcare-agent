@@ -10,6 +10,8 @@ from aws_cdk.assertions import Template
 from stacks.data_stack import DataStack
 from stacks.orchestration_stack import OrchestrationStack
 
+from tests.iam_assertions import assert_no_overly_broad_iam_policy
+
 
 def _synth_stacks():
     app = cdk.App()
@@ -64,6 +66,22 @@ def test_invoke_agent_has_a_bounded_timeout():
     assert invoke_agent["TimeoutSeconds"] == 25
 
 
+def test_narrator_backend_flows_through_invoke_agent_and_into_record_success():
+    """Regression test: an independent review found that InvokeAgent's
+    ResultSelector only extracted `answer`/`safe` from agent_task.py's
+    response, silently dropping `trace.narrator_backend` -- so
+    record_result.py could never persist it even after being taught how
+    to (see record_result.py's own fix), because it was never in the data
+    reaching that state at all. Both the ResultSelector and
+    RecordSuccess's own payload mapping need to carry it through."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent = definition["States"]["InvokeAgent"]
+    assert "narrator_backend.$" in invoke_agent["ResultSelector"]
+
+    record_success_params = definition["States"]["RecordSuccess"]["Parameters"]
+    assert "narrator_backend.$" in record_success_params["Payload"]
+
+
 def test_invoke_agent_has_our_custom_retry_configured():
     definition = _asl_definition(_synth_stacks())
     invoke_agent = definition["States"]["InvokeAgent"]
@@ -71,6 +89,25 @@ def test_invoke_agent_has_our_custom_retry_configured():
     custom_retry = next(r for r in retries if "Lambda.TooManyRequestsException" in r["ErrorEquals"])
     assert custom_retry["MaxAttempts"] == 3
     assert custom_retry["BackoffRate"] == 2
+
+
+def test_our_custom_retry_actually_governs_throttling_not_just_present():
+    """The previous test only checked the custom 3-attempt policy exists
+    -- it doesn't prove that policy is actually what Step Functions uses
+    for a real Lambda.TooManyRequestsException, since CDK also inserts its
+    own default retry policy (6 attempts, for a different but overlapping
+    set of Lambda error codes) ahead of the custom one in the array (see
+    orchestration_stack.py's module docstring and docs/DECISIONS.md). Step
+    Functions resolves an error against the *first* Retry entry whose
+    ErrorEquals list contains it -- so this asserts the actual, provable
+    thing: Lambda.TooManyRequestsException appears in exactly one of the
+    two policies, meaning there's no ambiguity about which one applies to
+    the specific error this project has actually observed in practice."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent = definition["States"]["InvokeAgent"]
+    matching_policies = [r for r in invoke_agent["Retry"] if "Lambda.TooManyRequestsException" in r["ErrorEquals"]]
+    assert len(matching_policies) == 1
+    assert matching_policies[0]["MaxAttempts"] == 3
 
 
 def test_invoke_agent_catches_everything_to_is_timeout_choice():
@@ -148,10 +185,4 @@ def test_cancel_run_handler_can_stop_executions():
 
 
 def test_no_iam_policy_uses_wildcard_resource():
-    template = _synth_stacks()
-    policies = template.find_resources("AWS::IAM::Policy")
-    for policy in policies.values():
-        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-            resource = statement.get("Resource")
-            if resource == "*":
-                raise AssertionError(f"Wildcard IAM resource found in statement: {statement}")
+    assert_no_overly_broad_iam_policy(_synth_stacks())

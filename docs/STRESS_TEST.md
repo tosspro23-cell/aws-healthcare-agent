@@ -146,6 +146,21 @@ First run, *before* a fix (below): **10/15 ok, 5 failed** -- exactly the
 same failure count as the unprotected sync path, which was surprising:
 Phase 3's whole design point was bounded retry. Investigated why.
 
+> **Correction (2026-09-05)**: an independent review found that this
+> check's definition of "ok" (the raw Step Functions execution status)
+> can disagree with whether the agent's answer actually succeeded --
+> `RecordFailure`/`RecordTimeout` both end the execution *normally*
+> (a real agent failure, correctly caught and recorded), so a genuinely
+> failed run could still show `SUCCEEDED` at the execution level. Fixed
+> to check the DynamoDB record's application-level status instead
+> (matching what the SQS comparison further below already did). Checked
+> whether this changes the numbers on this page: no -- every failure
+> actually observed in this pass was a `Lambda.TooManyRequestsException`
+> at `MarkRunning`, which has no `Catch` and fails the *execution*
+> outright, so the old and new checks agree for every run measured here.
+> See `docs/DECISIONS.md` and `docs/INDEPENDENT_REVIEW_FINDINGS.md`
+> (finding #7).
+
 ### Bug found: retry was only wired onto `InvokeAgent`, not the other three Lambda tasks
 
 Checking one of the 5 failed executions' history showed it died at the

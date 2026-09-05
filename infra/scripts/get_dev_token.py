@@ -9,11 +9,21 @@ Usage:
 
     python infra/scripts/get_dev_token.py
 
-Prints an `export CARE_AGENT_ID_TOKEN=...` line you can eval/copy, and
-optionally writes it to a local file if `--out` is given. The token is an
-ID token (not an access token) -- API Gateway's Cognito JWT authorizer here
-validates against the `aud` claim, which the ID token carries and the
-access token does not.
+Prints an `export CARE_AGENT_ACCESS_TOKEN=...` line you can eval/copy, and
+optionally writes it to a local file if `--out` is given.
+
+Exports the *access* token, not the ID token this script used to export.
+The original reasoning for choosing the ID token ("API Gateway's JWT
+authorizer validates against `aud`, which access tokens don't carry") was
+incomplete: API Gateway's HTTP API JWT authorizer checks the audience
+list against `aud` when present, and automatically falls back to the
+`client_id` claim when it isn't -- exactly Cognito access tokens' shape --
+so no authorizer/CDK change was needed for this switch (see
+docs/DECISIONS.md). Access tokens (carrying scopes, meant to authorize
+API calls) are also the more conventional OAuth2 choice for this purpose
+in the first place; ID tokens are meant to represent user identity to the
+client application that requested them, not to authorize a downstream
+API.
 
 Reads the User Pool / App Client / Hosted UI domain from the deployed
 CareAgentAuthStack's CloudFormation outputs via boto3, rather than
@@ -157,9 +167,9 @@ def main() -> int:
     code = _wait_for_callback()
 
     tokens = _exchange_code_for_tokens(domain=domain, client_id=client_id, code=code, code_verifier=code_verifier)
-    id_token = tokens["id_token"]
+    access_token = tokens["access_token"]
 
-    export_line = f"export CARE_AGENT_ID_TOKEN={id_token}"
+    export_line = f"export CARE_AGENT_ACCESS_TOKEN={access_token}"
     print("\nSuccess. Run this to use the token in this shell session:\n")
     print(export_line)
 

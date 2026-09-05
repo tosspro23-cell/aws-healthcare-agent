@@ -3,6 +3,7 @@ record_result, start_run, get_run, cancel_run) -- all against moto-mocked
 DynamoDB/Step Functions, no real AWS account, no network call.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -110,12 +111,14 @@ def test_agent_task_propagates_exceptions_for_unknown_user():
 # -- record_result --------------------------------------------------------
 def test_record_result_finalizes_success(runs_table):
     runs_table.put_item(Item={"run_id": "r1", "status": "RUNNING"})
-    result = record_result.handler({"run_id": "r1", "outcome": "SUCCEEDED", "answer": "the answer", "safe": True}, None)
+    event = {"run_id": "r1", "outcome": "SUCCEEDED", "answer": "the answer", "safe": True, "narrator_backend": "bedrock"}
+    result = record_result.handler(event, None)
     assert result["finalized_by_this_step"] is True
     item = runs_table.get_item(Key={"run_id": "r1"})["Item"]
     assert item["status"] == "SUCCEEDED"
     assert item["answer"] == "the answer"
     assert item["safe"] is True
+    assert item["narrator_backend"] == "bedrock"
 
 
 def test_record_result_finalizes_failure(runs_table):
@@ -132,7 +135,8 @@ def test_record_result_loses_race_gracefully_when_already_finalized(runs_table):
     cancel_run.py) already finalized this run. record_result must not
     raise or overwrite -- it should report that it lost the race."""
     runs_table.put_item(Item={"run_id": "r1", "status": "CANCELLED"})
-    result = record_result.handler({"run_id": "r1", "outcome": "SUCCEEDED", "answer": "too late", "safe": True}, None)
+    event = {"run_id": "r1", "outcome": "SUCCEEDED", "answer": "too late", "safe": True, "narrator_backend": "bedrock"}
+    result = record_result.handler(event, None)
     assert result["finalized_by_this_step"] is False
     item = runs_table.get_item(Key={"run_id": "r1"})["Item"]
     assert item["status"] == "CANCELLED"  # unchanged -- the winner's write stands
@@ -201,13 +205,22 @@ def test_start_run_non_string_question_returns_400_not_an_eventual_step_function
     assert result["statusCode"] == 400
 
 
-def test_start_run_handles_execution_already_exists_gracefully():
-    """Same run_id submitted twice -- moto doesn't actually enforce
-    ExecutionAlreadyExists for duplicate names, so this exercises the
-    except-branch directly against a mocked client instead."""
+def test_start_run_handles_execution_already_exists_with_matching_input_as_idempotent_retry():
+    """Same run_id, same request, submitted twice -- moto doesn't actually
+    enforce ExecutionAlreadyExists for duplicate names, so this exercises
+    the except-branch directly against a mocked client instead.
+    Regression test: this used to always report "RUNNING" regardless of
+    the execution's real status; now it reports whatever
+    describe_execution actually returns."""
+    
+
+    matching_input = json.dumps(
+        {"run_id": "dup-1", "user_id": "user_demo_001", "question": "hello", "owner_sub": _DEFAULT_CALLER_SUB}
+    )
     fake_client = MagicMock()
     fake_client.exceptions.ExecutionAlreadyExists = ClientError
     fake_client.start_execution.side_effect = ClientError({"Error": {"Code": "ExecutionAlreadyExists"}}, "StartExecution")
+    fake_client.describe_execution.return_value = {"status": "SUCCEEDED", "input": matching_input}
 
     fake_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
     with patch("boto3.client", return_value=fake_client), patch.dict(os.environ, {"STATE_MACHINE_ARN": fake_arn}):
@@ -216,6 +229,42 @@ def test_start_run_handles_execution_already_exists_gracefully():
         result = start_run.handler(event, None)
 
     assert result["statusCode"] == 202
+    assert json.loads(result["body"])["status"] == "SUCCEEDED"
+
+
+def test_start_run_handles_execution_already_exists_with_different_input_as_conflict():
+    """Regression test: an independent review found that ANY run_id reuse
+    was treated as a harmless idempotent retry, regardless of whether the
+    request's actual input matched the existing execution's -- a second,
+    different request could silently piggyback on someone else's
+    already-running or already-finished execution instead of being told
+    about the conflict."""
+    
+
+    different_input = json.dumps(
+        {"run_id": "dup-1", "user_id": "someone_else", "question": "a totally different question", "owner_sub": "other-sub"}
+    )
+    fake_client = MagicMock()
+    fake_client.exceptions.ExecutionAlreadyExists = ClientError
+    fake_client.start_execution.side_effect = ClientError({"Error": {"Code": "ExecutionAlreadyExists"}}, "StartExecution")
+    fake_client.describe_execution.return_value = {"status": "RUNNING", "input": different_input}
+
+    fake_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
+    with patch("boto3.client", return_value=fake_client), patch.dict(os.environ, {"STATE_MACHINE_ARN": fake_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "run_id": "dup-1"}')
+        result = start_run.handler(event, None)
+
+    assert result["statusCode"] == 409
+
+
+@pytest.mark.parametrize("bad_run_id", ["has spaces", "has/slash", "x" * 81, "quote\"mark"])
+def test_start_run_rejects_invalid_run_id_characters(state_machine_arn, bad_run_id):
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body=json.dumps({"user_id": "user_demo_001", "question": "hello", "run_id": bad_run_id}))
+        result = start_run.handler(event, None)
+    assert result["statusCode"] == 400
 
 
 # -- get_run ----------------------------------------------------------------
