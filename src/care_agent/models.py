@@ -247,6 +247,15 @@ class AgentTrace(DictMixin):
     limitations: list[Limitation] = field(default_factory=list)
     safety_checks: list[SafetyCheck] = field(default_factory=list)
     narrator_backend: str = "mock"
+    # Populated only when a non-mock narrator's draft failed a safety
+    # check and the agent fell back to the deterministic narrator (see
+    # `agent.py` and the "narrator_fallback" entry this produces in
+    # `safety_checks`). This is the *rejected* draft, never the answer
+    # actually returned -- kept for debugging/transparency (requested
+    # directly after testing the Workbench: no way existed to see what an
+    # LLM draft had said or why it was discarded), not shown to an end
+    # user as advice.
+    rejected_draft: str | None = None
 
 
 @dataclass

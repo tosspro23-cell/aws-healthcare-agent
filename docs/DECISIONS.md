@@ -8,6 +8,112 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Numeric grounding rejected a model correctly declining to fabricate a number
+
+**Context**: Testing fallback behavior via the Workbench, asked Bedrock to
+"calculate my 10-year cardiovascular risk score" -- something this
+project's data and policies don't support computing. Bedrock did the
+right thing: it declined, explicitly saying a real risk-score calculation
+needs a validated clinical tool and more inputs than are available. This
+safest-possible response still failed `numeric_grounding` and got
+replaced by the (objectively worse in this instance) mock template --
+because "10" (from the user's own "10-year" phrasing, referenced back
+while explaining the refusal) matched no `GroundedFact`. The model hadn't
+invented anything; it echoed a number the caller had already introduced.
+User-reported directly from a live Workbench session, then independently
+reproduced across several other questions (asking for reference ranges,
+population comparisons) that provoke the same shape of false rejection.
+
+**Decision**: `verify_numeric_grounding`/`run_safety_checks` now accept
+the original `question_text` and add any bare (no-unit) number *the
+caller already used* to the weak grounding set. Deliberately narrow:
+this only touches the weaker, no-unit-attached check (already documented
+as incomplete -- "unavoidable for numbers with no unit to bind against").
+The strict value+unit path (e.g. "your LDL is 500 mg/dL") is completely
+unaffected even if a question happens to mention that same number --
+verified directly with a test that a false value+unit claim is still
+rejected when the question also contains the number.
+
+**Verification**: New tests in `tests/test_safety.py` (the exemption, and
+that it doesn't weaken the value+unit path) and
+`tests/test_bedrock_narrator.py` (full agent-level reproduction of the
+exact reported scenario -- now `safe=True`, `narrator_backend="bedrock"`,
+no fallback). Full kernel suite (152 tests, up from 149) and infra suite
+(130 tests) both pass. Live-verified against the deployed `AskHandler`
+after redeploying all 5 stacks: the exact reported question, run 3 times,
+stayed on `bedrock` with no fallback every time. Also confirmed the
+already-verified genuine fallback cases (asking for a reference range
+with units, e.g. hs-CRP "1.0-3.0 mg/L") still correctly fall back --
+the strict path is unaffected.
+
+---
+
+## 2026-09-05 — Fallback debug visibility, mechanical-sounding wording, and a red-flag gap for headaches
+
+**Context**: Three separate pieces of feedback from testing the
+Workbench directly: (1) when a fallback happened, there was no way to see
+what the rejected draft actually said or precisely why -- the
+`narrator_fallback` entry just said "failed a safety check," full stop;
+(2) the composed answers still read as templated/mechanical in a couple
+of specific spots; (3) "I'm having big head pain, what should I do?"
+classified as `priority_focus`, not `red_flag_emergency` -- worth
+checking whether that's a real gap.
+
+**Decision, fallback visibility**: `AgentTrace` gained `rejected_draft:
+str | None`, populated with the discarded narrator output whenever a
+fallback happens; the `narrator_fallback` safety-check detail now names
+which specific check(s) failed and why, not just "a safety check." Never
+surfaced as the answer -- only as debug/trace information, consistent
+with this project's existing "expose enough trace/debug information"
+design goal.
+
+**Decision, wording**: Two real issues found while investigating, not
+just subjective polish: (a) `reasoning.py`'s exercise-limitation and
+family-history modifiers (fixed earlier the same day to render the
+caution's actual reported detail instead of a hardcoded specific claim)
+embedded that detail text verbatim mid-sentence ("given the reported
+exercise limitation: Reports knee pain..."), which reads grammatically
+broken -- a `_naturalize_detail()` helper now strips the leading
+"Reports "/trailing period and lowercases it for natural mid-sentence use.
+(b) `mock_narrator.py`'s closing "Your questionnaire answers changed this
+plan..." sentence was a single hardcoded string emitted whenever *any*
+questionnaire modifier fired, unconditionally naming knee pain/sleep/
+stress regardless of which modifiers actually applied -- only
+coincidentally correct against the shipped sample data, where every
+modifier always fires together. This is the same hardcoded-regardless-
+of-trigger failure mode as several findings from the two independent
+reviews, just not caught there since it lived in the narrator, not
+`reasoning.py`. Rebuilt to name only the modifiers actually present,
+joined with proper "A, B, and C" list grammar instead of a repeated
+"; and" chain (which itself read mechanically once 3+ parts existed).
+
+**Decision, red-flag headache gap**: `_RED_FLAG_PATTERNS` had no
+headache-related coverage at all. Added three specific, medically-
+established emergency-headache phrasings (`worst headache`, `sudden
+severe headache`, `thunderclap headache`) -- deliberately not a bare
+"headache"/"head pain" pattern, since an ordinary headache is common and
+not itself an emergency; flagging every mention would make the system
+wrongly tell people to go to the ER constantly, and breaks the existing
+list's own scoping principle (specific established phrasings only, e.g.
+"chest pain" is present but a generic "chest discomfort" is not). This
+means a vague phrasing like "big head pain" deliberately still does not
+trigger red_flag_emergency after this fix -- flagged to the user as an
+explicit product-judgment boundary, not silently decided.
+
+**Verification**: New tests in `tests/test_intent.py` (headache
+red-flag, and the "big head pain" non-match documenting the boundary),
+`tests/test_mock_narrator.py` (new file: personalization summary omitted
+with no modifiers, and only naming modifiers that actually fired), and
+an extended `tests/test_bedrock_narrator.py` fallback test asserting
+`rejected_draft` and the enriched failure detail. Full kernel suite (152
+tests) and infra suite (130 tests) pass. Live-verified against the
+deployed `AskHandler`: "worst headache of my life" now returns
+`red_flag_emergency` with an emergency-care answer; "big head pain"
+still returns `priority_focus`, confirmed as the intended boundary, not
+an oversight.
+
+---
+
 ## 2026-09-05 — Found via the Workbench itself: "vitamin" hijacked trend questions into supplement_safety
 
 **Context**: Testing the newly-built Workbench end to end, a real question

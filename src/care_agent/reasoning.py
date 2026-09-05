@@ -86,6 +86,19 @@ def importance_weight(catalog_entry: CatalogEntry | None) -> float:
 
 
 _DETAIL_NUMBER_RE = re.compile(r"\d+\.?\d*")
+_LEADING_REPORTS_RE = re.compile(r"^\s*reports?\s+", re.IGNORECASE)
+
+
+def _naturalize_detail(detail: str) -> str:
+    """Turn a questionnaire caution's stored `detail` sentence (e.g.
+    "Reports knee pain with running or jumping.") into a lowercase noun
+    phrase ("knee pain with running or jumping") that reads naturally when
+    embedded mid-sentence in a composed answer, instead of literally
+    quoting a capitalized, period-terminated fragment inline -- which is
+    grammatically awkward and reads as mechanical/templated (raised
+    directly against a live Workbench answer)."""
+    text = _LEADING_REPORTS_RE.sub("", detail).strip().rstrip(".")
+    return text[:1].lower() + text[1:] if text else text
 
 
 def _numbers_in(text: str) -> tuple[float, ...]:
@@ -153,7 +166,7 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
         modifiers.append(
             QuestionnaireModifier(
                 topic="exercise",
-                text=f"prefer low-impact activity{pref_text}, given the reported exercise limitation: {exercise_caution.detail}",
+                text=f"prefer low-impact activity{pref_text}, given your reported {_naturalize_detail(exercise_caution.detail)}",
                 grounded_fact=GroundedFact(
                     claim=f"questionnaire reports exercise limitation: {exercise_caution.detail}",
                     source_type="questionnaire",
@@ -256,8 +269,8 @@ def build_questionnaire_modifiers(context: QuestionnaireContext) -> list[Questio
             QuestionnaireModifier(
                 topic="family_history",
                 text=(
-                    f"treat clinician follow-up as a bit more of a priority given the reported "
-                    f"family history ({family_history_caution.detail}), without treating it as "
+                    f"treat clinician follow-up as a bit more of a priority given your reported "
+                    f"{_naturalize_detail(family_history_caution.detail)}, without treating it as "
                     "proof of a condition"
                 ),
                 grounded_fact=GroundedFact(

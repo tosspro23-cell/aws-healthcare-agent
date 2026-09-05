@@ -143,6 +143,7 @@ def verify_numeric_grounding(
     text: str,
     grounded_facts: list[GroundedFact],
     allowed_dates: set[str] | None = None,
+    question_text: str | None = None,
 ) -> SafetyCheck:
     """Every number in ``text`` must be grounded, at the strongest level
     binding that's actually verifiable:
@@ -170,6 +171,21 @@ def verify_numeric_grounding(
     standing exception for that numeral anywhere else in the text. A
     composer numbering a 5-item list no longer makes "5" a safe number to
     attach to an invented clinical value elsewhere in the same answer.
+
+    ``question_text``, if given, adds any bare number *the caller already
+    used* to the weak (no-unit) grounding set only -- never to the strict
+    value+unit pairs. Found live: an LLM narrator correctly *declining* to
+    fabricate a "10-year cardiovascular risk score" (something genuinely
+    not in this project's data) still failed grounding purely because "10"
+    (from the user's own "10-year" phrasing, echoed back while explaining
+    why it can't answer) matched no grounded fact -- the safest possible
+    response was being rejected for referencing a number the user
+    introduced, not one the model invented. This is deliberately narrow:
+    it does not touch the value+unit path, so "your LDL is 500 mg/dL" is
+    just as rejected as before even if a mischievous question mentioned
+    "500" somewhere -- only a bare, unit-less number can be exempted this
+    way, and that check was already documented as the weaker of the two
+    (see the class docstring above).
     """
     dates_in_text = set(_ISO_DATE_RE.findall(text))
     if allowed_dates is not None:
@@ -185,6 +201,13 @@ def verify_numeric_grounding(
         allowed_values.update(fact.numeric_values)
         if fact.unit and fact.numeric_values:
             allowed_value_unit_pairs.update((value, fact.unit.strip().lower()) for value in fact.numeric_values)
+
+    if question_text:
+        for raw in _NUMBER_RE.findall(_ISO_DATE_RE.sub(" ", question_text)):
+            try:
+                allowed_values.add(float(raw))
+            except ValueError:
+                continue
 
     ordinal_spans = {m.span(1) for m in _ORDINAL_LIST_MARKER_RE.finditer(text_without_dates)}
 
@@ -236,11 +259,12 @@ def run_safety_checks(
     text: str,
     grounded_facts: list[GroundedFact],
     allowed_dates: set[str] | None = None,
+    question_text: str | None = None,
 ) -> SafetyReport:
     checks = (
         check_non_empty(text),
         check_no_diagnosis(text),
         check_no_dosing(text),
-        verify_numeric_grounding(text, grounded_facts, allowed_dates),
+        verify_numeric_grounding(text, grounded_facts, allowed_dates, question_text),
     )
     return SafetyReport(checks=checks)

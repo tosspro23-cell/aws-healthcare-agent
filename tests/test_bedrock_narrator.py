@@ -173,6 +173,57 @@ def test_agent_with_bedrock_narrator_falls_back_when_unsafe(data_dir):
     # checking for the narrator_fallback entry above, would wrongly
     # conclude Bedrock's own output was returned. See docs/DECISIONS.md.
     assert response.trace.narrator_backend == "mock"
+    # Requested after testing the Workbench: a fallback was visible but
+    # opaque -- no way to see what the rejected draft said or specifically
+    # why. The rejected draft and the failing check names/details must now
+    # both be recoverable from the trace.
+    assert response.trace.rejected_draft is not None
+    assert "type 2 diabetes" in response.trace.rejected_draft.lower()
+    # This specific fake draft's failures: "take 500 mg" (no_dosing) and
+    # 500 being an ungrounded number (numeric_grounding). Not no_diagnosis
+    # -- "you definitely have type 2 diabetes" doesn't match the
+    # diagnosis pattern's `you (have|are)` shape because of the
+    # intervening "definitely" (a real, separate gap, not this test's
+    # concern).
+    assert "no_dosing" in fallback_checks[0].detail
+    assert "numeric_grounding" in fallback_checks[0].detail
+
+
+def test_agent_with_bedrock_narrator_does_not_fall_back_for_a_number_echoed_from_the_question(data_dir):
+    """Regression test: found live-testing the Workbench. Bedrock correctly
+    declined to calculate a "10-year cardiovascular risk score" (not
+    something this project's data supports), but the safest possible
+    response -- explicitly refusing to fabricate a number -- used to fail
+    grounding anyway, purely because "10" (echoed from the user's own
+    "10-year" phrasing) matched no grounded fact. This must now pass
+    without falling back to the (objectively less helpful, in this case)
+    mock template."""
+    from care_agent.agent import HealthAgent
+
+    fake_client = _fake_bedrock_client(
+        "I can't calculate your 10-year cardiovascular risk score -- that requires a clinical assessment by your "
+        "healthcare provider using a validated tool, along with additional information like your age and blood "
+        "pressure. That said, your LDL-C is 162 mg/dL and HbA1c is 6.1%, both flagged in your latest panel."
+    )
+
+    with patch("boto3.client", return_value=fake_client):
+        narrator = BedrockNarrator(model_id="anthropic.claude-haiku-4-5-20251001-v1:0")
+
+    agent = HealthAgent(
+        data_dir=data_dir,
+        catalog_path=data_dir / "mock_biomarker_catalog.sqlite",
+        kb_path=data_dir / "knowledge_base.jsonl",
+        narrator=narrator,
+    )
+
+    response = agent.ask(
+        user_id="user_demo_001", question_text="Can you calculate my 10-year cardiovascular risk score from these results?"
+    )
+
+    assert response.safe is True
+    assert response.trace.narrator_backend == "bedrock"
+    fallback_checks = [c for c in response.trace.safety_checks if c.name == "narrator_fallback"]
+    assert fallback_checks == []
 
 
 def test_no_content_blocks_returns_empty_string():

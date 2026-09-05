@@ -33,6 +33,21 @@ _RED_FLAG_PATTERNS = [
     r"\bsuicide\b",
     r"\bwant to die\b",
     r"\brapidly worsening\b",
+    # Found live-testing the Workbench: "I'm having big head pain, what
+    # should I do?" fell through to priority_focus (via "what should I
+    # do"), not red_flag -- headache had no coverage here at all. These
+    # three are specific, medically-established red-flag phrasings for a
+    # headache (the kind associated with a possible stroke/aneurysm), not
+    # a bare "headache"/"head pain" -- an ordinary headache is common and
+    # not itself an emergency, and flagging every mention of one would
+    # make this constantly (and wrongly) tell people to go to the ER. This
+    # keeps the same scoping principle as the rest of this list: specific
+    # established phrasings, not generic symptom words. A vaguer phrase
+    # like "big head pain" deliberately still won't match -- see
+    # docs/DECISIONS.md for the reasoning and where that line is drawn.
+    r"\bworst headache\b",
+    r"\bsudden severe headache\b",
+    r"\bthunderclap headache\b",
 ]
 
 _SUPPLEMENT_PATTERNS = [r"\bsupplement", r"\bdose\b", r"\bdosage\b", r"\bpill\b", r"\bmg\b of\b"]

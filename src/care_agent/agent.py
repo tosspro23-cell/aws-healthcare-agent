@@ -286,15 +286,20 @@ class HealthAgent:
 
         # -- narrate + verify --------------------------------------------------
         answer_text = self.narrator.compose(brief, question_text, profile)
-        report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
+        report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates, question_text)
 
         used_fallback = False
         if not report.passed and self.narrator.backend_name != "mock":
             # An LLM (or any non-mock) narrator failed a safety/grounding check.
             # Fall back to the deterministic narrator rather than return
-            # unverified text.
+            # unverified text. Keep the rejected draft and its failure
+            # reasons -- requested after testing the Workbench, where a
+            # fallback was visible but opaque (no way to see what the
+            # draft said or specifically why it was rejected).
+            rejected_draft = answer_text
+            rejected_report = report
             answer_text = self._mock_narrator.compose(brief, question_text, profile)
-            report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
+            report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates, question_text)
             used_fallback = True
             # trace.narrator_backend was set above to the *selected*
             # backend (e.g. "bedrock") before we knew a fallback would
@@ -305,14 +310,19 @@ class HealthAgent:
             # entry in safety_checks) would wrongly conclude the real
             # model's output was returned. See docs/DECISIONS.md.
             trace.narrator_backend = self._mock_narrator.backend_name
+            trace.rejected_draft = rejected_draft
 
         trace.safety_checks = list(report.checks)
         if used_fallback:
+            failure_reasons = "; ".join(f"{c.name} ({c.detail})" if c.detail else c.name for c in rejected_report.failed_checks)
             trace.safety_checks.append(
                 type(report.checks[0])(
                     name="narrator_fallback",
                     passed=True,
-                    detail=f"Fell back to mock narrator because backend {self.narrator.backend_name!r} failed a safety check.",
+                    detail=(
+                        f"Fell back to mock narrator because backend {self.narrator.backend_name!r} "
+                        f"failed: {failure_reasons}. The rejected draft is in trace.rejected_draft."
+                    ),
                 )
             )
 

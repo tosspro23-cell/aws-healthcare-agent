@@ -70,6 +70,47 @@ def _next_steps(brief: Brief) -> list[str]:
     return steps
 
 
+def _personalization_summary(brief: Brief) -> str | None:
+    """Built from whichever questionnaire modifiers actually fired this
+    time, not a fixed sentence naming every possible personalization this
+    project supports -- raised directly against a live Workbench answer:
+    the old version unconditionally claimed the plan "steers toward
+    low-impact movement given knee pain" and "keeps changes small given
+    sleep and stress" whenever *any* modifier was present, regardless of
+    whether those specific ones actually fired. Only coincidentally
+    correct with the shipped sample data, where every modifier always
+    fires together -- the same hardcoded-regardless-of-trigger failure
+    mode already fixed elsewhere in this file's callers (see
+    docs/DECISIONS.md)."""
+    topics = {m.topic for m in brief.questionnaire_modifiers}
+    if not topics:
+        return None
+    parts = []
+    if "exercise" in topics:
+        parts.append("steers toward accommodations for your reported exercise limitation")
+    if "pacing" in topics:
+        parts.append("keeps the number of simultaneous changes small given what you reported about sleep and stress")
+    if "nutrition" in topics or "exercise_volume" in topics:
+        parts.append("leans on your stated food and activity preferences instead of a generic plan")
+    if "family_history" in topics:
+        parts.append("gives your reported family history a bit more weight when suggesting clinician follow-up")
+    if not parts:
+        return None
+    return f"Your questionnaire answers changed this plan: it {_join_naturally(parts)}."
+
+
+def _join_naturally(parts: list[str]) -> str:
+    """ "A, B, and C" rather than "; and "-joining every part regardless of
+    count -- the latter reads mechanically once there are 3+ parts, which
+    is exactly the "still feels templated" feedback that motivated
+    breaking this sentence up into parts in the first place."""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
 def _compose_priority_focus(brief: Brief, question_text: str, profile: UserProfile) -> str:
     lines: list[str] = []
     top = brief.focus_items[:_TOP_N_FOCUS]
@@ -105,12 +146,9 @@ def _compose_priority_focus(brief: Brief, question_text: str, profile: UserProfi
         lines.append("Next steps:")
         lines.extend(f"- {s}" for s in steps)
 
-    if brief.questionnaire_modifiers:
-        lines.append(
-            "Your questionnaire answers changed this plan: it steers toward low-impact movement given knee pain, "
-            "keeps the number of simultaneous changes small given reported sleep and stress, and leans on your "
-            "stated food and activity preferences instead of a generic plan."
-        )
+    personalization = _personalization_summary(brief)
+    if personalization:
+        lines.append(personalization)
 
     for lim in brief.limitations:
         lines.append(f"Limitation: {lim.detail}")

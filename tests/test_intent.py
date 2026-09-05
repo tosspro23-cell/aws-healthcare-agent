@@ -26,6 +26,26 @@ def test_red_flag_takes_priority_over_supplement_keywords():
     assert r.intent == RED_FLAG
 
 
+def test_worst_headache_is_red_flag():
+    r = classify("I have the worst headache of my life, what should I do?")
+    assert r.intent == RED_FLAG
+
+
+def test_sudden_severe_headache_is_red_flag():
+    r = classify("I have a sudden severe headache and blurry vision.")
+    assert r.intent == RED_FLAG
+
+
+def test_vague_head_pain_is_not_red_flag():
+    """Documents where the line is intentionally drawn (see
+    docs/DECISIONS.md): a vague, common phrasing like "big head pain" is
+    not one of the specific, established emergency-headache phrasings
+    this project checks for, so it falls through to whatever the rest of
+    the question implies -- here, priority_focus, via "what should I do"."""
+    r = classify("I'm having big head pain, what should I do?")
+    assert r.intent == PRIORITY_FOCUS
+
+
 def test_vitamin_d_trend_question_is_trend_check_not_supplement_safety():
     """Regression test: found live-testing the Workbench. "Vitamin D" is
     both a biomarker name and a word `_SUPPLEMENT_PATTERNS` matches on its

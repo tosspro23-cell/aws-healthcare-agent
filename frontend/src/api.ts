@@ -42,6 +42,7 @@ export interface AgentTrace {
   grounded_facts: GroundedFact[];
   limitations: Limitation[];
   safety_checks: SafetyCheck[];
+  rejected_draft: string | null;
   narrator_backend: string;
 }
 

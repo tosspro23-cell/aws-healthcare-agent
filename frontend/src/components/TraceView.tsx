@@ -1,6 +1,8 @@
 import type { AgentTrace } from "../api";
 
 export function TraceView({ trace }: { trace: AgentTrace }) {
+  const fallback = trace.safety_checks.find((c) => c.name === "narrator_fallback");
+
   return (
     <div className="trace">
       <section>
@@ -15,6 +17,18 @@ export function TraceView({ trace }: { trace: AgentTrace }) {
           ))}
         </ul>
       </section>
+
+      {fallback && trace.rejected_draft && (
+        <section className="rejected-draft">
+          <h3>⚠ A draft was rejected and replaced</h3>
+          <p className="meta">{fallback.detail}</p>
+          <p className="rejected-label">
+            The text below is <strong>not</strong> the answer shown above -- it's the discarded draft, kept here only so you can see
+            what was rejected and why.
+          </p>
+          <pre className="rejected-text">{trace.rejected_draft}</pre>
+        </section>
+      )}
 
       <section>
         <h3>Grounded facts ({trace.grounded_facts.length})</h3>
