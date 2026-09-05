@@ -27,12 +27,14 @@ def _synth_stacks():
         app,
         "TestOrchStack",
         runs_table=data_stack.runs_table,
+        evidence_bucket=data_stack.evidence_bucket,
         lambda_asset_dir=_LAMBDA_ASSET_DIR,
     )
     queue_stack = QueueStack(
         app,
         "TestQueueStack",
         runs_table=data_stack.runs_table,
+        evidence_bucket=data_stack.evidence_bucket,
         lambda_asset_dir=_LAMBDA_ASSET_DIR,
     )
     api_stack = ApiStack(

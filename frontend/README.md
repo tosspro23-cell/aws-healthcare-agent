@@ -17,13 +17,15 @@ terminal, cancellable while pending), or the SQS-buffered `POST /jobs`
 (same polling). A client-side run history (localStorage) lets any past
 run be revisited by `run_id` after a reload.
 
-Only the synchronous path shows a full grounding trace -- the async
-paths' DynamoDB records only ever carry
-`answer`/`safe`/`narrator_backend`, not safety checks or grounded facts,
-so that's genuinely all there is to show for them today. Markdown
-rendering for LLM prose and real hosting (beyond a local dev server)
-aren't built -- see `docs/AWS_ROADMAP.md`'s Phase 6 section for the full
-list of what's still open.
+All three paths now show a full grounding trace (safety checks, grounded
+facts, sources) -- `agent_task.py`/`process_job.py` persist evidence to
+S3 the same way `adapter.py` does, and `get_run.py` merges it in.
+Bedrock's markdown-formatted prose renders properly (`react-markdown`)
+instead of showing literal `**bold**` syntax. Also publicly hosted, over
+HTTPS, via `FrontendStack` (S3 + CloudFront) -- see
+`docs/AWS_ROADMAP.md`'s Phase 6 section for the deploy URL and the
+two-pass deployment reasoning, and `infra/app.py`'s docstring for exactly
+how to run it.
 
 ## Setup
 
@@ -56,6 +58,23 @@ first.
 The deployed API Gateway also needs CORS configured for this origin
 specifically (`infra/stacks/api_stack.py`'s `cors_preflight`) -- already
 wired in, but if you change the dev port, that needs updating too.
+
+## Deploy (public hosting)
+
+This app is also deployed as a real, public HTTPS site via
+`infra/stacks/frontend_stack.py` (S3 + CloudFront) -- deploying the infra
+app (`cd infra && cdk deploy --all`) builds and deploys this frontend
+automatically (`build_frontend_asset.py`), no separate step needed. It
+still needs `frontend/.env.local` filled in first (see Setup above) --
+the built bundle is static, so those values are baked in at build time,
+not read from the server at runtime.
+
+The Cognito callback URL and API CORS origin for the hosted URL are
+registered via a second deploy pass once the CloudFront domain is known
+-- see `infra/app.py`'s module docstring for the exact commands. The
+redirect/logout URI in `src/config.ts` is derived from
+`window.location.origin`, so the same build works unmodified whether
+it's opened via `localhost:8765` or the hosted URL.
 
 ## Why this shape
 

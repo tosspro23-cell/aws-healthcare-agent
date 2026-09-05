@@ -47,8 +47,10 @@ from botocore.exceptions import ClientError
 from care_agent.data_store import UnknownUserError
 
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
+_EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
 
 _dynamodb_resource = None
+_s3_client = None
 
 
 def _dynamodb():
@@ -56,6 +58,13 @@ def _dynamodb():
     if _dynamodb_resource is None:
         _dynamodb_resource = boto3.resource("dynamodb")
     return _dynamodb_resource
+
+
+def _s3():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3")
+    return _s3_client
 
 
 def _write_result(run_id: str, *, if_status_in: tuple[str, ...] | None = None, **fields: object) -> bool:
@@ -128,6 +137,22 @@ def handler(event: dict, context: object) -> None:
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
             continue
+
+        # Persisted to the same {run_id}.json key adapter.py/agent_task.py
+        # use, so get_run.py can find a full grounding trace for this path
+        # too -- previously only the synchronous /ask path had one
+        # anywhere. Written before the final DynamoDB write, same
+        # ordering rationale as adapter.py's own fix: if this raises, it
+        # propagates per this module's existing retry philosophy (SQS
+        # redelivers, the run stays RUNNING rather than being falsely
+        # marked SUCCEEDED with no evidence).
+        if _EVIDENCE_BUCKET_NAME:
+            _s3().put_object(
+                Bucket=_EVIDENCE_BUCKET_NAME,
+                Key=f"{run_id}.json",
+                Body=json.dumps(response.trace.as_dict(), default=str).encode("utf-8"),
+                ContentType="application/json",
+            )
 
         _write_result(
             run_id,

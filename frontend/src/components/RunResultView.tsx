@@ -1,4 +1,6 @@
 import type { RunRecord } from "../api";
+import { Markdown } from "./Markdown";
+import { TraceView } from "./TraceView";
 
 const TERMINAL_STATUSES = new Set(["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"]);
 
@@ -6,10 +8,11 @@ export function isTerminal(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-/** Renders the *compact* record `GET /runs/{run_id}` returns for the
- * async paths -- deliberately simpler than `TraceView` (see api.ts's
- * `RunRecord` doc comment): only the synchronous `/ask` path persists a
- * full grounding trace, so an async run genuinely has less to show. */
+/** Renders a run record from `GET /runs/{run_id}` -- covers all three
+ * execution paths. `trace` is present once the run's Lambda has written
+ * its evidence to S3 (see api.ts's `RunRecord` doc comment); a run still
+ * in progress, or one from before that evidence write existed, simply
+ * doesn't have one yet. */
 export function RunResultView({ run }: { run: RunRecord }) {
   const pending = !isTerminal(run.status);
 
@@ -19,7 +22,7 @@ export function RunResultView({ run }: { run: RunRecord }) {
       {typeof run.safe === "boolean" && (
         <div className={`safe-badge ${run.safe ? "safe" : "unsafe"}`}>{run.safe ? "SAFE" : "UNSAFE -- rejected"}</div>
       )}
-      {run.answer && <p className="answer">{run.answer}</p>}
+      {run.answer && <Markdown text={run.answer} />}
       {run.error_message && <p className="error">{run.error_message}</p>}
       <p className="meta">
         run_id: <code>{run.run_id}</code> &middot; execution_type: <code>{run.execution_type}</code>
@@ -30,11 +33,12 @@ export function RunResultView({ run }: { run: RunRecord }) {
           </>
         )}
       </p>
-      {!pending && (
-        <p className="meta rejected-label">
-          Only the synchronous /ask path persists a full grounding trace (safety checks, grounded facts, sources) -- this async
-          path's DynamoDB record only ever stores the answer, safety verdict, and narrator backend shown above.
-        </p>
+      {run.trace ? (
+        <TraceView trace={run.trace} />
+      ) : (
+        !pending && (
+          <p className="meta rejected-label">No grounding trace was found for this run (it may predate evidence persistence).</p>
+        )
       )}
     </div>
   );

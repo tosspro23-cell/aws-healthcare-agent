@@ -12,6 +12,13 @@ read any other caller's run, including its full answer text -- see
 same 404 as a genuinely missing run_id, not a 403 -- confirming "this
 exists but isn't yours" would itself leak information to a caller who
 shouldn't be able to tell the difference.
+
+Also opportunistically merges in the full grounding trace from S3, under
+a `trace` key, if one has been written for this `run_id` --
+`adapter.py`/`agent_task.py`/`process_job.py` all persist one to the same
+`{run_id}.json` key once their run completes. A run still in progress
+(no object written yet) or one from before this evidence write existed
+simply has no `trace` key; that's expected, not an error.
 """
 
 from __future__ import annotations
@@ -22,10 +29,13 @@ from typing import Any
 
 import auth_context
 import boto3
+from botocore.exceptions import ClientError
 
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
+_EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
 
 _dynamodb_resource = None
+_s3_client = None
 
 
 def _dynamodb():
@@ -35,12 +45,43 @@ def _dynamodb():
     return _dynamodb_resource
 
 
+def _s3():
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3")
+    return _s3_client
+
+
 def _json_response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "statusCode": status,
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps(payload, default=str),
     }
+
+
+def _fetch_trace(run_id: str) -> dict | None:
+    if not _EVIDENCE_BUCKET_NAME:
+        return None
+    try:
+        obj = _s3().get_object(Bucket=_EVIDENCE_BUCKET_NAME, Key=f"{run_id}.json")
+    except ClientError:
+        # Real, reproduced-live behavior, not a hypothetical: this
+        # handler is deliberately granted only s3:GetObject, not
+        # s3:ListBucket (see orchestration_stack.py -- ListBucket would
+        # let it enumerate every run_id's evidence in the bucket, a much
+        # bigger permission than "read one object I already know the key
+        # for"). Without ListBucket, S3 can't tell the caller whether a
+        # missing key doesn't exist or is merely inaccessible, so it
+        # returns AccessDenied instead of NoSuchKey/404 -- confirmed via
+        # a real polling run that started before agent_task.py had
+        # written its evidence yet. Treated the same as "no trace yet":
+        # this is a best-effort enrichment on top of the DynamoDB record
+        # (which already has the real status/answer), not the source of
+        # truth, so any failure to fetch it should degrade gracefully
+        # rather than fail the whole GET /runs/{run_id} response.
+        return None
+    return json.loads(obj["Body"].read())
 
 
 def handler(event: dict, context: object) -> dict:
@@ -54,4 +95,9 @@ def handler(event: dict, context: object) -> dict:
     if item is None or item.get("owner_sub") != owner_sub:
         return _json_response(404, {"error": f"No run found for run_id={run_id!r}."})
 
-    return _json_response(200, dict(item))
+    result = dict(item)
+    trace = _fetch_trace(run_id)
+    if trace is not None:
+        result["trace"] = trace
+
+    return _json_response(200, result)

@@ -328,7 +328,7 @@ closing section for the full reasoning on each.
   it isn't — but as a hands-on learning exercise.
 - ⬜ Tear down whatever gets provisioned afterward to avoid ongoing cost.
 
-## Phase 6 — Frontend / Workbench (all three backend paths live; hosting and async trace depth still open)
+## Phase 6 — Frontend / Workbench (complete: all three backend paths, full async trace, public hosting)
 
 Everything through Phase 5 was backend-only: real auth existed (Cognito
 Hosted UI is a genuine login page), but nothing called it except this
@@ -383,18 +383,44 @@ that into something usable in a browser, deliberately scoped to the
   a run, cancelled it immediately, and confirmed the record stayed
   `CANCELLED` -- not overwritten by the agent's own completion -- 3
   seconds later, well past when it would normally have finished.
-- ⬜ **Still not done**: markdown rendering for the answer text (Bedrock's
-  prose includes literal `**bold**` markers right now, shown as-is rather
-  than rendered), and real hosting -- it only runs as a local dev server
-  today (`npm run dev` on the one port, 8765, Cognito's App Client
-  currently allows as a redirect URI); an S3+CloudFront deployment needs
-  its own CDK stack and a second registered callback URL. Note also that
-  only the synchronous `/ask` path persists a full grounding trace (to
-  S3); the async paths' `GET /runs/{run_id}` response only ever has
-  `answer`/`safe`/`narrator_backend`, not safety checks or grounded facts
-  -- extending `agent_task.py`/`process_job.py` to also write S3 evidence
-  would need its own IAM/infra changes and wasn't done as part of this
-  pass.
+- ✅ **Markdown rendering**: Bedrock's prose (`**bold**`, numbered lists,
+  headings) now renders properly (`react-markdown` -- never executes raw
+  HTML, appropriate for text ultimately produced by an LLM completion)
+  instead of showing literal markdown syntax.
+- ✅ **Full grounding trace for the async paths too**: `agent_task.py` and
+  `process_job.py` now persist to the same `{run_id}.json` S3 evidence key
+  `adapter.py`'s synchronous path already used, with matching precise IAM
+  (`s3:PutObject` on the object prefix only). `get_run.py` opportunistically
+  merges that trace in under a `trace` key when one exists. **A second real
+  bug found live**: `get_run.py` is deliberately granted only `s3:GetObject`
+  (not `s3:ListBucket`, which would let it enumerate every run_id's
+  evidence) -- without `ListBucket`, S3 returns `AccessDenied` instead of a
+  clean `NoSuchKey`/404 for an object that doesn't exist yet, which
+  crashed the whole `GET /runs/{run_id}` response with a 500 the first
+  time a poll landed before the evidence was written. Fixed by treating
+  any S3 read failure for this best-effort enrichment as "no trace yet"
+  rather than propagating -- the DynamoDB record's status/answer, the
+  actual source of truth, was never at risk.
+- ✅ **Publicly hosted**: `FrontendStack` (S3 + CloudFront, Origin Access
+  Control, no public bucket) serves the built Workbench over HTTPS.
+  Two-pass deploy (see `app.py`'s docstring): the CloudFront domain isn't
+  known until first deploy, then gets registered as a second Cognito
+  callback/logout URL and a second CORS origin. The redirect/logout URI is
+  now derived from `window.location.origin` rather than hardcoded to
+  `localhost:8765`, so the same build works unmodified locally and hosted.
+  **Self-sign-up disabled** before making the link public (`AuthStack`)
+  -- an account still has to be created with `AdminCreateUser`, not public
+  registration, even though the data behind it is entirely synthetic.
+  Mobile-responsive pass (flex-wrapping mode tabs, 16px inputs to avoid
+  iOS Safari's zoom-on-focus, 44px touch targets, a narrow-viewport media
+  query) -- verified on an emulated 375px mobile viewport against the real
+  hosted URL, not just locally.
+
+Live-verified on the actual public URL end to end: sign-in through the
+real Cognito Hosted UI (no "Sign up" link anymore), a real `/ask` call
+with markdown rendering, a Step-Functions run showing its full trace
+after the `get_run.py` fix, all confirmed on both desktop and an emulated
+mobile viewport.
 
 Deliberately scoped this way rather than building the full surface at
 once, per the same "ship the core loop, verify it live, then expand"

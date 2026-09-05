@@ -47,7 +47,21 @@ def runs_table():
             AttributeDefinitions=[{"AttributeName": "run_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        # get_run.py now opportunistically reads a full trace from S3 --
+        # the bucket must exist in this same mock context or that read
+        # fails with NoSuchBucket (not the NoSuchKey/404 get_run.py
+        # already tolerates as "no trace written yet").
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=os.environ["EVIDENCE_BUCKET_NAME"])
+        get_run._s3_client = None
         yield boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+
+
+@pytest.fixture()
+def evidence_bucket():
+    with mock_aws():
+        boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=os.environ["EVIDENCE_BUCKET_NAME"])
+        agent_task._s3_client = None
+        yield os.environ["EVIDENCE_BUCKET_NAME"]
 
 
 @pytest.fixture()
@@ -92,11 +106,27 @@ def test_mark_running_refuses_to_overwrite_a_run_id_collision(runs_table):
 
 
 # -- agent_task -----------------------------------------------------------
-def test_agent_task_returns_grounded_answer():
+def test_agent_task_returns_grounded_answer(evidence_bucket):
     result = agent_task.handler({"run_id": "r1", "user_id": "user_demo_001", "question": "What should I focus on first?"}, None)
     assert result["safe"] is True
     assert "162" in result["answer"]
     assert result["trace"]["intent"] == "priority_focus"
+
+
+def test_agent_task_persists_full_trace_to_s3(evidence_bucket):
+    """Regression test: until this, only the synchronous /ask path
+    (adapter.py) persisted a full grounding trace anywhere -- GET
+    /runs/{run_id} could only ever show answer/safe/narrator_backend for
+    a Step-Functions-orchestrated run. Written to the same {run_id}.json
+    key adapter.py uses, so get_run.py can find it regardless of which
+    path produced it."""
+    agent_task.handler({"run_id": "r-trace-1", "user_id": "user_demo_001", "question": "What should I focus on first?"}, None)
+
+    obj = boto3.client("s3", region_name="us-east-1").get_object(Bucket=evidence_bucket, Key="r-trace-1.json")
+    trace = json.loads(obj["Body"].read())
+    assert trace["intent"] == "priority_focus"
+    assert len(trace["grounded_facts"]) > 0
+    assert len(trace["safety_checks"]) == 4
 
 
 def test_agent_task_propagates_exceptions_for_unknown_user():
@@ -275,6 +305,60 @@ def test_get_run_returns_existing_item(runs_table):
     import json
 
     assert json.loads(result["body"])["status"] == "SUCCEEDED"
+
+
+def test_get_run_merges_in_the_full_trace_when_evidence_exists(runs_table):
+    """Regression test: get_run.py now opportunistically reads a full
+    grounding trace from S3 (the same {run_id}.json key
+    adapter.py/agent_task.py/process_job.py all write to) and merges it
+    under a "trace" key -- previously the async paths' compact DynamoDB
+    record was all GET /runs/{run_id} could ever return."""
+    runs_table.put_item(Item={"run_id": "r-with-trace", "status": "SUCCEEDED", "answer": "hi", "owner_sub": _DEFAULT_CALLER_SUB})
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=os.environ["EVIDENCE_BUCKET_NAME"],
+        Key="r-with-trace.json",
+        Body=json.dumps({"intent": "priority_focus", "safety_checks": []}),
+    )
+    result = get_run.handler(_api_event(path_params={"run_id": "r-with-trace"}), None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["trace"]["intent"] == "priority_focus"
+
+
+def test_get_run_omits_trace_key_when_no_evidence_written_yet(runs_table):
+    """A run still in progress (or one from before this feature existed)
+    has no object in S3 -- that's expected, not an error, and the
+    response simply has no "trace" key rather than a 500."""
+    runs_table.put_item(Item={"run_id": "r-no-trace", "status": "RUNNING", "owner_sub": _DEFAULT_CALLER_SUB})
+    result = get_run.handler(_api_event(path_params={"run_id": "r-no-trace"}), None)
+    assert result["statusCode"] == 200
+    assert "trace" not in json.loads(result["body"])
+
+
+def test_get_run_tolerates_s3_access_denied_for_a_missing_trace_object(runs_table):
+    """Regression test: found live, against the real deployed account, not
+    a hypothetical. get_run.py is deliberately granted only s3:GetObject,
+    not s3:ListBucket (ListBucket would let it enumerate every run_id's
+    evidence in the bucket). Without ListBucket, S3 can't tell a caller
+    whether a missing key doesn't exist or is merely inaccessible, so it
+    returns AccessDenied instead of NoSuchKey/404 for a run whose evidence
+    hasn't been written yet -- moto doesn't reproduce this (it doesn't
+    enforce IAM), so this is reproduced by making the real S3 call raise
+    the exact error shape observed live. Before this fix, that AccessDenied
+    propagated uncaught and the whole GET /runs/{run_id} response 500'd,
+    even though the DynamoDB record itself was perfectly readable."""
+    runs_table.put_item(Item={"run_id": "r-still-running", "status": "RUNNING", "owner_sub": _DEFAULT_CALLER_SUB})
+
+    with patch("get_run._s3") as mock_s3_factory:
+        mock_s3_factory.return_value.get_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}}, "GetObject"
+        )
+        result = get_run.handler(_api_event(path_params={"run_id": "r-still-running"}), None)
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["status"] == "RUNNING"
+    assert "trace" not in body
 
 
 def test_get_run_missing_returns_404(runs_table):

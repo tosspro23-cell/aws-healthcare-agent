@@ -8,6 +8,88 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Phase 6 finished out: async trace persistence, markdown rendering, public hosting
+
+**Context**: Requested as the last increment on the Workbench: (1) give
+the async paths the same full grounding trace the sync path already has,
+(2) render Bedrock's markdown prose instead of showing literal syntax,
+(3) host the Workbench somewhere real instead of only `npm run dev`,
+explicitly as "a step toward a real user-facing product" -- with two
+requirements attached: self-sign-up must be off first (a public link
+shouldn't let strangers create accounts, even against synthetic data),
+and the layout needed to actually work on a phone, not just a desktop
+dev browser.
+
+**Decision, trace persistence**: `agent_task.py` and `process_job.py`
+now write their full trace to the same `{run_id}.json` S3 key
+`adapter.py`'s synchronous path already used, with the same
+precisely-scoped `s3:PutObject` grant pattern this project has used
+throughout. `get_run.py` opportunistically merges that trace in under a
+`trace` key.
+
+**A second real bug found live, not a hypothetical**: `get_run.py` is
+deliberately granted only `s3:GetObject` (not `s3:ListBucket`, which
+would let it enumerate every run_id's evidence in the bucket -- a much
+bigger permission than "read one object I already know the key for").
+Without `ListBucket`, S3 can't tell a caller whether a missing key
+doesn't exist or is merely inaccessible, so it returns `AccessDenied`
+instead of `NoSuchKey`/404 for a run whose evidence hasn't been written
+yet. This propagated uncaught and 500'd the *entire* `GET /runs/{run_id}`
+response -- including the DynamoDB status/answer, which were perfectly
+fine and had nothing to do with the missing trace. Reproduced against the
+real deployed account (moto doesn't enforce IAM, so this couldn't have
+been caught there) via the Workbench's own polling hitting it mid-run.
+Fixed by treating *any* S3 read failure for this specific, best-effort
+enrichment as "no trace yet" -- it sits on top of DynamoDB's record,
+never replaces it as the source of truth, so a failure here should never
+be allowed to take down the whole response.
+
+**Decision, markdown rendering**: `react-markdown` (never executes raw
+HTML -- parses to React elements, appropriate since this text ultimately
+originates from an LLM completion, not fully trusted content even though
+the safety pipeline already constrains its factual claims).
+
+**Decision, public hosting**: `FrontendStack` (S3 + CloudFront, Origin
+Access Control, no public bucket policy, no website-hosting endpoint) --
+built via a `build_frontend_asset.py` mirroring `build_lambda_asset.py`'s
+existing pattern. Self-sign-up disabled on the User Pool
+(`self_sign_up_enabled=False`) before the URL went live -- confirmed
+visually (the Hosted UI's "Sign up" link is gone) and via
+`AllowAdminCreateUserOnly: true` on the real user pool; no test or flow
+in this project ever depended on self-sign-up staying on. A mobile pass
+(flex-wrapping mode tabs, 16px form inputs to avoid iOS Safari's
+zoom-on-focus, 44px touch targets, a narrow-viewport media query) --
+verified on an emulated 375px viewport against the real hosted URL.
+
+**The two-pass deployment problem**: `FrontendStack`'s CloudFront domain
+isn't known until after its first deploy, but `AuthStack`'s Cognito App
+Client and `ApiStack`'s CORS both need that exact domain registered
+before a browser served from it can complete a real login or call the
+API. Solved with an optional `CARE_AGENT_WORKBENCH_URL` env var
+`app.py` threads into both stacks -- unset for the first deploy, set to
+the printed `WorkbenchUrl` output for the second. The frontend's own
+redirect/logout URI is derived from `window.location.origin` rather than
+hardcoded, so the exact same build works unmodified on `localhost:8765`
+and the hosted URL -- no separate "production build" was needed.
+
+**Verification**: Full kernel/infra test suites pass (infra: 139 tests,
+up from 130, including new `test_frontend_stack.py` and regression tests
+for both the trace-merging behavior and the `AccessDenied` fix). `cdk
+synth --all` succeeds (6 stacks now). Deployed live in two passes;
+confirmed via `describe-user-pool-client` that both `localhost:8765` and
+the CloudFront URL are registered as callback/logout URLs, via
+`describe-user-pool` that `AllowAdminCreateUserOnly` is `true`, and via a
+live CORS preflight that the CloudFront origin is allowed. End-to-end in
+a real browser against the live public URL: sign-in through the actual
+Cognito Hosted UI (a human completed the credential entry, per this
+project's standing constraint), a real `/ask` call with markdown
+rendering, a Step-Functions run showing its full trace after the
+`get_run.py` fix (reproduced the 500 live first, then confirmed the fix
+against the same run_id), and the whole page checked on an emulated
+375px mobile viewport.
+
+---
+
 ## 2026-09-05 — `cancel_run.py`'s two conflict responses used "message" instead of "error"
 
 **Context**: User-reported from the Workbench: a `Cancel this run` click

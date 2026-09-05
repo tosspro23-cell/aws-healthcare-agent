@@ -20,6 +20,7 @@ def _synth_stacks():
         app,
         "TestOrchStack",
         runs_table=data_stack.runs_table,
+        evidence_bucket=data_stack.evidence_bucket,
         lambda_asset_dir=Path(__file__).resolve().parent.parent / "lambda_src",
     )
     return Template.from_stack(orch_stack)

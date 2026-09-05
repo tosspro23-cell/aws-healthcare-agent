@@ -34,10 +34,13 @@ def aws_resources():
         )
         sqs = boto3.client("sqs", region_name="us-east-1")
         queue_url = sqs.create_queue(QueueName="test-jobs-queue")["QueueUrl"]
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=os.environ["EVIDENCE_BUCKET_NAME"])
 
         enqueue_job._dynamodb_resource = None
         enqueue_job._sqs_client = None
         process_job._dynamodb_resource = None
+        process_job._s3_client = None
         with patch.dict(os.environ, {"JOBS_QUEUE_URL": queue_url}):
             yield queue_url
 
@@ -198,6 +201,21 @@ def test_process_job_writes_succeeded_result(aws_resources):
     assert item["safe"] is True
     assert item["narrator_backend"] == "mock"
     assert "162" in item["answer"]
+
+
+def test_process_job_persists_full_trace_to_s3(aws_resources):
+    """Regression test: same fix as agent_task.py's -- until this, the
+    SQS-buffered path had no full grounding trace anywhere either,
+    written to the same {run_id}.json key the other two paths use."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-trace-1", "status": "QUEUED"})
+
+    process_job.handler(_sqs_event("job-trace-1", "user_demo_001", "What should I focus on first?"), None)
+
+    obj = boto3.client("s3", region_name="us-east-1").get_object(Bucket=os.environ["EVIDENCE_BUCKET_NAME"], Key="job-trace-1.json")
+    trace = json.loads(obj["Body"].read())
+    assert trace["intent"] == "priority_focus"
+    assert len(trace["grounded_facts"]) > 0
 
 
 def test_process_job_marks_running_before_finishing(aws_resources):

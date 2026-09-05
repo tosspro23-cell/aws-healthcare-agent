@@ -22,7 +22,16 @@ LOCAL_LOGOUT_URI = "http://localhost:8765/logout"
 
 
 class AuthStack(Stack):
-    def __init__(self, scope: Construct, construct_id: str, *, domain_prefix: str | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        *,
+        domain_prefix: str | None = None,
+        additional_callback_urls: list[str] | None = None,
+        additional_logout_urls: list[str] | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         if domain_prefix is None:
@@ -44,7 +53,17 @@ class AuthStack(Stack):
         self.user_pool = cognito.UserPool(
             self,
             "UserPool",
-            self_sign_up_enabled=True,
+            # Phase 6's Workbench went from a local-only dev tool to a
+            # publicly reachable URL (CloudFront) -- self-sign-up must be
+            # off before that happens, or anyone who finds the link could
+            # create their own account and use it (against synthetic data
+            # only, but still not the intended access model: existing
+            # accounts, created by the owner via AdminCreateUser, not
+            # public self-registration). No existing test/flow depended
+            # on self-sign-up staying on -- the dev token script and every
+            # live-verification pass in this project used an
+            # already-confirmed account.
+            self_sign_up_enabled=False,
             sign_in_aliases=cognito.SignInAliases(email=True),
             auto_verify=cognito.AutoVerifiedAttrs(email=True),
             password_policy=cognito.PasswordPolicy(
@@ -70,8 +89,11 @@ class AuthStack(Stack):
             o_auth=cognito.OAuthSettings(
                 flows=cognito.OAuthFlows(authorization_code_grant=True),
                 scopes=[cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
-                callback_urls=[LOCAL_REDIRECT_URI],
-                logout_urls=[LOCAL_LOGOUT_URI],
+                # The local dev URL always stays registered alongside
+                # whatever hosted URL(s) are passed in -- local dev via
+                # `npm run dev` keeps working exactly as before.
+                callback_urls=[LOCAL_REDIRECT_URI, *(additional_callback_urls or [])],
+                logout_urls=[LOCAL_LOGOUT_URI, *(additional_logout_urls or [])],
             ),
             supported_identity_providers=[cognito.UserPoolClientIdentityProvider.COGNITO],
             prevent_user_existence_errors=True,

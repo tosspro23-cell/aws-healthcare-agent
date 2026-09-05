@@ -46,7 +46,9 @@ from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, Stack
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
+from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
 from constructs import Construct
@@ -61,6 +63,7 @@ class OrchestrationStack(Stack):
         construct_id: str,
         *,
         runs_table: dynamodb.Table,
+        evidence_bucket: s3.Bucket,
         lambda_asset_dir: Path,
         **kwargs,
     ) -> None:
@@ -92,9 +95,14 @@ class OrchestrationStack(Stack):
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(25),
             memory_size=512,
-            environment={"CARE_AGENT_NARRATOR_BACKEND": "bedrock"},
+            environment={"CARE_AGENT_NARRATOR_BACKEND": "bedrock", "EVIDENCE_BUCKET_NAME": evidence_bucket.bucket_name},
         )
         grant_bedrock_invoke(agent_task_handler)
+        # Writes the full grounding trace to S3 (same {run_id}.json key
+        # adapter.py's synchronous path already uses) so GET /runs/{run_id}
+        # can show one for this path too -- previously only the sync path
+        # had one anywhere.
+        evidence_bucket.grant_put(agent_task_handler)
 
         record_result_handler = _lambda.Function(
             self,
@@ -124,12 +132,20 @@ class OrchestrationStack(Stack):
             handler="get_run.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
-            environment=common_env,
+            environment={**common_env, "EVIDENCE_BUCKET_NAME": evidence_bucket.bucket_name},
         )
         # `get_run.py` only ever `get_item`s by exact key -- `grant_read_data`
         # also grants Scan/Query/BatchGetItem/ConditionCheckItem/DescribeTable,
         # none of which this handler calls.
         runs_table.grant(self.get_run_handler, "dynamodb:GetItem")
+        # Opportunistically merges in the full trace from S3 if one's been
+        # written for this run_id -- only ever `get_object`, never lists
+        # or reads bucket-level metadata, so a precise `s3:GetObject`
+        # statement (not the broader `grant_read`, which also grants
+        # `GetBucket*`/`List*`) is the exact permission this needs.
+        self.get_run_handler.add_to_role_policy(
+            iam.PolicyStatement(actions=["s3:GetObject"], resources=[evidence_bucket.arn_for_objects("*")])
+        )
 
         self.cancel_run_handler = _lambda.Function(
             self,

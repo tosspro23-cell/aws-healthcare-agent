@@ -43,6 +43,7 @@ class ApiStack(Stack):
         get_run_handler: _lambda.Function,
         cancel_run_handler: _lambda.Function,
         enqueue_job_handler: _lambda.Function,
+        extra_cors_origins: list[str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -81,13 +82,13 @@ class ApiStack(Stack):
             # Phase 6's Workbench is the first *browser* caller this API has
             # ever had -- every prior caller (curl, pytest, boto3, the
             # stress-test harness) is same-origin-exempt by construction, so
-            # CORS was never needed until now. Scoped to exactly the one
-            # origin that's real right now (the Workbench's local dev
-            # server, matching the one redirect URI Cognito's App Client
-            # currently allows -- see `auth_stack.py`); widen this once a
-            # real hosted Workbench URL exists instead of defaulting to "*".
+            # CORS was never needed until now. Always includes the local
+            # dev origin (matching the one redirect URI Cognito's App
+            # Client always allows -- see `auth_stack.py`); `extra_cors_origins`
+            # adds the real hosted Workbench URL once `FrontendStack` exists,
+            # never a wildcard "*".
             cors_preflight=apigwv2.CorsPreflightOptions(
-                allow_origins=["http://localhost:8765"],
+                allow_origins=["http://localhost:8765", *(extra_cors_origins or [])],
                 allow_methods=[apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
                 allow_headers=["authorization", "content-type"],
             ),

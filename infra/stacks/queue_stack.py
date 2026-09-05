@@ -29,6 +29,7 @@ from aws_cdk import CfnOutput, Duration, Stack
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_lambda_event_sources as lambda_event_sources
+from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
@@ -54,6 +55,7 @@ class QueueStack(Stack):
         construct_id: str,
         *,
         runs_table: dynamodb.Table,
+        evidence_bucket: s3.Bucket,
         lambda_asset_dir: Path,
         **kwargs,
     ) -> None:
@@ -102,11 +104,19 @@ class QueueStack(Stack):
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(30),
             memory_size=512,
-            environment={"RUNS_TABLE_NAME": runs_table.table_name, "CARE_AGENT_NARRATOR_BACKEND": "bedrock"},
+            environment={
+                "RUNS_TABLE_NAME": runs_table.table_name,
+                "CARE_AGENT_NARRATOR_BACKEND": "bedrock",
+                "EVIDENCE_BUCKET_NAME": evidence_bucket.bucket_name,
+            },
         )
         # `process_job.py` only ever `update_item`s (conditional writes for
         # the RUNNING/terminal transitions).
         runs_table.grant(process_job_handler, "dynamodb:UpdateItem")
+        # Writes the full grounding trace to S3 (same {run_id}.json key
+        # adapter.py's synchronous path already uses) so GET /runs/{run_id}
+        # can show one for this path too.
+        evidence_bucket.grant_put(process_job_handler)
         grant_bedrock_invoke(process_job_handler)
         process_job_handler.add_event_source(
             lambda_event_sources.SqsEventSource(self.queue, batch_size=1, max_concurrency=_MAX_CONCURRENT_CONSUMERS)

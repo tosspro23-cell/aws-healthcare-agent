@@ -18,7 +18,13 @@ _LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 def _synth_queue_stack():
     app = cdk.App()
     data_stack = DataStack(app, "TestDataStackQ")
-    queue_stack = QueueStack(app, "TestQueueStack", runs_table=data_stack.runs_table, lambda_asset_dir=_LAMBDA_ASSET_DIR)
+    queue_stack = QueueStack(
+        app,
+        "TestQueueStack",
+        runs_table=data_stack.runs_table,
+        evidence_bucket=data_stack.evidence_bucket,
+        lambda_asset_dir=_LAMBDA_ASSET_DIR,
+    )
     return Template.from_stack(queue_stack)
 
 

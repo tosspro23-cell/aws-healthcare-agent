@@ -62,16 +62,16 @@ export class ApiError extends Error {
   }
 }
 
-/** `RunRecord` is the *compact* DynamoDB item `GET /runs/{run_id}` returns
- * (see `infra/lambda_src/get_run.py` -- it just returns whatever's under
- * the key, schema-agnostic across all three execution paths). Only the
- * synchronous `/ask` path also persists a *full* grounding trace (to S3,
- * returned inline in `AskResponse.trace` above) -- the Step Functions and
- * SQS paths only ever persist `answer`/`safe`/`narrator_backend`, not the
- * safety checks or grounded facts, so a polled async run can't show the
- * same depth of trace an `/ask` call can. */
+/** `RunRecord` is the DynamoDB item `GET /runs/{run_id}` returns (see
+ * `infra/lambda_src/get_run.py`), plus an opportunistic `trace` merged in
+ * from S3 if one's been written for this run_id yet -- all three
+ * execution paths (`adapter.py`, `agent_task.py`, `process_job.py`) now
+ * persist one to the same `{run_id}.json` key once their run completes.
+ * A run still in progress, or one that predates this evidence write,
+ * simply has no `trace` field. */
 export interface RunRecord {
   run_id: string;
+  trace?: AgentTrace;
   status: "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "TIMED_OUT" | "CANCELLED";
   execution_type: "SYNC" | "STEP_FUNCTIONS" | "SQS";
   user_id: string;

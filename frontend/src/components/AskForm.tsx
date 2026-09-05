@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { config } from "../config";
 import { askQuestion, startRun, enqueueJob, getRun, cancelRun, ApiError, type AskResponse, type RunRecord } from "../api";
 import { TraceView } from "./TraceView";
+import { Markdown } from "./Markdown";
 import { RunResultView, isTerminal } from "./RunResultView";
 import { addHistoryEntry, type HistoryEntry } from "../history";
 import { RunHistory } from "./RunHistory";
@@ -181,7 +182,7 @@ export function AskForm() {
       {syncResult && (
         <div className="result">
           <div className={`safe-badge ${syncResult.safe ? "safe" : "unsafe"}`}>{syncResult.safe ? "SAFE" : "UNSAFE -- rejected"}</div>
-          <p className="answer">{syncResult.answer}</p>
+          <Markdown text={syncResult.answer} />
           <p className="meta">
             run_id: <code>{syncResult.run_id}</code> &middot; narrator: <code>{syncResult.trace.narrator_backend}</code> &middot;
             intent: <code>{syncResult.trace.intent}</code>
