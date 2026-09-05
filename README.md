@@ -83,8 +83,12 @@ pip install -e ".[dev]"
 # Ask the main sample question
 python -m care_agent ask "My LDL and HbA1c are high. What should I focus on first, and does my questionnaire change the advice?" --trace
 
-# Run all three shipped sample questions
+# Run all 8 shipped sample questions
 python -m care_agent eval-samples
+
+# Capability regression eval: does each question still demonstrate what
+# it's supposed to? (see "Capability eval" below)
+python -m care_agent eval-capabilities
 
 # Tests
 pytest -q --cov=care_agent --cov-report=term-missing
@@ -99,10 +103,32 @@ above — the default (and only CI-tested) path is a deterministic,
 dependency-free narrator. See [Optional LLM narrator](#optional-llm-narrator)
 for the pluggable model-backed path.
 
-Example output for the main sample scenario, plus all three shipped
-sample questions with full execution traces, is in
+Example output for the main sample scenario, plus all 8 shipped sample
+questions with full execution traces, is in
 [`examples/example_output.md`](examples/example_output.md) (regenerate with
 `python scripts/run_examples.py`).
+
+### Capability eval
+
+`data/sample_questions.json` tags each question with the capabilities it
+exists to test (`does_not_diagnose`, `uses_bloodwork`, ...) --
+`care_agent/eval.py` is what actually checks those tags against the real
+agent's response/trace, rather than leaving them as documentation nobody
+verifies. Gated automatically in `pytest` (`tests/test_eval.py`); run by
+hand for a human-readable report:
+
+```bash
+python -m care_agent eval-capabilities
+
+# Against a live LLM narrator instead of the free deterministic one
+# (costs real Bedrock tokens, not run in CI):
+CARE_AGENT_NARRATOR_BACKEND=bedrock python -m care_agent eval-capabilities
+```
+
+History of pass rate over time (regenerate after any change to
+`reasoning.py`, `safety.py`, or a narrator): `python
+scripts/update_eval_history.py`, appended to
+[`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md).
 
 ## Architecture
 
@@ -335,7 +361,7 @@ no credentials to try immediately:
 ## Known limitations / what I'd improve with more time
 
 - **Intent classification is regex-based.** It's transparent and 100%
-  covers the three sample questions, but a paraphrase far outside the
+  covers the shipped sample questions, but a paraphrase far outside the
   patterns falls through to the general intent rather than a more specific
   one. A small trained/few-shot classifier would generalize further without
   giving up determinism if its confidence were thresholded and logged.
@@ -354,16 +380,20 @@ no credentials to try immediately:
 ## Repo map
 
 - Source code (the shared kernel): `src/care_agent/`
-- Tests: `tests/` (`pytest -q`, 120+ cases incl. the three sample scenarios
+- Tests: `tests/` (`pytest -q`, 160+ cases incl. the shipped sample scenarios
   and constructed edge cases — see [`tests/test_agent_edge_cases.py`](tests/test_agent_edge_cases.py))
+- Capability regression eval: [`src/care_agent/eval.py`](src/care_agent/eval.py) (`tests/test_eval.py`, `python -m care_agent eval-capabilities`)
 - Example output: [`examples/example_output.md`](examples/example_output.md)
 - Kernel architecture detail beyond this README: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - General (cloud-agnostic) deployment thinking: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - AWS-specific phased build-out plan + status: [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md)
 - Running design-decision log (ADR-style): [`docs/DECISIONS.md`](docs/DECISIONS.md)
+- Capability eval pass-rate history over time: [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md)
 - AWS infrastructure (CDK): `infra/` *(added as the AWS phases land)*
 
 ## CI
 
 `.github/workflows/ci.yml` runs on every push/PR: `ruff check`, `mypy`, and
-`pytest` with coverage, on Python 3.11–3.13. No secrets are required.
+`pytest` with coverage (which includes the capability eval gate), on Python
+3.11–3.13. The `infra`/`frontend` jobs separately cover the CDK app and the
+Workbench. No secrets are required.

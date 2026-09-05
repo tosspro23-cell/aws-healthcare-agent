@@ -517,6 +517,20 @@ Entra/MSAL?
   deployment's `CARE_AGENT_WORKBENCH_URL` env var. Full findings:
   [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md).
 
+  **Post-review cleanup, in priority order**: the two backlog items round
+  2 had deliberately left open (cross-marker value/unit binding; an SQS
+  processing lease + DLQ reconciliation), the frontend's first automated
+  tests (zero before this, despite `auth.ts`/`AskForm.tsx` being the
+  source of several of round 3's real bugs), Bedrock cost protection (an
+  API-wide throttle plus an opt-in monthly Budget alert), and a
+  capability-based regression eval (`care_agent.eval`) that turns
+  `data/sample_questions.json`'s long-standing `expected_capabilities`
+  labels from documentation nobody checked into an automated gate — which
+  caught a real false positive in the cross-marker fix on its very first
+  run (see `DECISIONS.md`, 2026-09-06). Full reasoning for all of the
+  above: `DECISIONS.md`; eval pass-rate history over time:
+  [`EVAL_HISTORY.md`](EVAL_HISTORY.md).
+
 ## Cost notes
 
 - Lambda / DynamoDB / API Gateway / Step Functions / Cognito are effectively

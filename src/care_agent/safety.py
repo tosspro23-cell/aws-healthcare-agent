@@ -118,15 +118,48 @@ _NUMBER_RE = re.compile(r"(?<![\w.])-?\d+\.?\d*")
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _ORDINAL_LIST_MARKER_RE = re.compile(r"(?m)^\s*(\d+\.)\s")
 
-# How much surrounding text to search for the correct marker's name when a
-# value+unit pair is shared by more than one biomarker (see
-# `verify_numeric_grounding`'s cross-marker check below). Generous enough
-# to cover every phrasing this project's own narrators actually produce
-# (the deterministic narrator always places the name within a few words of
-# the value; an LLM narrator's prose runs a little longer) without being so
-# large it'd accept a name mentioned in a completely unrelated sentence.
-_MARKER_NAME_WINDOW_BEFORE = 40
-_MARKER_NAME_WINDOW_AFTER = 20
+# Boundary characters for the marker-name proximity window used by
+# verify_numeric_grounding's cross-marker check (below): the *current
+# sentence or line*, not a fixed character count. A fixed window
+# (originally 40 chars back / 20 forward) turned out too narrow for a
+# real, legitimate phrasing this project's own deterministic narrator
+# produces -- "Your LDL-C was 162 mg/dL on 2026-05-06, higher than the
+# 148 mg/dL result from 2025-12-08." names the marker once, 51 characters
+# before the second value -- caught live by the eval harness
+# (`care_agent.eval`, `q_trend_available`) the first time it ran against
+# this exact question, not by a hypothetical worry. Scoping to the
+# sentence/line instead handles both directions correctly: a long,
+# comma-heavy sentence naming its marker once at the start still keeps
+# every value in that sentence in scope, while a bulleted, one-marker-
+# per-line answer (the priority_focus narrator's actual shape) keeps
+# each line's value from seeing a *different* marker's name on the
+# adjacent line -- which a much wider fixed window would have let bleed
+# through, undoing the cross-marker fix this window exists for in the
+# first place. `_CONTEXT_MAX_CHARS` is a backstop for text with no
+# sentence-ending punctuation or newline at all, not the normal case.
+_SENTENCE_BOUNDARY_CHARS = ".!?\n"
+_CONTEXT_MAX_CHARS = 200
+
+
+def _sentence_context(text: str, start: int, end: int) -> str:
+    """The current sentence/line around `text[start:end]`: expands outward
+    to the nearest preceding and following sentence-ending punctuation or
+    newline, capped at `_CONTEXT_MAX_CHARS` in each direction."""
+    left_cap = max(0, start - _CONTEXT_MAX_CHARS)
+    left = left_cap
+    for i in range(start - 1, left_cap - 1, -1):
+        if text[i] in _SENTENCE_BOUNDARY_CHARS:
+            left = i + 1
+            break
+
+    right_cap = min(len(text), end + _CONTEXT_MAX_CHARS)
+    right = right_cap
+    for i in range(end, right_cap):
+        if text[i] in _SENTENCE_BOUNDARY_CHARS:
+            right = i
+            break
+
+    return text[left:right]
 
 
 @dataclass(frozen=True)
@@ -278,8 +311,7 @@ def verify_numeric_grounding(
 
         marker_names = {c.display_name for c in candidates if c.display_name}
         if marker_names:
-            window_start = max(0, match.start() - _MARKER_NAME_WINDOW_BEFORE)
-            window = text_without_dates[window_start : match.end() + _MARKER_NAME_WINDOW_AFTER]
+            window = _sentence_context(text_without_dates, match.start(), match.end())
             if not any(re.search(rf"\b{re.escape(name)}\b", window, re.IGNORECASE) for name in marker_names):
                 ungrounded.append(f"{raw_value}{raw_unit} (no matching marker name nearby)")
 

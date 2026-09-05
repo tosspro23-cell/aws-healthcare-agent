@@ -78,6 +78,15 @@ jobs:
       - name: Regenerate example output (smoke-tests scripts/run_examples.py)
         run: python scripts/run_examples.py
 
+      - name: Capability regression eval (also gated in pytest -- this exercises the CLI entrypoint and produces the report artifact)
+        run: python -m care_agent eval-capabilities --report eval-report.json
+
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.json
+
   infra:
     name: infra (cdk synth + moto-mocked tests, no live AWS account)
     runs-on: ubuntu-latest

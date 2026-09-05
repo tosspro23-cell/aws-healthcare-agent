@@ -21,6 +21,12 @@ def main(argv: list[str] | None = None) -> int:
     eval_p = sub.add_parser("eval-samples", help="Run all sample_questions.json questions and print answers + traces.")
     eval_p.add_argument("--trace", action="store_true")
 
+    eval_cap_p = sub.add_parser(
+        "eval-capabilities",
+        help="Run the capability-checked regression eval (care_agent.eval) and exit non-zero on any failure.",
+    )
+    eval_cap_p.add_argument("--report", metavar="PATH", help="Write the full JSON report to this path.")
+
     args = parser.parse_args(argv)
     agent = HealthAgent()
 
@@ -45,6 +51,30 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(response.trace.as_dict(), indent=2, default=str))
             print()
         return 0
+
+    if args.command == "eval-capabilities":
+        from care_agent.eval import run_eval, summarize, to_report_dict
+
+        results = run_eval()
+        summary = summarize(results)
+
+        for r in results:
+            status = "PASS" if r.passed else "FAIL"
+            print(f"[{status}] {r.question_id} (narrator: {r.narrator_backend})")
+            for c in r.results:
+                if not c.passed:
+                    print(f"    FAIL {c.capability}: {c.detail}")
+            for skipped in r.skipped:
+                print(f"    SKIP {skipped} (not automatically checkable)")
+
+        print(f"\n{summary.passed_checks}/{summary.total_checks} checks passed ({summary.pass_rate:.0%}); {summary.total_skipped} skipped.")
+
+        if args.report:
+            with open(args.report, "w", encoding="utf-8") as f:
+                json.dump(to_report_dict(summary), f, indent=2)
+            print(f"Wrote report to {args.report}")
+
+        return 0 if summary.all_passed else 1
 
     return 1
 

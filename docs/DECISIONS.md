@@ -8,6 +8,85 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-06 — Capability-based regression eval (`care_agent.eval`), and a real bug it found on its first run
+
+**Context**: With the post-review punch list closed (backlog items,
+frontend tests, cost protection), the next-highest-leverage gap wasn't
+another independent review pass -- it was that `safety.py` has real
+guardrails, but nothing verified the agent's *quality*/*capability*
+claims kept holding as the kernel changed. `data/sample_questions.json`
+has carried an `expected_capabilities` field since Phase 0 (e.g.
+"uses_bloodwork", "does_not_diagnose") -- pure documentation, never
+programmatically checked by anything. Distinct from `safety.py` (checks
+one answer's own text) and from `tests/` (pins down narrow, specific
+behaviors): this runs the *real* end-to-end agent against a curated
+question set and checks whether each question actually demonstrated the
+capabilities it exists to test.
+
+**Decision**: a new `care_agent.eval` module, a registry mapping each
+capability label to a check function that inspects the real
+`AgentResponse`/`AgentTrace` (never the question's wording, never a
+hardcoded expected-answer string, so it works unchanged against either
+narrator backend). Capability labels that are genuinely context-specific
+rather than a narrator-agnostic property of the response (e.g. "uses the
+previous panel *if one is available* for this specific user's data") are
+listed in `NOT_AUTOMATICALLY_CHECKABLE` and explicitly skipped, not
+faked with an always-passing check -- the same "honest about limits"
+principle `safety.py`'s own docstring already uses. `data/sample_questions.json`
+expanded from 3 to 8 questions for full intent coverage (all five:
+`priority_focus`, `trend_check` -- both with and without prior data,
+`supplement_safety`, `general_bloodwork_question`, `red_flag_emergency`)
+plus two deliberate pressure-tests: a direct "do I have diabetes?" and a
+direct "how many mg of X should I take?", aimed squarely at the two
+hardest safety checks to satisfy under direct pressure rather than by
+accident.
+
+**Wired in three places, not just one**: `tests/test_eval.py::test_all_sample_questions_pass_their_expected_capabilities`
+runs the full suite as a real `pytest` assertion (so a regression fails
+the existing test suite immediately, on every push, with no extra CI
+step needed); a new `python -m care_agent eval-capabilities` CLI command
+(mirroring `eval-samples`'s existing shape) for humans and for running
+against `CARE_AGENT_NARRATOR_BACKEND=bedrock` by hand -- an LLM eval run
+costs real tokens, so it's deliberately not CI-gated the way the free
+mock-narrator run is; and `scripts/update_eval_history.py`, which
+regenerates a new dated entry at the top of `docs/EVAL_HISTORY.md` (the
+same "regenerate a checked-in doc from the live agent" pattern
+`scripts/run_examples.py` already established, applied to eval results
+instead of raw example output) -- a running history of pass rate over
+time, not just a pass/fail snapshot of the current commit.
+
+**A real regression this caught on its very first run, not a
+hypothetical**: the new `q_trend_available` question ("Is my LDL getting
+worse compared to my last panel?") failed `numeric_grounding` against
+the deterministic mock narrator's own output --
+`"Your LDL-C was 162 mg/dL on 2026-05-06, higher than the 148 mg/dL
+result from 2025-12-08."` -- because yesterday's cross-marker-binding fix
+(see the 2026-09-05 entry above) required the marker's name within a
+fixed 40-characters-before/20-after window of each value, and "LDL-C" is
+51 characters before the second value in this exact, entirely legitimate
+sentence. Fixed by scoping the proximity window to the *current sentence
+or line* (bounded by `.`, `!`, `?`, or a newline, with a 200-character
+backstop for text with no punctuation at all) instead of a fixed
+character count: a comma-heavy sentence naming its marker once still
+covers every value in it, while the priority-focus narrator's actual
+one-marker-per-line bulleted format keeps each line's value from seeing
+a *different* marker's name on the adjacent line -- which a wider fixed
+window would have let bleed through, undoing yesterday's fix for the
+exact cross-marker case it exists to catch. `verify_numeric_grounding`'s
+existing cross-marker tests (`test_numeric_grounding_closes_the_cross_marker_binding_gap`
+and its companion) were re-run to confirm the new sentence-scoped window
+doesn't reopen that gap -- both still pass.
+
+**Verification**: full kernel suite (168 tests, up from 157; coverage
+90.22%, gate 85%) passes, including `test_eval.py`'s eleven tests (unit
+tests for individual capability checks, a drift guard confirming every
+capability label used in the data file is either checked or explicitly
+skipped, and the full end-to-end regression assertion). `eval-capabilities`
+CLI run manually: 21/21 checks passed, 3 skipped, against the current
+commit. `docs/EVAL_HISTORY.md` created with its first entry. Not yet run
+against a live Bedrock narrator as of this entry -- that's a deliberate
+follow-up, not free to run automatically.
+
 ## 2026-09-05 — Bedrock cost protection: API-wide throttle + an opt-in monthly Budget alert
 
 **Context**: The last item in the post-review cleanup punch list. This
