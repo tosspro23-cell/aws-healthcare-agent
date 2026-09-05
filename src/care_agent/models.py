@@ -214,6 +214,18 @@ class GroundedFact(DictMixin):
     prove it's attached to the right marker. Populated directly from the
     source biomarker's own `unit` field at construction time (see
     `agent.py`), never parsed back out of `claim`'s free text.
+
+    ``display_name`` (e.g. ``"LDL-C"``) closes a narrower gap `unit` alone
+    doesn't: several markers share the same unit (LDL-C/HDL-C/triglycerides/
+    fasting glucose are all `mg/dL`), so a (value, unit) pair matching
+    *some* fact doesn't prove the text attached it to the *right* marker --
+    "Your LDL-C is 150 mg/dL" would still pass if 150 is only ever grounded
+    as Triglycerides. When set, `safety.verify_numeric_grounding` requires
+    this exact name to appear near the matched value+unit in the answer
+    text, not just that the pair exists somewhere among the grounded facts.
+    Optional and `None` for facts with no real biomarker name to check
+    against (a panel-age fact, a questionnaire claim) -- those keep the
+    older, name-independent check.
     """
 
     claim: str
@@ -221,6 +233,7 @@ class GroundedFact(DictMixin):
     source_ref: str
     numeric_values: tuple[float, ...] = field(default_factory=tuple)
     unit: str | None = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True)

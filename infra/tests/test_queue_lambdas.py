@@ -1,12 +1,13 @@
-"""Tests for the SQS-buffered path's two Lambda handlers (enqueue_job,
-process_job) against moto-mocked DynamoDB/SQS -- no real AWS account, no
-network call, no real Bedrock call (mock narrator, same as every other
-handler test in this suite).
+"""Tests for the SQS-buffered path's three Lambda handlers (enqueue_job,
+process_job, reconcile_dlq) against moto-mocked DynamoDB/SQS -- no real
+AWS account, no network call, no real Bedrock call (mock narrator, same
+as every other handler test in this suite).
 """
 
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lambda_src"))
 
 import enqueue_job  # noqa: E402
 import process_job  # noqa: E402
+import reconcile_dlq  # noqa: E402
+import run_writes  # noqa: E402
 
 _TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
 
@@ -39,8 +42,8 @@ def aws_resources():
 
         enqueue_job._dynamodb_resource = None
         enqueue_job._sqs_client = None
-        process_job._dynamodb_resource = None
         process_job._s3_client = None
+        run_writes._dynamodb_resource = None
         with patch.dict(os.environ, {"JOBS_QUEUE_URL": queue_url}):
             yield queue_url
 
@@ -232,7 +235,7 @@ def test_process_job_marks_running_before_finishing(aws_resources):
         seen_statuses.append(kwargs["ExpressionAttributeValues"][":status"])
         return real_update_item(**kwargs)
 
-    with patch("process_job._dynamodb") as mock_dynamodb_fn:
+    with patch("run_writes._dynamodb") as mock_dynamodb_fn:
         mock_dynamodb_fn.return_value.Table.return_value.update_item.side_effect = _spy_update_item
         process_job.handler(_sqs_event("job-4", "user_demo_001", "hello"), None)
 
@@ -299,3 +302,92 @@ def test_process_job_final_write_does_not_clobber_a_cancellation_that_raced_in_m
     item = table.get_item(Key={"run_id": "job-7"})["Item"]
     assert item["status"] == "CANCELLED"
     assert "answer" not in item
+
+
+def test_process_job_rejects_a_concurrent_delivery_while_the_lease_is_still_valid(aws_resources):
+    """Regression test: a second independent review found that the plain
+    "status in (QUEUED, RUNNING)" condition let two genuinely concurrent
+    deliveries for the same run_id (a redelivery, or a second message a
+    client's own retry against enqueue_job.py created) both pass and both
+    call the agent, doubling Bedrock cost and racing on the terminal
+    write. Simulated here by seeding a record already RUNNING with a
+    processing lease that hasn't expired yet -- the handler must skip it
+    without ever calling the agent."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    future_lease = (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()
+    table.put_item(Item={"run_id": "job-8", "status": "RUNNING", "processing_lease_expires_at": future_lease})
+
+    with patch("process_job._agent") as mock_agent:
+        process_job.handler(_sqs_event("job-8", "user_demo_001", "hello"), None)
+        mock_agent.ask.assert_not_called()
+
+    item = table.get_item(Key={"run_id": "job-8"})["Item"]
+    assert item["status"] == "RUNNING"
+    assert item["processing_lease_expires_at"] == future_lease
+
+
+def test_process_job_reclaims_processing_once_the_prior_lease_has_expired(aws_resources):
+    """The other half of the lease fix: a record stuck RUNNING because its
+    prior processor crashed without ever writing a terminal state must
+    still be recoverable once enough time has passed that the prior
+    attempt is provably no longer running (its lease has expired) --
+    otherwise every crash would strand the run forever."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    expired_lease = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    table.put_item(Item={"run_id": "job-9", "status": "RUNNING", "processing_lease_expires_at": expired_lease})
+
+    process_job.handler(_sqs_event("job-9", "user_demo_001", "What should I focus on first?"), None)
+
+    item = table.get_item(Key={"run_id": "job-9"})["Item"]
+    assert item["status"] == "SUCCEEDED"
+    assert item["safe"] is True
+
+
+# -- reconcile_dlq ------------------------------------------------------------
+def _dlq_event(run_id: str) -> dict:
+    return {"Records": [{"body": json.dumps({"run_id": run_id, "user_id": "user_demo_001", "question": "hello"})}]}
+
+
+def test_reconcile_dlq_marks_a_stuck_queued_run_failed(aws_resources):
+    """Regression test: a second independent review found that a run whose
+    message exceeded process_job.py's max delivery attempts and landed in
+    the DLQ had nothing left in the system that would ever write it a
+    terminal status -- a caller polling GET /runs/{run_id} would wait
+    forever. Simulates every process_job.py attempt dying before its
+    first RUNNING write (the record never left QUEUED)."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-dlq-1", "status": "QUEUED"})
+
+    reconcile_dlq.handler(_dlq_event("job-dlq-1"), None)
+
+    item = table.get_item(Key={"run_id": "job-dlq-1"})["Item"]
+    assert item["status"] == "FAILED"
+    assert "error_message" in item
+
+
+def test_reconcile_dlq_marks_a_stuck_running_run_failed(aws_resources):
+    """The other stuck state: an attempt died mid-processing (after its
+    RUNNING write, before any terminal write)."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-dlq-2", "status": "RUNNING"})
+
+    reconcile_dlq.handler(_dlq_event("job-dlq-2"), None)
+
+    item = table.get_item(Key={"run_id": "job-dlq-2"})["Item"]
+    assert item["status"] == "FAILED"
+
+
+def test_reconcile_dlq_does_not_clobber_a_run_that_actually_succeeded(aws_resources):
+    """Race safety: a message can land in the DLQ (its Nth delivery failed)
+    even though an *earlier* delivery already succeeded and the queue
+    just hadn't deleted the message yet, or a redrive lands right as the
+    real outcome is written. The reconciler must never overwrite an
+    already-terminal record."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-dlq-3", "status": "SUCCEEDED", "answer": "a real answer", "safe": True})
+
+    reconcile_dlq.handler(_dlq_event("job-dlq-3"), None)
+
+    item = table.get_item(Key={"run_id": "job-dlq-3"})["Item"]
+    assert item["status"] == "SUCCEEDED"
+    assert item["answer"] == "a real answer"

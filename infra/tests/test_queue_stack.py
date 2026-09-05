@@ -3,6 +3,7 @@ SQS-buffered alternative to Step Functions orchestration (see
 `../stacks/queue_stack.py` for why this exists).
 """
 
+import json
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -86,3 +87,30 @@ def test_enqueue_lambda_uses_python312_runtime_and_expected_handler():
 
 def test_no_iam_policy_uses_wildcard_resource():
     assert_no_overly_broad_iam_policy(_synth_queue_stack())
+
+
+def test_reconcile_dlq_lambda_uses_python312_runtime_and_expected_handler():
+    template = _synth_queue_stack()
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {"Runtime": "python3.12", "Handler": "reconcile_dlq.handler"},
+    )
+
+
+def test_reconcile_dlq_lambda_is_triggered_by_the_dlq_not_the_main_queue():
+    """Regression guard for the reconciliation fix: an independent review
+    found that a message exceeding process_job.py's max delivery attempts
+    left its run_id stuck forever, since nothing was ever triggered by
+    the DLQ itself. Confirms the new handler's event source is the DLQ's
+    ARN, not the main queue's."""
+    template = _synth_queue_stack()
+    queues = template.find_resources("AWS::SQS::Queue")
+    dlq_logical_id = next(k for k, v in queues.items() if "RedrivePolicy" not in v["Properties"])
+
+    mappings = template.find_resources(
+        "AWS::Lambda::EventSourceMapping",
+        {"Properties": {"BatchSize": 1, "ScalingConfig": Match.absent()}},
+    )
+    assert len(mappings) == 1
+    event_source_arn = next(iter(mappings.values()))["Properties"]["EventSourceArn"]
+    assert dlq_logical_id in json.dumps(event_source_arn)

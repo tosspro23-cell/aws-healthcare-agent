@@ -133,23 +133,76 @@ def test_numeric_grounding_does_not_flag_digits_embedded_in_the_unit_itself():
     assert check.passed is True
 
 
-def test_numeric_grounding_still_does_not_bind_value_unit_pairs_to_a_specific_marker():
-    """Known, deliberately unfixed limitation (see
-    docs/INDEPENDENT_REVIEW_FINDINGS.md, finding #6 of the second
-    independent review): value+unit grounding checks that *some* fact
-    carries this exact (value, unit) pair, not that the text's claimed
-    marker (e.g. "LDL-C") is the one that actually has it. Two markers
-    sharing a unit (very common -- LDL/HDL/triglycerides/total cholesterol
-    are all mg/dL) can still be swapped without detection. Closing this
-    needs structured claim rendering (binding concept + value + unit +
-    date together), not a quick patch -- documented as an open backlog
-    item, the same way finding #3's outbox gap is."""
+def test_numeric_grounding_closes_the_cross_marker_binding_gap():
+    """Regression test: a second independent review found that value+unit
+    grounding only checked that *some* fact carries this exact (value,
+    unit) pair, not that the text's claimed marker (e.g. "LDL-C") is the
+    one that actually has it. Two markers sharing a unit (very common --
+    LDL-C/HDL-C/triglycerides/fasting glucose are all mg/dL) could be
+    swapped without detection: "Your LDL-C is 188 mg/dL" passed even
+    though 188 was only ever grounded as Triglycerides. Left open in that
+    review as a backlog item pending a real fix (structured claim
+    binding), not a quick patch. Closed here via `GroundedFact.display_name`:
+    when set, the correct marker's name must appear near the matched
+    value+unit, not just exist somewhere among the grounded facts."""
     facts = [
-        GroundedFact(claim="triglycerides", source_type="bloodwork", source_ref="p1:trig", numeric_values=(188.0,), unit="mg/dL"),
-        GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(130.0,), unit="mg/dL"),
+        GroundedFact(
+            claim="triglycerides",
+            source_type="bloodwork",
+            source_ref="p1:trig",
+            numeric_values=(188.0,),
+            unit="mg/dL",
+            display_name="Triglycerides",
+        ),
+        GroundedFact(
+            claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(130.0,), unit="mg/dL", display_name="LDL-C"
+        ),
     ]
     check = verify_numeric_grounding("Your LDL-C is 188 mg/dL.", facts)
-    assert check.passed is True  # documents the gap; would ideally be False
+    assert check.passed is False
+
+
+def test_numeric_grounding_accepts_a_value_unit_pair_correctly_attributed_to_its_marker():
+    """The other half of the cross-marker fix: the same shared-unit
+    situation must still pass when the text names the *correct* marker,
+    not become impossible to ever satisfy."""
+    facts = [
+        GroundedFact(
+            claim="triglycerides",
+            source_type="bloodwork",
+            source_ref="p1:trig",
+            numeric_values=(188.0,),
+            unit="mg/dL",
+            display_name="Triglycerides",
+        ),
+        GroundedFact(
+            claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(130.0,), unit="mg/dL", display_name="LDL-C"
+        ),
+    ]
+    check = verify_numeric_grounding("Your Triglycerides are 188 mg/dL, and your LDL-C is 130 mg/dL.", facts)
+    assert check.passed is True
+
+
+def test_numeric_grounding_still_permissive_when_no_display_name_is_set():
+    """A fact with no `display_name` (e.g. a panel-age fact, or a
+    questionnaire-derived claim -- neither has a single "marker name" to
+    check against) keeps the older, name-independent check rather than
+    becoming impossible to ever satisfy. Not a regression: this is the
+    documented, narrower scope of the fix above."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(188.0,), unit="mg/dL")]
+    check = verify_numeric_grounding("Your unspecified marker is 188 mg/dL.", facts)
+    assert check.passed is True
+
+
+def test_numeric_grounding_rejects_a_negative_value_matching_a_positive_grounded_number():
+    """Regression test: a second independent review found the value+unit
+    regex had no way to capture a leading minus sign, so "-162 mg/dL" was
+    silently reinterpreted as the unsigned 162 and matched a real,
+    positively-grounded value -- a fabricated negative number could slip
+    past by reusing a real positive one."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    check = verify_numeric_grounding("Your LDL-C is -162 mg/dL.", facts)
+    assert check.passed is False
 
 
 def test_numeric_grounding_does_not_exempt_a_fabricated_bare_number_matching_the_question():

@@ -172,6 +172,7 @@ class HealthAgent:
                             source_ref=f"{latest_panel.panel_id}:{item.marker.concept_id}",
                             numeric_values=(float(item.marker.value),),
                             unit=item.marker.unit,
+                            display_name=item.marker.display_name,
                         )
                     )
 
@@ -195,6 +196,7 @@ class HealthAgent:
                                     source_ref=f"{latest_panel.panel_id}:{concept_id}",
                                     numeric_values=(float(marker.value),),
                                     unit=marker.unit,
+                                    display_name=marker.display_name,
                                 )
                             )
 
@@ -231,6 +233,16 @@ class HealthAgent:
                     args={"concept_id": concept_id},
                     result_summary=f"available={trend.available}, direction={trend.direction}",
                 )
+                # `brief.mentioned_markers` was already populated above (from
+                # the same `mentioned_concepts` this trend's concept_id comes
+                # from) whenever the marker exists in the latest panel --
+                # None otherwise (e.g. a marker only present in an older
+                # panel), which correctly leaves these trend facts without a
+                # name to check against rather than fabricating one from the
+                # raw concept_id string, which would never appear verbatim
+                # in any real prose and would just make every trend answer
+                # fail the safety check.
+                trend_display_name = brief.mentioned_markers[concept_id].display_name if concept_id in brief.mentioned_markers else None
                 if trend.latest_value is not None:
                     brief.grounded_facts.append(
                         GroundedFact(
@@ -239,6 +251,7 @@ class HealthAgent:
                             source_ref=f"trend:{concept_id}:latest",
                             numeric_values=(float(trend.latest_value),),
                             unit=trend.unit,
+                            display_name=trend_display_name,
                         )
                     )
                 if trend.previous_value is not None:
@@ -249,6 +262,7 @@ class HealthAgent:
                             source_ref=f"trend:{concept_id}:previous",
                             numeric_values=(float(trend.previous_value),),
                             unit=trend.unit,
+                            display_name=trend_display_name,
                         )
                     )
                 if not trend.available and not mentioned_concepts:

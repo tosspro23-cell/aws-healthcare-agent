@@ -21,6 +21,13 @@ Reuses `../../DataStack`'s `RunsTable` and the existing
 `GET /runs/{run_id}` (`get_run.py`, schema-agnostic) for polling -- no new
 table, no new polling endpoint. Reuses `bedrock_grant.py` for the same
 scoped `bedrock:InvokeModel` IAM this project's other two paths use.
+
+`ReconcileDlqHandler` is triggered by the dead-letter queue itself: once
+`process_job.py` has failed `_MAX_RECEIVE_COUNT` times for a message,
+nothing else in this stack will ever write a terminal status for that
+run_id, leaving a caller's poll loop waiting forever. This handler is
+the reconciliation pass an independent review found missing -- see
+`reconcile_dlq.py`'s own docstring and `docs/DECISIONS.md`.
 """
 
 from pathlib import Path
@@ -121,6 +128,19 @@ class QueueStack(Stack):
         process_job_handler.add_event_source(
             lambda_event_sources.SqsEventSource(self.queue, batch_size=1, max_concurrency=_MAX_CONCURRENT_CONSUMERS)
         )
+
+        reconcile_dlq_handler = _lambda.Function(
+            self,
+            "ReconcileDlqHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="reconcile_dlq.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+            environment={"RUNS_TABLE_NAME": runs_table.table_name},
+        )
+        # `reconcile_dlq.py` only ever `update_item`s a FAILED terminal write.
+        runs_table.grant(reconcile_dlq_handler, "dynamodb:UpdateItem")
+        reconcile_dlq_handler.add_event_source(lambda_event_sources.SqsEventSource(dlq, batch_size=1))
 
         CfnOutput(self, "JobsQueueUrl", value=self.queue.queue_url)
         CfnOutput(self, "JobsDLQUrl", value=dlq.queue_url)

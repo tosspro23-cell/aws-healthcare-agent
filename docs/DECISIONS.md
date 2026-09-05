@@ -8,6 +8,144 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Closed the two deliberately-open backlog items: cross-marker value/unit binding, SQS processing lease + DLQ reconciliation
+
+**Context**: Round 2's independent review found both gaps but explicitly
+left them open as backlog items needing "a real design change, not a
+quick patch" (see `docs/INDEPENDENT_REVIEW_FINDINGS.md`, findings #6 and
+#9), and every later review round was told not to re-flag them unless
+risk looked underestimated. With round 3's frontend/hosting findings all
+closed, these were the highest-value remaining known gaps -- picked up
+directly rather than running a fourth blind review pass.
+
+**Decision, cross-marker value/unit binding (finding #6)**: value+unit
+grounding (`safety.verify_numeric_grounding`) checked only that *some*
+`GroundedFact` carries the exact (value, unit) pair in the text, not that
+the text's claimed marker is the one that actually has it -- several
+markers share a unit (LDL-C/HDL-C/triglycerides/fasting glucose are all
+`mg/dL`), so "Your LDL-C is 188 mg/dL" passed even when 188 was only ever
+grounded as Triglycerides. Closed without the full structured-claim
+rewrite the review suggested (bind concept + value + unit + date
+together and validate *that*, not free text): `GroundedFact` gained an
+optional `display_name` field, populated at every real construction site
+in `agent.py` (biomarker focus items, mentioned markers, and -- via
+`brief.mentioned_markers`, already resolved earlier in the same method --
+both trend-fact variants) directly from the source `Biomarker.display_name`,
+never re-derived from free text. When a value+unit match's candidate
+fact(s) carry a `display_name`, that exact name must now appear within a
+40-characters-before/20-after window of the match (generous enough for
+every phrasing this project's own narrators produce, including
+Bedrock's slightly longer prose, without being so wide it'd accept a name
+mentioned in an unrelated sentence) -- if it's a fact with no
+`display_name` (a panel-age fact, a questionnaire claim -- neither has a
+single "marker name" to check against), the check stays exactly as
+permissive as before, so this only tightens markers the pipeline already
+knows how to name and introduces no new class of false positive.
+
+**A second gap in the same finding, fixed in the same pass**: the
+value+unit regex had no way to capture a leading minus sign, so
+`"-162 mg/dL"` was silently reinterpreted as the unsigned `162` and
+matched a real, positively-grounded value. Both `_VALUE_UNIT_RE` and
+`_NUMBER_RE` now optionally capture a leading `-`; the existing lookbehind
+on `_NUMBER_RE` still correctly declines to treat the hyphen in a
+hyphenated identifier (`"test-162"`) as a sign, since that position is
+still excluded the same way it always was.
+
+**An existing doc overclaim caught while touching this code**: the
+module docstring already asserted check 4 "cannot introduce a new
+number, or reattach a real number to the wrong marker" -- true only after
+this fix; before it, that was exactly finding #6's gap. Corrected to
+state the real, narrower scope (closes the wrong-marker bypass for any
+fact carrying a `display_name`; a fact without one still only gets the
+weaker value-only check).
+
+**Decision, SQS processing lease + DLQ reconciliation (finding #9)**:
+two problems, both in the queue-buffered async path. First,
+`process_job.py`'s conditional RUNNING-write allowed `RUNNING -> RUNNING`
+(meant to tolerate a legitimate redelivery of a message whose prior
+attempt already finished or crashed), but that same allowance can't
+distinguish that from a second, *genuinely concurrent* delivery for the
+same run_id (a client's own retry against `enqueue_job.py` creating a
+second, independent message) -- both would call the agent, doubling
+Bedrock cost and racing on the terminal write. Fixed with a
+`processing_lease_expires_at` field: a RUNNING record can only be
+re-claimed once its lease has actually expired. The lease duration (35s)
+is set a few seconds past the handler's own Lambda timeout (30s) --
+deliberately *not* tied to the queue's 90s visibility timeout, a
+different, unrelated margin (see `queue_stack.py`'s own comment) --
+short enough that a genuinely crashed invocation is reclaimable soon
+after, long enough that a still-running invocation's lease can never
+expire out from under it (Lambda hard-kills at 30s, so no invocation can
+physically outlive a 35s lease). DynamoDB's atomic compare-and-swap on
+the claim's `ConditionExpression` guarantees exactly one concurrent
+caller ever wins, regardless of timing -- no fencing token needed.
+
+Second, a message that exceeded `_MAX_RECEIVE_COUNT` and moved to the
+dead-letter queue left its run_id with nothing in the system that would
+ever write it a terminal status -- the record just stays wherever
+`process_job.py`'s last attempt left it, and a caller polling
+`GET /runs/{run_id}` waits forever. A new `reconcile_dlq.py`, triggered
+by the DLQ itself (`ReconcileDlqHandler` in `queue_stack.py`), marks the
+record `FAILED`, conditioned on it still being non-terminal (`QUEUED` or
+`RUNNING`) so a legitimate outcome that happened to land right as the
+redrive fires is never clobbered.
+
+**A small refactor along the way**: both `process_job.py` and
+`reconcile_dlq.py` need the identical reserved-keyword-safe conditional
+UpdateExpression shape, so it's factored into a new shared
+`run_writes.py` rather than duplicated -- the first time this project has
+shared Lambda-handler code across files rather than each handler writing
+its own bespoke version (the Step Functions path's handlers still do,
+since each has only a single fixed condition, not a variable
+`if_status_in` set). Both `process_job.py` and `run_writes.py`
+consistently call through `run_writes._dynamodb()` (never re-imported
+into `process_job`'s own namespace via `from ... import`) specifically so
+a single `patch("run_writes._dynamodb")` in tests intercepts every write
+path uniformly, regardless of which file's code triggers it -- the
+straightforward `from run_writes import _dynamodb` alternative would
+have created two independently-patchable name bindings and silently
+broken the existing `test_process_job_marks_running_before_finishing`
+spy test.
+
+**Verification**: New tests for both fixes -- cross-marker: the exact
+swapped-marker scenario now correctly fails, a companion test confirms
+the correctly-attributed case still passes, a fact without
+`display_name` keeps the old permissive behavior, and the negative-sign
+case is rejected. Queue: a concurrent delivery arriving while the lease
+is valid is rejected without ever calling the agent; a record whose
+lease has since expired is successfully reclaimed and completed; all
+three DLQ-reconciliation outcomes (stuck `QUEUED`, stuck `RUNNING`, and
+an already-`SUCCEEDED` run that must not be clobbered) pass. Full kernel
+suite (157 tests, up from 154) and full infra suite (147 tests, up from
+140) pass; `ruff`/`mypy` clean on both; `cdk synth --all` (6 stacks)
+clean.
+
+Deployed live (`cdk deploy --all`, with `CARE_AGENT_WORKBENCH_URL` set
+this time to avoid repeating the earlier CORS regression -- confirmed
+via a live preflight that the CloudFront origin is still allowed).
+**Live-verified against the real deployed account, both fixes at once**:
+seeded a `QUEUED` record directly in DynamoDB and sent a matching message
+straight to the real SQS queue (bypassing the frontend, exercising
+exactly `process_job.py`'s production code path) -- the record reached
+`SUCCEEDED`, `safe: true`, `narrator_backend: "bedrock"`, with a real
+Bedrock answer ("LDL-C 162 mg/dL... HbA1c 6.1%... Fasting glucose 108
+mg/dL") that passed the new marker-name-proximity check against actual
+LLM prose, not just the deterministic template's fixed phrasing. Then
+sent *two* messages for the same run_id within the same second: the
+record still reached a single consistent `SUCCEEDED`, and CloudWatch's
+own `REPORT` lines for `ProcessJobHandler` in that window showed three
+invocations -- two ~4-4.7s (real Bedrock calls, one from each seeded
+run) and one at 212ms, far too short to have called Bedrock, confirming
+the lease correctly rejected the second concurrent delivery for the
+race-tested run_id before ever reaching `_agent.ask()`. Both throwaway
+test records were deleted afterward. DLQ reconciliation itself was not
+separately forced live (deliberately: manufacturing three real failed
+deliveries against production Bedrock/IAM risks disrupting the account
+for a scenario moto's tests already cover exactly) -- code- and
+test-verified only for that specific path.
+
+---
+
 ## 2026-09-05 — Third independent review: a reopened safety bypass, a within-topic overclaim, and four frontend fixes
 
 **Context**: Requested specifically to cover what round 1 and round 2

@@ -15,13 +15,17 @@ Four independent checks, run in order:
 4. ``verify_numeric_grounding`` -- every number that appears attached to a
    known unit (e.g. "162 mg/dL") must match a ``GroundedFact`` carrying
    that *same value and unit* -- not just the same value attached to any
-   marker. Every other standalone number must still match some grounded
-   fact's numeric value. This is the concrete implementation of
-   ``kb_grounding_002`` ("a generated value that is not present in the
-   retrieved context is a grounding failure") and is what makes an
-   optional LLM narration pass safe to use: even if the LLM paraphrases,
-   it cannot introduce a new number, or reattach a real number to the
-   wrong marker, without failing this check.
+   marker -- and, when that fact carries a ``display_name`` (see
+   ``GroundedFact``'s own docstring), the *correct marker's name* must
+   also appear nearby, closing the narrower "right value and unit, wrong
+   marker" gap that (value, unit) matching alone still leaves open when
+   two markers share a unit. Every other standalone number must still
+   match some grounded fact's numeric value. This is the concrete
+   implementation of ``kb_grounding_002`` ("a generated value that is not
+   present in the retrieved context is a grounding failure") and is what
+   makes an optional LLM narration pass safe to use: even if the LLM
+   paraphrases, it cannot introduce a new number, or reattach a real
+   number to the wrong marker, without failing this check.
 
 All four checks run regardless of which narrator backend produced the
 text, so the same rules apply to the deterministic template narrator and
@@ -34,11 +38,15 @@ are pattern-based over English phrasing. They cover the phrasings tested
 here and in ``tests/test_safety.py``, and were expanded to catch several
 real bypasses an independent review found -- but pattern matching over
 free text cannot be made complete against a sufficiently creative
-paraphrase. Check 4's value+unit binding closes the specific "real number,
-wrong marker" bypass, but a number attached to a unit *not* in
-``_KNOWN_UNITS`` still only gets the weaker value-only check. None of this
-is a substitute for ``agent.py``'s existing fallback-to-mock-narrator
-behavior on any check failure, which remains the actual safety net.
+paraphrase. Check 4's value+unit binding, plus the marker-name check
+described above, closes the "real number, wrong marker" bypass for any
+fact carrying a ``display_name`` -- but a number attached to a unit *not*
+in ``_KNOWN_UNITS``, or a fact with no ``display_name`` to check (e.g. a
+panel-age or questionnaire-derived fact, which has no single "marker
+name" to begin with), still only gets the weaker value-only check. None
+of this is a substitute for ``agent.py``'s existing fallback-to-mock-
+narrator behavior on any check failure, which remains the actual safety
+net.
 """
 
 from __future__ import annotations
@@ -90,18 +98,35 @@ _DOSING_PATTERNS = [
 _KNOWN_UNITS = ("mg/dL", "mg/L", "ng/mL", "mIU/L", "mL/min/1.73m2", "U/L", "%")
 # `(?!\w)` rather than `\b` after the unit: `\b` requires a transition
 # between a word and non-word character, which fails right after "%" when
-# the next character is *also* non-word (e.g. the "." in "162%.") -- a
-# real bug caught by the test suite, not a hypothetical one.
-_VALUE_UNIT_RE = re.compile(r"(\d+\.?\d*)\s?(" + "|".join(re.escape(u) for u in _KNOWN_UNITS) + r")(?!\w)", re.IGNORECASE)
+# the next character is *also* non-word (e.g. the "." in "162%."). The
+# leading `-?` (a second independent review found this missing) captures
+# a genuine negative sign so "-162 mg/dL" is checked as -162, not silently
+# reinterpreted as the unsigned 162 -- without it, a fabricated negative
+# value could slip past by reusing a real positive grounded number.
+_VALUE_UNIT_RE = re.compile(r"(-?\d+\.?\d*)\s?(" + "|".join(re.escape(u) for u in _KNOWN_UNITS) + r")(?!\w)", re.IGNORECASE)
 
 # No longer requires a non-word/non-period lookahead after the digits --
 # that used to make "999mg" (no space before the unit) invisible to this
 # check entirely, since a following letter blocked the match. Leading
 # lookbehind is unchanged: still won't match the "006" inside an
-# identifier like "kb_a1c_006", since "_" is a word character.
-_NUMBER_RE = re.compile(r"(?<![\w.])\d+\.?\d*")
+# identifier like "kb_a1c_006", since "_" is a word character -- and still
+# won't treat the hyphen in a hyphenated identifier ("test-162") as a sign,
+# since the position right after a word character is excluded the same way
+# it always was; `-?` only ever captures a hyphen preceded by whitespace,
+# punctuation, or the start of the text.
+_NUMBER_RE = re.compile(r"(?<![\w.])-?\d+\.?\d*")
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 _ORDINAL_LIST_MARKER_RE = re.compile(r"(?m)^\s*(\d+\.)\s")
+
+# How much surrounding text to search for the correct marker's name when a
+# value+unit pair is shared by more than one biomarker (see
+# `verify_numeric_grounding`'s cross-marker check below). Generous enough
+# to cover every phrasing this project's own narrators actually produce
+# (the deterministic narrator always places the name within a few words of
+# the value; an LLM narrator's prose runs a little longer) without being so
+# large it'd accept a name mentioned in a completely unrelated sentence.
+_MARKER_NAME_WINDOW_BEFORE = 40
+_MARKER_NAME_WINDOW_AFTER = 20
 
 
 @dataclass(frozen=True)
@@ -193,6 +218,21 @@ def verify_numeric_grounding(
     asymmetry matters -- a false positive here just means a safe answer
     gets replaced by the deterministic template; a false negative means a
     fabricated clinical number reaches the user. See docs/DECISIONS.md.
+
+    **Cross-marker binding**: a (value, unit) pair matching *some*
+    grounded fact used to be accepted regardless of which marker the text
+    actually named -- several markers share a unit (LDL-C, HDL-C,
+    triglycerides, and fasting glucose are all ``mg/dL``), so "Your LDL-C
+    is 150 mg/dL" passed even when 150 is only ever grounded as
+    Triglycerides. A second independent review found this open and left
+    it as a deliberate backlog item rather than a quick patch; closed
+    here without a full structured-claim rewrite: whenever a
+    ``GroundedFact`` carries a ``display_name`` (see its own docstring),
+    that exact name must appear within a short window of text around the
+    matched value+unit, not just exist somewhere among the grounded
+    facts. A fact with no ``display_name`` set keeps the old,
+    name-independent check -- this only tightens markers this project
+    already knows how to name, never a new class of false positive.
     """
     dates_in_text = set(_ISO_DATE_RE.findall(text))
     if allowed_dates is not None:
@@ -203,11 +243,12 @@ def verify_numeric_grounding(
     text_without_dates = _ISO_DATE_RE.sub(" ", text)
 
     allowed_values: set[float] = set()
-    allowed_value_unit_pairs: set[tuple[float, str]] = set()
+    facts_by_value_unit: dict[tuple[float, str], list[GroundedFact]] = {}
     for fact in grounded_facts:
         allowed_values.update(fact.numeric_values)
         if fact.unit and fact.numeric_values:
-            allowed_value_unit_pairs.update((value, fact.unit.strip().lower()) for value in fact.numeric_values)
+            for value in fact.numeric_values:
+                facts_by_value_unit.setdefault((value, fact.unit.strip().lower()), []).append(fact)
 
     ordinal_spans = {m.span(1) for m in _ORDINAL_LIST_MARKER_RE.finditer(text_without_dates)}
 
@@ -229,8 +270,18 @@ def verify_numeric_grounding(
             value = float(raw_value)
         except ValueError:
             continue
-        if (value, raw_unit.strip().lower()) not in allowed_value_unit_pairs:
+
+        candidates = facts_by_value_unit.get((value, raw_unit.strip().lower()), [])
+        if not candidates:
             ungrounded.append(f"{raw_value}{raw_unit}")
+            continue
+
+        marker_names = {c.display_name for c in candidates if c.display_name}
+        if marker_names:
+            window_start = max(0, match.start() - _MARKER_NAME_WINDOW_BEFORE)
+            window = text_without_dates[window_start : match.end() + _MARKER_NAME_WINDOW_AFTER]
+            if not any(re.search(rf"\b{re.escape(name)}\b", window, re.IGNORECASE) for name in marker_names):
+                ungrounded.append(f"{raw_value}{raw_unit} (no matching marker name nearby)")
 
     for match in _NUMBER_RE.finditer(text_without_dates):
         span = match.span()

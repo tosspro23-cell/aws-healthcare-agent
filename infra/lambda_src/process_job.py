@@ -16,31 +16,33 @@ Any *other* exception (a transient Bedrock throttle, an unexpected bug)
 is left to propagate: Lambda reports the invocation as failed, SQS makes
 the message visible again after its visibility timeout for another
 attempt, and after `maxReceiveCount` attempts (see the queue's redrive
-policy) it moves to the dead-letter queue instead of retrying forever.
-This is coarser-grained than Step Functions' typed `add_catch(errors=...)`
--- SQS has no equivalent of "retry only this specific error type" -- so
-the UnknownUserError split above is this handler's own way of getting
-that same distinction back.
+policy) it moves to the dead-letter queue instead of retrying forever --
+`reconcile_dlq.py` is what finally marks the run FAILED at that point,
+since nothing else in this path ever will.
 
-Both writes below are now conditional on the record's *current* status,
-not unconditional overwrites. SQS is at-least-once delivery: a redelivery
-of the same message (because the first attempt's Lambda timed out, or its
-ack didn't land before the visibility timeout expired) used to blindly
-call the agent again and could set a record that had already reached
-`SUCCEEDED` back to `RUNNING`. Worse, `cancel_run.py` writing `CANCELLED`
-to this same run_id (a caller cancelling a queued/in-flight job) used to
-get silently overwritten the moment this handler's own write landed,
-since neither side checked the other. See
-`docs/INDEPENDENT_REVIEW_FINDINGS.md` (finding #2) for the reproduction.
+Every write below is conditional on the record's *current* status, not
+an unconditional overwrite. SQS is at-least-once delivery: a redelivery of
+the same message (because the first attempt's Lambda timed out, or its
+ack didn't land before the visibility timeout expired), or a second,
+independent message for the same run_id (a client's own retry against
+`enqueue_job.py`), can trigger a second, concurrent invocation for a
+run_id this handler is already processing. Entering RUNNING is guarded
+by `_claim_for_processing`'s processing lease (see its own docstring) --
+a genuine second concurrent invocation is rejected there and never calls
+the agent at all, closing the "two deliveries both call Bedrock" gap an
+independent review found still open after the plain status-only
+conditional write. See `docs/INDEPENDENT_REVIEW_FINDINGS.md` (round 2,
+finding #9) and `docs/DECISIONS.md`.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
+import run_writes
 from agent_runtime import agent as _agent
 from botocore.exceptions import ClientError
 
@@ -49,15 +51,17 @@ from care_agent.data_store import UnknownUserError
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
 
-_dynamodb_resource = None
 _s3_client = None
 
-
-def _dynamodb():
-    global _dynamodb_resource
-    if _dynamodb_resource is None:
-        _dynamodb_resource = boto3.resource("dynamodb")
-    return _dynamodb_resource
+# A few seconds beyond this handler's own Lambda timeout (30s -- see
+# ../stacks/queue_stack.py) -- long enough that a still-legitimately-
+# running invocation's lease can never expire out from under it (Lambda
+# hard-kills at 30s, so no invocation can physically still be running
+# once its lease would expire), short enough that a genuinely
+# crashed/killed invocation's lease is reclaimable soon after, rather
+# than waiting for the queue's own 90s visibility timeout -- a different,
+# unrelated margin (see queue_stack.py's own comment on that one).
+_LEASE_SECONDS = 35
 
 
 def _s3():
@@ -67,41 +71,36 @@ def _s3():
     return _s3_client
 
 
-def _write_result(run_id: str, *, if_status_in: tuple[str, ...] | None = None, **fields: object) -> bool:
-    """Returns True if the write happened. Returns False (without raising)
-    if `if_status_in` was given and the record's current status wasn't one
-    of those values -- a stale/duplicate delivery lost a race against
-    something else that already changed the record; that's expected, not
-    an error, so the caller should treat it as "nothing more to do here,"
-    not retry or propagate.
+def _claim_for_processing(run_id: str, *, now: str, lease_expires_at: str) -> bool:
+    """Atomically claims run_id for processing by this invocation, or
+    returns False if someone else already holds an unexpired claim.
 
-    `status` is a DynamoDB reserved keyword -- an UpdateExpression can't
-    use it bare (confirmed by moto raising the exact real
-    ValidationException DynamoDB itself would). Every field name gets
-    aliased via ExpressionAttributeNames unconditionally, not just the
-    ones known today to be reserved, so adding a future field can't
-    silently reintroduce this same bug for some other reserved word.
+    A plain "status in (QUEUED, RUNNING)" condition can't distinguish a
+    legitimate redelivery of a message whose *prior* attempt already
+    finished or crashed from a second delivery that's genuinely
+    concurrent with a *still-running* first attempt -- both see
+    status=RUNNING and would proceed to call the agent again. The
+    `processing_lease_expires_at` field closes that: a RUNNING record can
+    only be re-claimed once its lease has actually expired, which (given
+    `_LEASE_SECONDS` above) can only happen once the prior invocation is
+    provably no longer running. DynamoDB's atomic compare-and-swap
+    guarantees exactly one concurrent caller ever wins this condition for
+    a given run_id, regardless of timing.
     """
-    table = _dynamodb().Table(_RUNS_TABLE_NAME)
-    update_parts = [f"#{key} = :{key}" for key in fields]
-    names = {f"#{key}": key for key in fields}
-    values = {f":{key}": value for key, value in fields.items()}
-
-    kwargs: dict[str, object] = {
-        "Key": {"run_id": run_id},
-        "UpdateExpression": "SET " + ", ".join(update_parts),
-        "ExpressionAttributeNames": names,
-        "ExpressionAttributeValues": values,
-    }
-    if if_status_in is not None:
-        names["#status"] = "status"
-        placeholders = [f":cond_status_{i}" for i in range(len(if_status_in))]
-        kwargs["ConditionExpression"] = "#status IN (" + ", ".join(placeholders) + ")"
-        for placeholder, allowed_value in zip(placeholders, if_status_in, strict=True):
-            values[placeholder] = allowed_value
-
+    table = run_writes._dynamodb().Table(_RUNS_TABLE_NAME)
     try:
-        table.update_item(**kwargs)
+        table.update_item(
+            Key={"run_id": run_id},
+            UpdateExpression="SET #status = :status, #started = :now, #lease = :lease_expires",
+            ConditionExpression=("#status = :queued OR (#status = :status AND (attribute_not_exists(#lease) OR #lease < :now))"),
+            ExpressionAttributeNames={"#status": "status", "#started": "started_at", "#lease": "processing_lease_expires_at"},
+            ExpressionAttributeValues={
+                ":status": "RUNNING",
+                ":queued": "QUEUED",
+                ":now": now,
+                ":lease_expires": lease_expires_at,
+            },
+        )
         return True
     except ClientError as exc:
         if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
@@ -117,19 +116,19 @@ def handler(event: dict, context: object) -> None:
         user_id = message["user_id"]
         question = message["question"]
 
-        now = datetime.now(timezone.utc).isoformat()
-        # Allow QUEUED->RUNNING (normal) and RUNNING->RUNNING (an SQS
-        # redelivery of a message still legitimately in flight) but refuse
-        # to reopen a run that's already reached a terminal state --
-        # most notably, one `cancel_run.py` already marked CANCELLED.
-        entered_running = _write_result(run_id, if_status_in=("QUEUED", "RUNNING"), status="RUNNING", started_at=now)
+        now = datetime.now(timezone.utc)
+        entered_running = _claim_for_processing(
+            run_id,
+            now=now.isoformat(),
+            lease_expires_at=(now + timedelta(seconds=_LEASE_SECONDS)).isoformat(),
+        )
         if not entered_running:
             continue
 
         try:
             response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)
         except UnknownUserError as exc:
-            _write_result(
+            run_writes.conditional_status_write(
                 run_id,
                 if_status_in=("RUNNING",),
                 status="FAILED",
@@ -154,7 +153,7 @@ def handler(event: dict, context: object) -> None:
                 ContentType="application/json",
             )
 
-        _write_result(
+        run_writes.conditional_status_write(
             run_id,
             if_status_in=("RUNNING",),
             status="SUCCEEDED",

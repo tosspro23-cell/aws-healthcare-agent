@@ -481,8 +481,18 @@ Entra/MSAL?
   reconciliation gap for duplicate SQS deliveries) were deliberately left
   open, the same way the queue-write pattern above was — they need a
   real design change, not a quick patch, and are documented honestly as
-  open rather than silently fixed. Full findings and disposition for both
-  review passes: [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md);
+  open rather than silently fixed. **Both were later closed (2026-09-05)**:
+  `GroundedFact` gained an optional `display_name`, and value+unit
+  grounding now requires the correct marker's name to appear near a
+  matched value+unit whenever one is set, closing the cross-marker swap
+  without the full structured-claim rewrite the review suggested;
+  `process_job.py` gained a `processing_lease_expires_at` field so a
+  RUNNING record can only be re-claimed once the prior attempt's lease
+  has actually expired (DynamoDB's own atomic compare-and-swap, no
+  fencing token needed), and a new `reconcile_dlq.py` marks a DLQ'd run's
+  record `FAILED` instead of leaving it stuck forever. Full findings and
+  disposition for all review passes:
+  [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md);
   full reasoning: `DECISIONS.md`.
 
   **A third independent review, scoped to the frontend and public
