@@ -24,12 +24,16 @@ simply has no `trace` key; that's expected, not an error.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 import auth_context
 import boto3
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
@@ -65,7 +69,7 @@ def _fetch_trace(run_id: str) -> dict | None:
         return None
     try:
         obj = _s3().get_object(Bucket=_EVIDENCE_BUCKET_NAME, Key=f"{run_id}.json")
-    except ClientError:
+    except ClientError as exc:
         # Real, reproduced-live behavior, not a hypothetical: this
         # handler is deliberately granted only s3:GetObject, not
         # s3:ListBucket (see orchestration_stack.py -- ListBucket would
@@ -80,6 +84,13 @@ def _fetch_trace(run_id: str) -> dict | None:
         # (which already has the real status/answer), not the source of
         # truth, so any failure to fetch it should degrade gracefully
         # rather than fail the whole GET /runs/{run_id} response.
+        #
+        # Logged, not silent: the expected case (evidence not written
+        # yet) and a genuine misconfiguration both surface as the same
+        # ClientError, and swallowing it with no trace at all would make
+        # a real future problem invisible in CloudWatch. INFO, not
+        # ERROR/WARNING, because the expected case is the common one.
+        logger.info("No trace available for run_id=%r (%s)", run_id, exc.response["Error"].get("Code"))
         return None
     return json.loads(obj["Body"].read())
 
