@@ -74,7 +74,24 @@ class ApiStack(Stack):
         evidence_bucket.grant_put(ask_handler)
         grant_bedrock_invoke(ask_handler)
 
-        http_api = apigwv2.HttpApi(self, "CareAgentApi", api_name="care-agent-api")
+        http_api = apigwv2.HttpApi(
+            self,
+            "CareAgentApi",
+            api_name="care-agent-api",
+            # Phase 6's Workbench is the first *browser* caller this API has
+            # ever had -- every prior caller (curl, pytest, boto3, the
+            # stress-test harness) is same-origin-exempt by construction, so
+            # CORS was never needed until now. Scoped to exactly the one
+            # origin that's real right now (the Workbench's local dev
+            # server, matching the one redirect URI Cognito's App Client
+            # currently allows -- see `auth_stack.py`); widen this once a
+            # real hosted Workbench URL exists instead of defaulting to "*".
+            cors_preflight=apigwv2.CorsPreflightOptions(
+                allow_origins=["http://localhost:8765"],
+                allow_methods=[apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST],
+                allow_headers=["authorization", "content-type"],
+            ),
+        )
 
         authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
             "CognitoAuthorizer",

@@ -161,6 +161,21 @@ def test_jwt_authorizer_uses_identity_source_authorization_header():
     )
 
 
+def test_http_api_has_cors_scoped_to_the_workbench_dev_origin_not_a_wildcard():
+    """Phase 6's Workbench is the first browser caller this API has ever
+    had -- every route needs a CORS preflight response or the browser
+    blocks the request before it's even sent, but the allowed origin must
+    stay scoped to what's actually real (the Workbench's local dev
+    server, matching the one redirect URI Cognito's App Client currently
+    allows) rather than a permissive "*"."""
+    _, _, api_template = _synth_stacks()
+    apis = api_template.find_resources("AWS::ApiGatewayV2::Api")
+    (api,) = apis.values()
+    cors = api["Properties"]["CorsConfiguration"]
+    assert cors["AllowOrigins"] == ["http://localhost:8765"]
+    assert "GET" in cors["AllowMethods"] and "POST" in cors["AllowMethods"]
+
+
 def test_no_iam_policy_uses_wildcard_resource():
     """Regression guard: every IAM policy statement this stack creates must
     scope `Resource` to specific ARNs (or a stack-ref/GetAtt to one), never

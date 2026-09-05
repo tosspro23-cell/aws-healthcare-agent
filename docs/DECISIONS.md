@@ -8,6 +8,72 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Phase 6 Workbench: minimal React/Vite frontend, scoped to `/ask` first; required adding CORS
+
+**Context**: Every phase through the stress-test pass and both
+independent-review rounds was backend-only -- real Cognito auth existed,
+but the only callers were terminal tooling (`curl`, `pytest`,
+`get_dev_token.py`). The Azure counterpart already has a React/Vite
+Workbench; building the AWS equivalent is the natural next comparison
+point (same API, different cloud's auth/client story), and it also turns
+this project's own login/ask/trace-inspection loop into something usable
+by a person, not just provable via a terminal.
+
+**Decision**: Scoped the first version tightly rather than building the
+whole API surface at once: real Authorization Code + PKCE through an
+in-browser redirect to the Hosted UI (not a script standing in for one),
+`POST /ask` only (not the async `/runs`/`/jobs` paths yet), and a full
+render of the answer plus its grounding trace (safety checks, grounded
+facts, limitations, sources). Plain React + Vite + TypeScript, no router
+library (one `pathname === "/callback"` check covers the only extra
+route this needs), no state-management or component library -- matching
+the kernel/infra's own dependency discipline. Runs as a local dev server
+on a fixed port (8765) that exactly matches the one redirect URI already
+registered on the Cognito App Client, so no App Client change was needed.
+
+**A real infra gap this surfaced**: API Gateway had never had a browser
+caller before, so `ApiStack`'s `HttpApi` had no CORS configuration at
+all -- every prior caller (curl, pytest, boto3) is same-origin-exempt by
+construction. Added `cors_preflight` scoped to exactly
+`http://localhost:8765` (not a wildcard), since that's the only origin
+that's real right now; will need widening once a real hosted Workbench
+URL exists. New test: `test_stacks.py::test_http_api_has_cors_scoped_to_the_workbench_dev_origin_not_a_wildcard`.
+
+**A real bug this surfaced, live, that no unit test would have caught**:
+React 18's `<StrictMode>` deliberately double-invokes effects in
+development specifically to catch exactly this class of bug -- the
+`/callback` route's `useEffect` called `completeSignIn(code)` twice on
+the same mount, and an OAuth authorization code is single-use, so the
+second exchange failed with a real `400 invalid_grant` from Cognito.
+Harmless in this instance (the first exchange had already stored the
+token before the second one's failure was handled), but a genuine race,
+not a false alarm -- confirmed by checking the console log's full
+history: exactly one `400`, timestamped before the fix's hot-reload, none
+after across multiple subsequent sign-ins. Fixed with a `useRef` mount
+guard, the standard pattern for a legitimate one-time side effect under
+StrictMode.
+
+**Verification**: `tsc -b` and `eslint .` both clean. `npm run build`
+succeeds (150KB JS, gzipped ~49KB). Full live end-to-end test in a real
+browser: sign-in through the actual Cognito Hosted UI (a human completed
+the credential entry, per this project's standing constraint that
+interactive Cognito login can't be automated), a real `/ask` call
+answered by the deployed Bedrock-backed Lambda, `safe: true`, all 4
+safety checks shown passing, 12 grounded facts rendered with their
+sources -- and the fix re-verified across two additional sign-in/sign-out
+cycles with zero new console errors. Infra regression suite (130 tests,
+up from 129) and `cdk synth --all` both still pass with the CORS addition
+in place; `CareAgentApiStack` redeployed live.
+
+**Consequence**: The async paths, a run-history view, markdown rendering
+for LLM-narrated answers (Bedrock's prose includes literal `**bold**`
+markers, currently shown as-is), and real hosting (S3+CloudFront, needing
+a second registered Cognito callback URL) are explicitly not done --
+tracked in `docs/AWS_ROADMAP.md`'s Phase 6 section as open, not silently
+implied to be finished.
+
+---
+
 ## 2026-09-05 — A second independent review, scoped to *verify* round-1's fixes, found real regressions in them; fixed
 
 **Context**: After the first independent review's 13 findings were fixed

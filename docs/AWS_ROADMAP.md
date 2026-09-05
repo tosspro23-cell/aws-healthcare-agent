@@ -328,26 +328,53 @@ closing section for the full reasoning on each.
   it isn't — but as a hands-on learning exercise.
 - ⬜ Tear down whatever gets provisioned afterward to avoid ongoing cost.
 
-## Phase 6 — Frontend / Workbench (future milestone, not started)
+## Phase 6 — Frontend / Workbench (core loop live, not feature-complete)
 
-Everything through Phase 5 is backend-only: real auth exists (Cognito
-Hosted UI is a genuine login page), but nothing calls it except this
-project's own terminal tooling (`curl`, `pytest`, `get_dev_token.py`). A
-user-facing product needs an actual client — web or mobile — that:
+Everything through Phase 5 was backend-only: real auth existed (Cognito
+Hosted UI is a genuine login page), but nothing called it except this
+project's own terminal tooling (`curl`, `pytest`, `get_dev_token.py`).
+[`frontend/`](../frontend) is a minimal React/Vite Workbench that turns
+that into something usable in a browser, deliberately scoped to the
+`/ask` path first rather than the whole API surface at once:
 
-- ⬜ Runs the Authorization Code + PKCE flow through an in-browser redirect
-  (not a local Python script standing in for one).
-- ⬜ Calls `/ask` (and, after Phase 3, `/runs` + `/runs/{run_id}` +
-  `/runs/{run_id}/cancel`) with the resulting token.
-- ⬜ Renders the answer, and ideally the grounding trace, in a UI a
-  non-technical person could actually use.
+- ✅ Runs the real Authorization Code + PKCE flow through an in-browser
+  redirect (`frontend/src/auth.ts`) -- not `get_dev_token.py`'s local
+  script standing in for one. Required one infra change: API Gateway had
+  never had a browser caller before, so `ApiStack`'s `HttpApi` needed
+  CORS configured (scoped to exactly `http://localhost:8765`, not `*`),
+  deployed and confirmed live via a real preflight request.
+- ✅ Calls `POST /ask` with the resulting access token and renders the
+  answer plus its full grounding trace (safety checks, grounded facts,
+  limitations, retrieved sources) -- `frontend/src/components/TraceView.tsx`.
+- ✅ **Live-verified end to end**, not just built: a real browser sign-in
+  through the actual Cognito Hosted UI, a real `/ask` call answered by
+  the deployed Bedrock-backed Lambda, `safe: true`, all 4 safety checks
+  shown passing, 12 grounded facts rendered. Also caught and fixed a real
+  bug this way that no unit test would have: React 18 StrictMode's
+  deliberate double-effect-invocation in dev exchanged the one-time
+  authorization code twice, and the second exchange failed with a real
+  `400` from Cognito -- harmless (the first exchange had already
+  succeeded) but a genuine race, fixed with a mount-guard ref.
+- ⬜ **Not done yet**: the async paths (`POST /runs` + polling +
+  `POST /runs/{run_id}/cancel`, and `POST /jobs`), a run-history view,
+  and markdown rendering for the answer text (Bedrock's prose includes
+  literal `**bold**` markers right now, shown as-is rather than rendered).
+  Also not done: hosting this anywhere real -- it only runs as a local
+  dev server today (`npm run dev` on the one port, 8765, Cognito's App
+  Client currently allows as a redirect URI); an S3+CloudFront deployment
+  needs its own CDK stack and a second registered callback URL.
 
-Not started, not blocking anything else in this roadmap — flagged here
-because the Azure counterpart already has a React/Vite "Workbench" doing
-exactly this, and a frontend is the natural next comparison point once the
-AWS-side backend phases are further along: same underlying API, is the
-client-side auth/UX story simpler or harder to build against API Gateway +
-Cognito than against Azure Functions + Entra/MSAL?
+Deliberately scoped this way rather than building the full surface at
+once, per the same "ship the core loop, verify it live, then expand"
+pattern the backend phases used. See [`frontend/README.md`](../frontend/README.md)
+for setup and the reasoning behind each scoping choice.
+
+Flagged as worth doing because the Azure counterpart already has a
+React/Vite "Workbench" doing exactly this, and a frontend is the natural
+comparison point once the AWS-side backend phases are hardened: same
+underlying API, is the client-side auth/UX story simpler or harder to
+build against API Gateway + Cognito than against Azure Functions +
+Entra/MSAL?
 
 ## Process checklist (apply at every phase, not just once)
 
