@@ -42,8 +42,11 @@ def aws_resources():
             yield queue_url
 
 
-def _api_gateway_event(body: dict) -> dict:
-    return {"body": json.dumps(body)}
+_DEFAULT_CALLER_SUB = "cognito-sub-caller-1"
+
+
+def _api_gateway_event(body: dict, sub: str = _DEFAULT_CALLER_SUB) -> dict:
+    return {"body": json.dumps(body), "requestContext": {"authorizer": {"jwt": {"claims": {"sub": sub}}}}}
 
 
 # -- enqueue_job ----------------------------------------------------------
@@ -60,6 +63,25 @@ def test_enqueue_returns_202_and_writes_queued_record(aws_resources):
     item = table.get_item(Key={"run_id": "job-1"})["Item"]
     assert item["status"] == "QUEUED"
     assert item["user_id"] == "user_demo_001"
+    assert item["owner_sub"] == _DEFAULT_CALLER_SUB
+    assert item["execution_type"] == "SQS"
+
+
+def test_enqueue_refuses_to_overwrite_a_run_id_collision(aws_resources):
+    """Regression test: an independent review found that /ask, /runs (Step
+    Functions), and /jobs (SQS) share the same run_id keyspace, and this
+    handler's plain put_item used to silently overwrite whatever another
+    path had already written. Fixed with a conditional create."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "collided", "status": "RUNNING", "owner_sub": "someone-else", "execution_type": "SYNC"})
+
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": "collided"})
+    result = enqueue_job.handler(event, None)
+
+    assert result["statusCode"] == 409
+    item = table.get_item(Key={"run_id": "collided"})["Item"]
+    assert item["status"] == "RUNNING"
+    assert item["owner_sub"] == "someone-else"
 
 
 def test_enqueue_sends_a_message_to_sqs(aws_resources):
@@ -151,3 +173,53 @@ def test_process_job_writes_failed_result_for_unknown_user(aws_resources):
     item = table.get_item(Key={"run_id": "job-5"})["Item"]
     assert item["status"] == "FAILED"
     assert "error_message" in item
+
+
+def test_process_job_does_not_reopen_or_reprocess_an_already_cancelled_job(aws_resources):
+    """Regression test: an independent review found that SQS redelivery
+    (at-least-once delivery -- the first attempt's Lambda might have timed
+    out, or its ack might not have landed before the visibility timeout
+    expired) used to unconditionally set the record back to RUNNING and
+    call the agent again, even if cancel_run.py had already marked it
+    CANCELLED in the meantime. Fixed: the RUNNING write is now conditional
+    on the record's *current* status, and a cancelled job is left alone."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-6", "status": "CANCELLED", "completed_at": "2026-01-01T00:00:00+00:00"})
+
+    with patch("process_job._agent") as mock_agent:
+        process_job.handler(_sqs_event("job-6", "user_demo_001", "hello"), None)
+        mock_agent.ask.assert_not_called()
+
+    item = table.get_item(Key={"run_id": "job-6"})["Item"]
+    assert item["status"] == "CANCELLED"
+
+
+def test_process_job_final_write_does_not_clobber_a_cancellation_that_raced_in_mid_processing(aws_resources):
+    """Regression test, the other half of the race: if cancel_run.py wins
+    the race *while* this handler is mid-`agent.ask()` call (so the
+    initial RUNNING write already succeeded), the final SUCCEEDED write
+    must not blindly overwrite the CANCELLED status that landed in
+    between."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-7", "status": "QUEUED"})
+
+    original_ask = process_job._agent.ask
+
+    def _ask_then_get_cancelled(*args, **kwargs):
+        # Simulate cancel_run.py winning the race for this run_id in the
+        # exact window between this handler's RUNNING write and its own
+        # final write, by mutating the record out from under it here.
+        table.update_item(
+            Key={"run_id": "job-7"},
+            UpdateExpression="SET #status = :cancelled",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={":cancelled": "CANCELLED"},
+        )
+        return original_ask(*args, **kwargs)
+
+    with patch.object(process_job._agent, "ask", side_effect=_ask_then_get_cancelled):
+        process_job.handler(_sqs_event("job-7", "user_demo_001", "What should I focus on first?"), None)
+
+    item = table.get_item(Key={"run_id": "job-7"})["Item"]
+    assert item["status"] == "CANCELLED"
+    assert "answer" not in item

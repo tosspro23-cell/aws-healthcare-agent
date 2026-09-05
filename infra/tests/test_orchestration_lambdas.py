@@ -23,6 +23,17 @@ import record_result  # noqa: E402
 import start_run  # noqa: E402
 
 _TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
+_DEFAULT_CALLER_SUB = "cognito-sub-caller-1"
+_OTHER_CALLER_SUB = "cognito-sub-caller-2"
+
+
+def _api_event(path_params: dict | None = None, body: str | None = None, sub: str = _DEFAULT_CALLER_SUB) -> dict:
+    event: dict = {"requestContext": {"authorizer": {"jwt": {"claims": {"sub": sub}}}}}
+    if path_params is not None:
+        event["pathParameters"] = path_params
+    if body is not None:
+        event["body"] = body
+    return event
 
 
 @pytest.fixture()
@@ -52,12 +63,31 @@ def state_machine_arn():
 
 # -- mark_running -------------------------------------------------------
 def test_mark_running_writes_running_item(runs_table):
-    result = mark_running.handler({"run_id": "r1", "user_id": "user_demo_001", "question": "hi"}, None)
+    event = {"run_id": "r1", "user_id": "user_demo_001", "question": "hi", "owner_sub": _DEFAULT_CALLER_SUB}
+    result = mark_running.handler(event, None)
     assert result == {"run_id": "r1", "user_id": "user_demo_001", "question": "hi"}
     item = runs_table.get_item(Key={"run_id": "r1"})["Item"]
     assert item["status"] == "RUNNING"
     assert item["user_id"] == "user_demo_001"
+    assert item["owner_sub"] == _DEFAULT_CALLER_SUB
+    assert item["execution_type"] == "STEP_FUNCTIONS"
     assert "started_at" in item
+
+
+def test_mark_running_refuses_to_overwrite_a_run_id_collision(runs_table):
+    """Regression test: an independent review found that /ask, /runs (Step
+    Functions), and /jobs (SQS) share the same run_id keyspace, and this
+    handler's plain put_item used to silently overwrite whatever another
+    path had already written. Fixed with a conditional create."""
+    runs_table.put_item(Item={"run_id": "collided", "status": "QUEUED", "owner_sub": "someone-else", "execution_type": "SQS"})
+    event = {"run_id": "collided", "user_id": "user_demo_001", "question": "hi", "owner_sub": _DEFAULT_CALLER_SUB}
+
+    with pytest.raises(RuntimeError, match="already in use"):
+        mark_running.handler(event, None)
+
+    item = runs_table.get_item(Key={"run_id": "collided"})["Item"]
+    assert item["status"] == "QUEUED"
+    assert item["owner_sub"] == "someone-else"
 
 
 # -- agent_task -----------------------------------------------------------
@@ -112,7 +142,7 @@ def test_record_result_loses_race_gracefully_when_already_finalized(runs_table):
 def test_start_run_starts_execution_and_returns_202(state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None  # force a fresh client bound to the mocked region
-        event = {"body": '{"user_id": "user_demo_001", "question": "hello"}'}
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello"}')
         result = start_run.handler(event, None)
     assert result["statusCode"] == 202
     import json
@@ -122,10 +152,27 @@ def test_start_run_starts_execution_and_returns_202(state_machine_arn):
     assert body["run_id"]
 
 
+def test_start_run_threads_owner_sub_into_the_execution_input(state_machine_arn):
+    """owner_sub (the authenticated caller's JWT sub) must reach
+    mark_running.py via the Step Functions execution input -- that's the
+    only way the async path can enforce run ownership on read/cancel."""
+    import json
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "run_id": "owned-run"}', sub=_OTHER_CALLER_SUB)
+        start_run.handler(event, None)
+
+    sfn = boto3.client("stepfunctions", region_name="us-east-1")
+    execution_arn = f"{state_machine_arn.replace(':stateMachine:', ':execution:')}:owned-run"
+    execution_input = json.loads(sfn.describe_execution(executionArn=execution_arn)["input"])
+    assert execution_input["owner_sub"] == _OTHER_CALLER_SUB
+
+
 def test_start_run_missing_fields_returns_400(state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
-        result = start_run.handler({"body": '{"question": "hello"}'}, None)
+        result = start_run.handler(_api_event(body='{"question": "hello"}'), None)
     assert result["statusCode"] == 400
 
 
@@ -137,7 +184,7 @@ def test_start_run_non_string_run_id_returns_400_not_500(state_machine_arn):
     stress-test sweep, fixed in start_run.py -- see docs/DECISIONS.md."""
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
-        event = {"body": '{"user_id": "user_demo_001", "question": "hello", "run_id": 12345}'}
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "run_id": 12345}')
         result = start_run.handler(event, None)
     assert result["statusCode"] == 400
 
@@ -149,7 +196,7 @@ def test_start_run_non_string_question_returns_400_not_an_eventual_step_function
     less clear than rejecting it here at the API boundary)."""
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
-        event = {"body": '{"user_id": "user_demo_001", "question": 12345}'}
+        event = _api_event(body='{"user_id": "user_demo_001", "question": 12345}')
         result = start_run.handler(event, None)
     assert result["statusCode"] == 400
 
@@ -165,7 +212,7 @@ def test_start_run_handles_execution_already_exists_gracefully():
     fake_arn = "arn:aws:states:us-east-1:123456789012:stateMachine:x"
     with patch("boto3.client", return_value=fake_client), patch.dict(os.environ, {"STATE_MACHINE_ARN": fake_arn}):
         start_run._sfn_client = None
-        event = {"body": '{"user_id": "user_demo_001", "question": "hello", "run_id": "dup-1"}'}
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "run_id": "dup-1"}')
         result = start_run.handler(event, None)
 
     assert result["statusCode"] == 202
@@ -173,8 +220,8 @@ def test_start_run_handles_execution_already_exists_gracefully():
 
 # -- get_run ----------------------------------------------------------------
 def test_get_run_returns_existing_item(runs_table):
-    runs_table.put_item(Item={"run_id": "r1", "status": "SUCCEEDED", "answer": "hi"})
-    result = get_run.handler({"pathParameters": {"run_id": "r1"}}, None)
+    runs_table.put_item(Item={"run_id": "r1", "status": "SUCCEEDED", "answer": "hi", "owner_sub": _DEFAULT_CALLER_SUB})
+    result = get_run.handler(_api_event(path_params={"run_id": "r1"}), None)
     assert result["statusCode"] == 200
     import json
 
@@ -182,13 +229,25 @@ def test_get_run_returns_existing_item(runs_table):
 
 
 def test_get_run_missing_returns_404(runs_table):
-    result = get_run.handler({"pathParameters": {"run_id": "does-not-exist"}}, None)
+    result = get_run.handler(_api_event(path_params={"run_id": "does-not-exist"}), None)
     assert result["statusCode"] == 404
 
 
 def test_get_run_missing_path_param_returns_400(runs_table):
-    result = get_run.handler({"pathParameters": {}}, None)
+    result = get_run.handler(_api_event(path_params={}), None)
     assert result["statusCode"] == 400
+
+
+def test_get_run_owned_by_another_caller_returns_404_not_403(runs_table):
+    """Regression test: an independent review found that any authenticated
+    caller could read any other caller's run by run_id alone -- there was
+    no check against who actually created it. A non-owner gets the same
+    404 a missing run_id gets, not a 403 or the real data: confirming
+    "this exists but isn't yours" would itself leak information."""
+    runs_table.put_item(Item={"run_id": "r1", "status": "SUCCEEDED", "answer": "secret", "owner_sub": _OTHER_CALLER_SUB})
+    result = get_run.handler(_api_event(path_params={"run_id": "r1"}, sub=_DEFAULT_CALLER_SUB), None)
+    assert result["statusCode"] == 404
+    assert "secret" not in result["body"]
 
 
 # -- cancel_run ---------------------------------------------------------
@@ -197,23 +256,56 @@ def test_cancel_run_wins_race_and_stops_execution(runs_table, state_machine_arn)
 
     sfn = boto3.client("stepfunctions", region_name="us-east-1")
     sfn.start_execution(stateMachineArn=state_machine_arn, name=execution_name)
-    runs_table.put_item(Item={"run_id": execution_name, "status": "RUNNING"})
+    runs_table.put_item(
+        Item={"run_id": execution_name, "status": "RUNNING", "owner_sub": _DEFAULT_CALLER_SUB, "execution_type": "STEP_FUNCTIONS"}
+    )
 
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         cancel_run._sfn_client = None
-        result = cancel_run.handler({"pathParameters": {"run_id": execution_name}}, None)
+        result = cancel_run.handler(_api_event(path_params={"run_id": execution_name}), None)
 
     assert result["statusCode"] == 200
     item = runs_table.get_item(Key={"run_id": execution_name})["Item"]
     assert item["status"] == "CANCELLED"
 
 
-def test_cancel_run_loses_race_when_already_finalized(runs_table, state_machine_arn):
-    runs_table.put_item(Item={"run_id": "r1", "status": "SUCCEEDED", "answer": "already done"})
+def test_cancel_run_cancels_a_queued_sqs_job_without_attempting_stop_execution(runs_table, state_machine_arn):
+    """Regression test: an independent review found that stop_execution
+    used to be called unconditionally, including for SQS-queued jobs that
+    never had a Step Functions execution at all -- the resulting
+    ExecutionDoesNotExist ClientError was silently swallowed by a bare
+    `except ClientError: pass`, and success was reported anyway even
+    though process_job.py would go on to overwrite the "cancelled" record
+    the moment it picked the message up. Now: execution_type gates whether
+    stop_execution is even attempted, and process_job.py's own conditional
+    writes are what make the cancellation actually stick."""
+    runs_table.put_item(Item={"run_id": "q1", "status": "QUEUED", "owner_sub": _DEFAULT_CALLER_SUB, "execution_type": "SQS"})
 
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         cancel_run._sfn_client = None
-        result = cancel_run.handler({"pathParameters": {"run_id": "r1"}}, None)
+        with patch("cancel_run._sfn") as mock_sfn:
+            result = cancel_run.handler(_api_event(path_params={"run_id": "q1"}), None)
+            mock_sfn.return_value.stop_execution.assert_not_called()
+
+    assert result["statusCode"] == 200
+    item = runs_table.get_item(Key={"run_id": "q1"})["Item"]
+    assert item["status"] == "CANCELLED"
+
+
+def test_cancel_run_loses_race_when_already_finalized(runs_table, state_machine_arn):
+    runs_table.put_item(
+        Item={
+            "run_id": "r1",
+            "status": "SUCCEEDED",
+            "answer": "already done",
+            "owner_sub": _DEFAULT_CALLER_SUB,
+            "execution_type": "STEP_FUNCTIONS",
+        }
+    )
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        cancel_run._sfn_client = None
+        result = cancel_run.handler(_api_event(path_params={"run_id": "r1"}), None)
 
     assert result["statusCode"] == 409
     body_status = result["body"]
@@ -223,12 +315,30 @@ def test_cancel_run_loses_race_when_already_finalized(runs_table, state_machine_
 def test_cancel_run_missing_run_returns_404(runs_table, state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         cancel_run._sfn_client = None
-        result = cancel_run.handler({"pathParameters": {"run_id": "never-existed"}}, None)
+        result = cancel_run.handler(_api_event(path_params={"run_id": "never-existed"}), None)
     assert result["statusCode"] == 404
 
 
 def test_cancel_run_missing_path_param_returns_400(runs_table, state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         cancel_run._sfn_client = None
-        result = cancel_run.handler({"pathParameters": {}}, None)
+        result = cancel_run.handler(_api_event(path_params={}), None)
     assert result["statusCode"] == 400
+
+
+def test_cancel_run_owned_by_another_caller_returns_404_not_the_real_status(runs_table, state_machine_arn):
+    """Regression test: an independent review found that any authenticated
+    caller could cancel any other caller's run by run_id alone. A
+    non-owner gets the same 404 a missing run_id gets, and the run is left
+    untouched -- not cancelled, not told the real status."""
+    runs_table.put_item(
+        Item={"run_id": "r1", "status": "RUNNING", "owner_sub": _OTHER_CALLER_SUB, "execution_type": "STEP_FUNCTIONS"}
+    )
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        cancel_run._sfn_client = None
+        result = cancel_run.handler(_api_event(path_params={"run_id": "r1"}, sub=_DEFAULT_CALLER_SUB), None)
+
+    assert result["statusCode"] == 404
+    item = runs_table.get_item(Key={"run_id": "r1"})["Item"]
+    assert item["status"] == "RUNNING"  # untouched

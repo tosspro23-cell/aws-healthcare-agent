@@ -21,6 +21,17 @@ This is coarser-grained than Step Functions' typed `add_catch(errors=...)`
 -- SQS has no equivalent of "retry only this specific error type" -- so
 the UnknownUserError split above is this handler's own way of getting
 that same distinction back.
+
+Both writes below are now conditional on the record's *current* status,
+not unconditional overwrites. SQS is at-least-once delivery: a redelivery
+of the same message (because the first attempt's Lambda timed out, or its
+ack didn't land before the visibility timeout expired) used to blindly
+call the agent again and could set a record that had already reached
+`SUCCEEDED` back to `RUNNING`. Worse, `cancel_run.py` writing `CANCELLED`
+to this same run_id (a caller cancelling a queued/in-flight job) used to
+get silently overwritten the moment this handler's own write landed,
+since neither side checked the other. See
+`docs/INDEPENDENT_REVIEW_FINDINGS.md` (finding #2) for the reproduction.
 """
 
 from __future__ import annotations
@@ -31,6 +42,7 @@ from datetime import datetime, timezone
 
 import boto3
 from agent_runtime import agent as _agent
+from botocore.exceptions import ClientError
 
 from care_agent.data_store import UnknownUserError
 
@@ -46,23 +58,46 @@ def _dynamodb():
     return _dynamodb_resource
 
 
-def _write_result(run_id: str, **fields: object) -> None:
-    # `status` is a DynamoDB reserved keyword -- an UpdateExpression can't
-    # use it bare (confirmed by moto raising the exact real
-    # ValidationException DynamoDB itself would). Every field name gets
-    # aliased via ExpressionAttributeNames unconditionally, not just the
-    # ones known today to be reserved, so adding a future field can't
-    # silently reintroduce this same bug for some other reserved word.
+def _write_result(run_id: str, *, if_status_in: tuple[str, ...] | None = None, **fields: object) -> bool:
+    """Returns True if the write happened. Returns False (without raising)
+    if `if_status_in` was given and the record's current status wasn't one
+    of those values -- a stale/duplicate delivery lost a race against
+    something else that already changed the record; that's expected, not
+    an error, so the caller should treat it as "nothing more to do here,"
+    not retry or propagate.
+
+    `status` is a DynamoDB reserved keyword -- an UpdateExpression can't
+    use it bare (confirmed by moto raising the exact real
+    ValidationException DynamoDB itself would). Every field name gets
+    aliased via ExpressionAttributeNames unconditionally, not just the
+    ones known today to be reserved, so adding a future field can't
+    silently reintroduce this same bug for some other reserved word.
+    """
     table = _dynamodb().Table(_RUNS_TABLE_NAME)
     update_parts = [f"#{key} = :{key}" for key in fields]
     names = {f"#{key}": key for key in fields}
     values = {f":{key}": value for key, value in fields.items()}
-    table.update_item(
-        Key={"run_id": run_id},
-        UpdateExpression="SET " + ", ".join(update_parts),
-        ExpressionAttributeNames=names,
-        ExpressionAttributeValues=values,
-    )
+
+    kwargs: dict[str, object] = {
+        "Key": {"run_id": run_id},
+        "UpdateExpression": "SET " + ", ".join(update_parts),
+        "ExpressionAttributeNames": names,
+        "ExpressionAttributeValues": values,
+    }
+    if if_status_in is not None:
+        names["#status"] = "status"
+        placeholders = [f":cond_status_{i}" for i in range(len(if_status_in))]
+        kwargs["ConditionExpression"] = "#status IN (" + ", ".join(placeholders) + ")"
+        for placeholder, allowed_value in zip(placeholders, if_status_in, strict=True):
+            values[placeholder] = allowed_value
+
+    try:
+        table.update_item(**kwargs)
+        return True
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
 
 
 def handler(event: dict, context: object) -> None:
@@ -74,13 +109,20 @@ def handler(event: dict, context: object) -> None:
         question = message["question"]
 
         now = datetime.now(timezone.utc).isoformat()
-        _write_result(run_id, status="RUNNING", started_at=now)
+        # Allow QUEUED->RUNNING (normal) and RUNNING->RUNNING (an SQS
+        # redelivery of a message still legitimately in flight) but refuse
+        # to reopen a run that's already reached a terminal state --
+        # most notably, one `cancel_run.py` already marked CANCELLED.
+        entered_running = _write_result(run_id, if_status_in=("QUEUED", "RUNNING"), status="RUNNING", started_at=now)
+        if not entered_running:
+            continue
 
         try:
             response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)
         except UnknownUserError as exc:
             _write_result(
                 run_id,
+                if_status_in=("RUNNING",),
                 status="FAILED",
                 error_message=str(exc),
                 completed_at=datetime.now(timezone.utc).isoformat(),
@@ -89,6 +131,7 @@ def handler(event: dict, context: object) -> None:
 
         _write_result(
             run_id,
+            if_status_in=("RUNNING",),
             status="SUCCEEDED",
             answer=response.answer,
             safe=response.safe,

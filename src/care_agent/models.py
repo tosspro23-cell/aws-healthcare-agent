@@ -201,12 +201,23 @@ class GroundedFact(DictMixin):
 
     Every number that appears in the composed answer must trace back to a
     ``GroundedFact`` with a matching numeric value (see ``safety.verify_numeric_grounding``).
+
+    ``unit`` (e.g. ``"mg/dL"``, ``"%"``) is optional -- only biomarker-value
+    facts carry one -- but when present it lets the safety check verify a
+    number is grounded *for that specific unit*, not just present somewhere
+    in the numeric_values across every fact. Without it, "Your HbA1c is
+    162%" would pass grounding just because 162 happens to be a real,
+    correctly-grounded LDL-C value in mg/dL -- the number alone doesn't
+    prove it's attached to the right marker. Populated directly from the
+    source biomarker's own `unit` field at construction time (see
+    `agent.py`), never parsed back out of `claim`'s free text.
     """
 
     claim: str
     source_type: Literal["bloodwork", "questionnaire", "knowledge_base", "catalog", "derived_policy"]
     source_ref: str
     numeric_values: tuple[float, ...] = field(default_factory=tuple)
+    unit: str | None = None
 
 
 @dataclass(frozen=True)

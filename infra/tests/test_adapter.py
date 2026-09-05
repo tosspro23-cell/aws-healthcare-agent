@@ -11,9 +11,14 @@ import boto3
 import pytest
 from moto import mock_aws
 
+_DEFAULT_CALLER_SUB = "cognito-sub-caller-1"
 
-def _api_gateway_event(body: dict | None, raw_body: str | None = None) -> dict:
-    return {"body": raw_body if raw_body is not None else json.dumps(body)}
+
+def _api_gateway_event(body: dict | None, raw_body: str | None = None, sub: str = _DEFAULT_CALLER_SUB) -> dict:
+    return {
+        "body": raw_body if raw_body is not None else json.dumps(body),
+        "requestContext": {"authorizer": {"jwt": {"claims": {"sub": sub}}}},
+    }
 
 
 @pytest.fixture()
@@ -52,6 +57,39 @@ def test_happy_path_writes_dynamodb_run_record(aws_resources):
     assert item["user_id"] == "user_demo_001"
     assert item["safe"] is True
     assert item["narrator_backend"] == "mock"
+    assert item["status"] == "SUCCEEDED"
+    assert item["owner_sub"] == _DEFAULT_CALLER_SUB
+    assert item["execution_type"] == "SYNC"
+
+
+def test_run_id_collision_with_existing_record_returns_409(aws_resources):
+    """Regression test: an independent review found that `/ask`, `/runs`
+    (Step Functions), and `/jobs` (SQS) all share the same run_id
+    keyspace, and this handler's plain `put_item` used to silently
+    overwrite whatever another path had already written for that run_id
+    -- including erasing its `status` entirely, since `put_item` replaces
+    the whole item rather than merging fields. Fixed with a conditional
+    create (`attribute_not_exists`)."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(os.environ["RUNS_TABLE_NAME"])
+    table.put_item(Item={"run_id": "collided-run", "status": "RUNNING", "owner_sub": "someone-else", "execution_type": "SQS"})
+
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": "collided-run"})
+    result = adapter.handler(event, None)
+
+    assert result["statusCode"] == 409
+    # The existing record must be untouched, not overwritten.
+    item = table.get_item(Key={"run_id": "collided-run"})["Item"]
+    assert item["status"] == "RUNNING"
+    assert item["owner_sub"] == "someone-else"
+
+
+def test_unknown_user_writes_failed_status_not_an_orphaned_running_record(aws_resources):
+    event = _api_gateway_event({"user_id": "no_such_user", "question": "hello", "run_id": "test-run-failed"})
+    adapter.handler(event, None)
+
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(os.environ["RUNS_TABLE_NAME"])
+    item = table.get_item(Key={"run_id": "test-run-failed"})["Item"]
+    assert item["status"] == "FAILED"
 
 
 def test_happy_path_writes_s3_evidence_object(aws_resources):

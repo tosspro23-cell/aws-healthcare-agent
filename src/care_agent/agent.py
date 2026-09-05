@@ -47,8 +47,6 @@ from care_agent.retrieval import DEFAULT_KB_PATH, KnowledgeRetriever
 from care_agent.safety import run_safety_checks
 from care_agent.trend import compute_trend
 
-_ORDINAL_NUMBERS = {1.0, 2.0, 3.0, 4.0, 5.0}
-
 
 def _select_narrator():
     backend = os.environ.get("CARE_AGENT_NARRATOR_BACKEND", "mock").lower()
@@ -173,6 +171,7 @@ class HealthAgent:
                             source_type="bloodwork",
                             source_ref=f"{latest_panel.panel_id}:{item.marker.concept_id}",
                             numeric_values=(float(item.marker.value),),
+                            unit=item.marker.unit,
                         )
                     )
 
@@ -195,6 +194,7 @@ class HealthAgent:
                                     source_type="bloodwork",
                                     source_ref=f"{latest_panel.panel_id}:{concept_id}",
                                     numeric_values=(float(marker.value),),
+                                    unit=marker.unit,
                                 )
                             )
 
@@ -284,7 +284,7 @@ class HealthAgent:
 
         # -- narrate + verify --------------------------------------------------
         answer_text = self.narrator.compose(brief, question_text, profile)
-        report = run_safety_checks(answer_text, brief.grounded_facts, _ORDINAL_NUMBERS, allowed_dates)
+        report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
 
         used_fallback = False
         if not report.passed and self.narrator.backend_name != "mock":
@@ -292,7 +292,7 @@ class HealthAgent:
             # Fall back to the deterministic narrator rather than return
             # unverified text.
             answer_text = self._mock_narrator.compose(brief, question_text, profile)
-            report = run_safety_checks(answer_text, brief.grounded_facts, _ORDINAL_NUMBERS, allowed_dates)
+            report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
             used_fallback = True
 
         trace.safety_checks = list(report.checks)

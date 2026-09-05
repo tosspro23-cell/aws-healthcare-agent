@@ -339,17 +339,31 @@ Cognito than against Azure Functions + Entra/MSAL?
 
 ## Process checklist (apply at every phase, not just once)
 
-- [ ] Adversarial/boundary tests added for the new surface (extreme values,
+- [x] Adversarial/boundary tests added for the new surface (extreme values,
   empty input, injection attempts, all-normal-data cases) — not only a
   happy-path smoke test.
-- [ ] `DECISIONS.md` updated with what was chosen and why.
-- [ ] Self-review pass: does any comment or doc describe a safety check as
+- [x] `DECISIONS.md` updated with what was chosen and why.
+- [x] Self-review pass: does any comment or doc describe a safety check as
   stronger than it actually is? (E.g. "prevents hallucination" when it only
   proves a number has *some* source, not that it's the *right* source; or a
   policy written for one marker class getting applied to all markers by
-  accident.) Check this explicitly before calling a phase "done."
-- [ ] Get a second, independent AI session (not the one that wrote the code)
-  to critically review the phase before moving on.
+  accident.) Check this explicitly before calling a phase "done." —
+  **this specific self-review pass turned out to be too weak to catch
+  what the independent review below found on its own; the item below is
+  what actually closed this gap.**
+- [x] Get a second, independent AI session (not the one that wrote the code)
+  to critically review the phase before moving on. — **Done 2026-09-05**,
+  after Phases 0–4 and the stress-test pass, not per-phase as originally
+  scoped here (this checklist item went unactioned through every earlier
+  phase — worth naming directly rather than quietly backfilling a
+  checkmark). Found a real authorization vulnerability (any authenticated
+  caller could read/cancel any other caller's run) and exploitable gaps
+  in the numeric-grounding/diagnosis/dosing safety checks, both fixed and
+  live-verified, plus corrections to two previously-published stress-test
+  claims. Full findings and disposition:
+  [`INDEPENDENT_REVIEW_FINDINGS.md`](INDEPENDENT_REVIEW_FINDINGS.md); full
+  reasoning: `DECISIONS.md`. Ten lower-severity findings remain open,
+  tracked in that same file rather than fixed in this pass.
 
 ## Cost notes
 

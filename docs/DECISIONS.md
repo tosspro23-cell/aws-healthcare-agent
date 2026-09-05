@@ -8,6 +8,252 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-05 — Independent review found a real authorization vulnerability and a run-record data-integrity bug; fixed both
+
+**Context**: Per the challenge brief's own process checklist ("get a second,
+independent AI session to critically review the phase"), an independent
+model reviewed this repository's code (not just its docs) with explicit
+instructions to verify claims against implementation rather than take the
+documentation at face value. It found, and reproduced, two High-severity
+issues -- verified directly against this repo's own code before accepting
+either as real (see the specific verification steps below, not just
+"the reviewer said so"). Full findings list, including the ones not
+addressed here: `docs/INDEPENDENT_REVIEW_FINDINGS.md`.
+
+**Finding #1 -- authentication existed, authorization didn't.** API
+Gateway's Cognito JWT authorizer (Phase 2) validates that a request
+carries a genuine, unexpired token -- but nothing downstream of that ever
+checked *which* run records the token's holder was entitled to touch.
+`get_run.py` and `cancel_run.py` looked up/mutated records by `run_id`
+alone; any authenticated caller who knew or guessed a `run_id` could read
+or cancel any other caller's run. Verified directly: read both handlers'
+source, confirmed neither referenced the request's JWT claims at all.
+
+**Finding #2 -- three paths sharing one run_id keyspace, zero conditional
+writes outside the Step Functions leaf.** `/ask` (`adapter.py`), `/runs`
+(`mark_running.py`), and `/jobs` (`enqueue_job.py`/`process_job.py`) all
+key DynamoDB by `run_id`, but only `record_result.py`'s terminal write was
+ever conditional. `adapter.py`'s `put_item` was a full, unconditional
+overwrite -- a `/ask` call reusing another path's `run_id` would silently
+erase that record's `status` entirely (`put_item` replaces the whole item,
+it doesn't merge fields). `process_job.py`'s writes were unconditional
+too: SQS's at-least-once delivery means a redelivered message (the first
+attempt's Lambda timed out, or its ack didn't land before the visibility
+timeout) could set an already-`SUCCEEDED` record back to `RUNNING` and
+re-run the agent, and `cancel_run.py` marking a queued job `CANCELLED`
+could get silently overwritten the moment `process_job.py`'s own write
+landed, since neither side checked the other. Verified directly: traced
+every DynamoDB write across `adapter.py`, `mark_running.py`,
+`enqueue_job.py`, and `process_job.py`; none but `record_result.py` used
+`ConditionExpression`.
+
+**Decision**: Redesigned the run record's write contract instead of
+patching each symptom individually:
+
+- Every record now carries `owner_sub` (the creating caller's Cognito
+  `sub` -- the actual authorization principal; `user_id`, by contrast, is
+  a caller-supplied field naming whose *synthetic health-data profile* a
+  question is about, and was never itself proof of identity) and
+  `execution_type` (`SYNC` / `STEP_FUNCTIONS` / `SQS`).
+- New `auth_context.py` extracts `owner_sub` from
+  `event.requestContext.authorizer.jwt.claims.sub` -- the claims HTTP
+  API's JWT authorizer attaches to the event, already present on every
+  route (all of them require the authorizer), just never read by any
+  handler.
+- `get_run.py` now returns 404 -- not the data, not a 403 -- for a
+  non-owner. 404 rather than 403 is deliberate: confirming "this run
+  exists but isn't yours" is itself information a non-owner shouldn't be
+  able to learn.
+- `cancel_run.py`'s conditional update now folds the ownership check
+  *into the same atomic `ConditionExpression`* as the status check
+  (`owner_sub = :owner_sub AND (#status = :queued OR #status = :running)`)
+  rather than a separate get-then-act -- closing the TOCTOU race a
+  separate check would leave open. It also now only attempts
+  `stop_execution` when `execution_type == "STEP_FUNCTIONS"` (read back
+  via `ReturnValues=ALL_NEW` on the same call, no extra read) -- it used
+  to call `stop_execution` unconditionally and silently swallow the
+  resulting `ExecutionDoesNotExist` for an SQS-queued job via a bare
+  `except ClientError: pass`, reporting success while `process_job.py`
+  was about to overwrite the "cancelled" record anyway.
+- `adapter.py`, `mark_running.py`, and `enqueue_job.py` now create their
+  record with `ConditionExpression: attribute_not_exists(run_id)` --
+  cross-path `run_id` collision now returns 409 instead of silently
+  replacing another path's record. `adapter.py` also now transitions
+  through `RUNNING` -> `SUCCEEDED`/`FAILED` instead of writing nothing
+  until the very end, so a request that fails partway doesn't leave no
+  record at all.
+- `process_job.py`'s writes are now conditional on the record's *current*
+  status: the initial `RUNNING` write only proceeds from `QUEUED` or
+  `RUNNING` (idempotent under redelivery, but refuses to reopen a
+  terminal record); the final write only proceeds from `RUNNING`
+  (mirroring `record_result.py`'s existing, already-correct pattern). A
+  failed condition is treated as "something else already finalized this
+  run" -- not an error, and specifically not re-raised, since re-raising
+  would just cost the queue another wasted redelivery attempt on work
+  that's already settled.
+
+**Verification**: reproduced both original bugs against this repo's own
+code before fixing them (a fabricated second-caller JWT could read/cancel
+a first caller's run; a simulated cancel-during-processing race left a
+`SUCCEEDED` overwrite), then added regression tests that reproduce the
+exact same scenarios and assert the fix holds --
+`test_get_run_owned_by_another_caller_returns_404_not_403`,
+`test_cancel_run_owned_by_another_caller_returns_404_not_the_real_status`,
+`test_cancel_run_cancels_a_queued_sqs_job_without_attempting_stop_execution`,
+`test_mark_running_refuses_to_overwrite_a_run_id_collision`,
+`test_enqueue_refuses_to_overwrite_a_run_id_collision`,
+`test_process_job_does_not_reopen_or_reprocess_an_already_cancelled_job`,
+`test_process_job_final_write_does_not_clobber_a_cancellation_that_raced_in_mid_processing`.
+Full kernel + infra suites re-run clean after the change (see the
+adjacent commit).
+
+**Consequence**: This is the single most important fix this project has
+made outside of getting a feature working -- an authorization gap in a
+health-data application, even over synthetic data, directly contradicts
+the project's own stated safety-first framing, and it existed through
+four completed phases and a full stress-testing pass without being
+caught, because none of that testing ever asked "what happens if a
+*different* authenticated caller tries this." That question is exactly
+what an independent second reviewer is for.
+
+---
+
+## 2026-09-05 — Independent review found the numeric-grounding and diagnosis/dosing safety checks had real, exploitable gaps; tightened all four
+
+**Context**: Same independent review as above. It constructed six
+narrator outputs and ran them through `safety.run_safety_checks` directly
+-- not claiming a real Bedrock call produced them, just showing the
+*validators themselves* would pass each one as `safe=True`. All six were
+reproduced against this repo's actual code before any fix:
+
+| Probe | What it proved |
+|---|---|
+| `"Your HbA1c is 162%."` | `verify_numeric_grounding` only checked "does this number appear *somewhere* in the grounded facts," never *which marker* it's attached to -- a real, correctly-grounded LDL-C value (162 mg/dL) could be reattached to a completely different marker and unit. |
+| `"Your LDL-C is 5 mg/dL."` | `allowed_extra_numbers` (the ordinal-list-marker exemption, hardcoded to `{1.0, ..., 5.0}`) exempted those *values* anywhere in the text, not just at the position they're actually safe (a line-leading "5. " list marker) -- so a fabricated value happening to equal a valid list-numbering value passed everywhere. |
+| `"Your LDL-C is 999mg/dL."` | `_NUMBER_RE`'s trailing `(?![\w.])` blocked matching a number immediately followed by a letter -- any fabricated value could escape numeric extraction *entirely* just by omitting the space before its unit. |
+| `"Diabetes is your confirmed condition."` | `_DIAGNOSIS_PATTERNS` only matched "you have/are diagnosed with X" phrasings, not "X is your condition." |
+| `"Swallow one vitamin D capsule every morning."` | `_DOSING_PATTERNS` required a digit (mg/mcg/IU/etc.); a written-word dosing/frequency instruction with no digits at all matched none of them. |
+| `""` (empty string) | No check verified the answer contained anything -- an empty answer trivially passes every check (no diagnosis pattern matches nothing, no number to be ungrounded). |
+
+**Decision**: Rewrote `safety.py`'s numeric-grounding check around a new
+capability rather than only patching each regex individually:
+
+- `GroundedFact` gained an optional `unit` field (`models.py`), populated
+  *directly from the source biomarker's own `unit` field* at construction
+  time in `agent.py` -- not parsed back out of the `claim` string's free
+  text, which would just move the fragility rather than remove it.
+- `verify_numeric_grounding` now checks (value, unit) pairs for any
+  number with a recognized unit immediately adjacent (`_KNOWN_UNITS` --
+  the *actual, complete* unit vocabulary this project's sample data uses,
+  verified by scanning every marker in `data/sample_bloodwork.json`, not
+  guessed): the number must match a grounded fact carrying that *same*
+  unit, not just the same value attached to any marker. A number with no
+  recognized unit adjacent (or one using a unit this project doesn't yet
+  recognize) still falls back to the older, weaker value-only check --
+  there's no way to bind context that isn't there.
+- The ordinal-list-marker exemption is no longer a value-based allowlist.
+  It's now a position-based one: only the exact character span of a
+  line-leading `N. ` marker is exempted, via `_ORDINAL_LIST_MARKER_RE`,
+  not the numeral's value anywhere else in the text. `_ORDINAL_NUMBERS`
+  and the `allowed_extra_numbers` parameter it fed were removed from
+  `agent.py`/`safety.py` entirely -- the position-based mechanism doesn't
+  need a caller-supplied allowlist at all.
+- `_NUMBER_RE`'s trailing lookahead was removed (the leading
+  `(?<![\w.])` -- which correctly excludes digits embedded in identifiers
+  like `kb_a1c_006` -- was kept). A number glued to its unit with no space
+  is now extracted correctly either way.
+- `_DIAGNOSIS_PATTERNS` and `_DOSING_PATTERNS` were both expanded to catch
+  the specific phrasings above plus direct siblings (`"your condition
+  is X"`, `swallow/take one <capsule/tablet/pill/...>`, a dosage-form word
+  within ~40 characters of a frequency word like "every morning").
+- Added a fourth check, `check_non_empty`, run as part of
+  `run_safety_checks`.
+
+**What this does *not* claim** (see `safety.py`'s own module docstring,
+rewritten to say this explicitly): checks 2 and 3 remain pattern-based
+over English phrasing and cannot be made complete against a sufficiently
+creative paraphrase -- expanding pattern coverage raises the bar, it
+doesn't close the class of bypass. Check 4's value+unit binding only
+applies to units in `_KNOWN_UNITS`; a number attached to an unrecognized
+unit spelling still only gets the weaker check. None of this replaces
+`agent.py`'s existing fallback-to-mock-narrator behavior on any check
+failure, which remains the actual safety net -- these checks are what
+that fallback depends on being accurate.
+
+**Verification**: all six original probes re-run against this repo's
+actual pipeline (`HealthAgent.ask()`'s real grounded facts, not
+hand-constructed fixtures) after the fix -- all six now correctly fail
+the check that used to let them through. 8 new regression tests in
+`tests/test_safety.py`, one per probe plus the two regex bugs the fix
+itself introduced and caught before committing (an ordinal-marker span
+mismatch between the exemption regex and `_NUMBER_RE`'s own match
+boundaries, and a `\b`-after-`%`-before-punctuation edge case in the new
+value-unit regex -- both caught by running the new tests, not assumed
+correct on the first attempt). Full kernel suite (132 tests) and
+`care-agent eval-samples` re-run clean after the change.
+
+**Consequence**: This is the second-most-important fix from the same
+review, and arguably the more sobering one: these checks are the
+project's stated reason an LLM narrator is safe to use at all
+("`kb_grounding_002`... is what makes an optional LLM narration pass safe
+to use"), and every prior phase's real-Bedrock evidence
+(`docs/PHASE4_BEDROCK_EVIDENCE.md`) happened to never trigger any of
+these six specific gaps -- not because the gaps weren't there, but
+because the real model's actual phrasing choices didn't happen to hit
+them in the handful of live calls made. Passing live evidence and passing
+an adversarial review are different bars; this project had only cleared
+the first one.
+
+---
+
+## 2026-09-05 — Two previously-published stress-test claims were wrong; corrected
+
+**Context**: Same independent review. Two of its findings weren't about
+the application's behavior at all, but about whether this project's own
+*measurements* of that behavior were trustworthy.
+
+**#6 -- `stress_test.py --no-retry` didn't actually disable retries.**
+`Config(retries={"max_attempts": 1})` was meant to show what a real API
+Gateway caller (no SDK retry safety net) experiences under Lambda
+throttling. Checked directly against `client.meta.config.retries`: it
+resolves to `total_max_attempts: 2` -- one retry still happens, despite
+the name. `total_max_attempts=1` (with `mode="standard"`) is the actual
+zero-retry setting, confirmed the same way. **Consequence**: the
+originally published `docs/STRESS_TEST.md` "burst-sync, SDK retry
+disabled: 10/15 ok" result was measured with one retry still active, not
+zero. Fixed the harness and re-ran the affected comparison -- see
+`docs/STRESS_TEST.md` for the corrected number.
+
+**#9 -- the "3 retry attempts" description of the Step Functions retry
+policy was incomplete.** Synthesizing `OrchestrationStack`'s actual ASL
+showed CDK inserts its *own* default retry policy
+(`Lambda.ClientExecutionTimeoutException`/`ServiceException`/
+`AWSLambdaException`/`SdkClientException`, 6 attempts) onto every
+`LambdaInvoke` task automatically, ahead of the custom 3-attempt policy
+this project added -- something the code never disabled and the docs
+never mentioned. Step Functions resolves overlapping `Retry` entries by
+taking the *first* one in the array whose `ErrorEquals` list contains the
+specific error that occurred, not by summing or always using the first
+entry -- so for `Lambda.TooManyRequestsException` specifically (the only
+error type actually observed throughout this project's stress testing,
+and the only one of the four error codes *not* also in CDK's default
+policy), the custom 3-attempt policy is genuinely what governed, and the
+previously-published throttling numbers are unaffected. But the blanket
+claim that every `LambdaInvoke` task retries "3 times" was inaccurate for
+the other three error codes, which would get CDK's 6-attempt default
+instead. Corrected `orchestration_stack.py`'s module docstring and
+`docs/STRESS_TEST.md`/`AWS_ROADMAP.md`'s phrasing to describe both
+policies rather than only the one this project added on purpose.
+
+**Consequence**: Neither of these changes the conclusions already drawn
+(the sync path still has meaningfully less resilience than the async
+paths; the async retry fix from the earlier stress-test still measurably
+helped) -- but both are a reminder that a stress-testing tool's own
+configuration is exactly as susceptible to being wrong as the thing it's
+testing, and deserves the same "verify, don't assume" treatment.
+
+---
+
 ## 2026-09-04 — Added an SQS-buffered path as a direct, load-tested comparison against Step Functions retry
 
 **Context**: After the concurrency stress test found Step Functions'

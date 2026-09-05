@@ -41,6 +41,23 @@ def test_state_machine_starts_at_mark_running():
     assert definition["StartAt"] == "MarkRunning"
 
 
+def test_mark_running_task_forwards_owner_sub_in_its_payload():
+    """Regression test: mark_running.py requires `event["owner_sub"]`, but
+    the Step Functions task's payload mapping (TaskInput.from_object) only
+    forwards the specific keys listed there -- it does NOT pass through
+    the raw execution input automatically. owner_sub was added to
+    start_run.py's execution input and to mark_running.py's own code, but
+    initially forgotten here, in the one place that actually controls what
+    reaches the Lambda. A moto-mocked unit test calling
+    mark_running.handler directly (bypassing this payload-mapping layer
+    entirely) couldn't catch this -- only a real Step Functions execution
+    did, immediately failing every run with `KeyError: 'owner_sub'`. See
+    docs/DECISIONS.md."""
+    definition = _asl_definition(_synth_stacks())
+    mark_running_params = definition["States"]["MarkRunning"]["Parameters"]
+    assert "owner_sub.$" in mark_running_params["Payload"]
+
+
 def test_invoke_agent_has_a_bounded_timeout():
     definition = _asl_definition(_synth_stacks())
     invoke_agent = definition["States"]["InvokeAgent"]

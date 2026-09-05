@@ -117,10 +117,19 @@ def _resolve_client(service: str, no_retry: bool = False):
     # invocation on a real caller's behalf, so `no_retry=True` (used by
     # `burst-sync --no-retry`) disables the SDK's own retry to show what
     # an actual HTTP caller through API Gateway would really experience.
+    #
+    # `retries={"max_attempts": 1}` does NOT do this -- despite the name,
+    # botocore's resolved config for that is `total_max_attempts: 2` (one
+    # retry still happens; confirmed directly against `client.meta.config`,
+    # not assumed). `total_max_attempts=1` is the actual "zero retries"
+    # knob. An independent review caught this: the originally published
+    # "SDK retry disabled" burst-sync result was measured with one retry
+    # still active. See docs/INDEPENDENT_REVIEW_FINDINGS.md (finding #6)
+    # and docs/STRESS_TEST.md for the corrected numbers.
     if no_retry:
         from botocore.config import Config
 
-        return boto3.client(service, region_name="us-east-1", config=Config(retries={"max_attempts": 1}))
+        return boto3.client(service, region_name="us-east-1", config=Config(retries={"total_max_attempts": 1, "mode": "standard"}))
     return boto3.client(service, region_name="us-east-1")
 
 
@@ -195,8 +204,22 @@ class Report:
         }
 
 
+_STRESS_TEST_OWNER_SUB = "stress-test-owner-sub"
+
+
+def _fake_jwt_request_context(sub: str = _STRESS_TEST_OWNER_SUB) -> dict:
+    # This harness bypasses API Gateway entirely (direct Lambda invoke),
+    # so it has to hand-construct the same requestContext.authorizer.jwt
+    # shape API Gateway's real JWT authorizer would attach -- every
+    # handler that creates or mutates a run record now reads the caller's
+    # identity from here (see auth_context.py / docs/DECISIONS.md).
+    return {"requestContext": {"authorizer": {"jwt": {"claims": {"sub": sub}}}}}
+
+
 def _invoke_ask_handler(lambda_client, function_name: str, run_id: str, question: str) -> CallResult:
-    payload = json.dumps({"body": json.dumps({"user_id": _DEMO_USER, "question": question, "run_id": run_id})})
+    payload = json.dumps(
+        {"body": json.dumps({"user_id": _DEMO_USER, "question": question, "run_id": run_id}), **_fake_jwt_request_context()}
+    )
     start = time.monotonic()
     try:
         resp = lambda_client.invoke(FunctionName=function_name, Payload=payload.encode("utf-8"))
@@ -244,7 +267,7 @@ def _start_and_poll_execution(sfn_client, state_machine_arn: str, run_id: str, q
         sfn_client.start_execution(
             stateMachineArn=state_machine_arn,
             name=run_id,
-            input=json.dumps({"run_id": run_id, "user_id": _DEMO_USER, "question": question}),
+            input=json.dumps({"run_id": run_id, "user_id": _DEMO_USER, "question": question, "owner_sub": _STRESS_TEST_OWNER_SUB}),
         )
     except Exception as exc:  # noqa: BLE001
         return CallResult(run_id, False, type(exc).__name__, time.monotonic() - start, detail=str(exc)[:300])
@@ -296,7 +319,9 @@ def cmd_burst_async(args: argparse.Namespace) -> Report:
 
 def _enqueue_and_poll(lambda_client, dynamodb_table, enqueue_fn_name: str, run_id: str, question: str, poll_timeout_s: float) -> CallResult:
     start = time.monotonic()
-    payload = json.dumps({"body": json.dumps({"user_id": _DEMO_USER, "question": question, "run_id": run_id})})
+    payload = json.dumps(
+        {"body": json.dumps({"user_id": _DEMO_USER, "question": question, "run_id": run_id}), **_fake_jwt_request_context()}
+    )
     resp = lambda_client.invoke(FunctionName=enqueue_fn_name, Payload=payload.encode("utf-8"))
     raw = resp["Payload"].read()
     if resp.get("FunctionError"):
@@ -386,9 +411,16 @@ def cmd_race(args: argparse.Namespace) -> Report:
         sfn_client.start_execution(
             stateMachineArn=state_machine_arn,
             name=run_id,
-            input=json.dumps({"run_id": run_id, "user_id": _DEMO_USER, "question": "What should I focus on first?"}),
+            input=json.dumps(
+                {
+                    "run_id": run_id,
+                    "user_id": _DEMO_USER,
+                    "question": "What should I focus on first?",
+                    "owner_sub": _STRESS_TEST_OWNER_SUB,
+                }
+            ),
         )
-        cancel_payload = json.dumps({"pathParameters": {"run_id": run_id}})
+        cancel_payload = json.dumps({"pathParameters": {"run_id": run_id}, **_fake_jwt_request_context()})
         cancel_resp = lambda_client.invoke(FunctionName=cancel_fn_name, Payload=cancel_payload.encode("utf-8"))
         cancel_body = json.loads(json.loads(cancel_resp["Payload"].read())["body"])
 

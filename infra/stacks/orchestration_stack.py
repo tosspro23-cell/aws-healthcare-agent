@@ -7,12 +7,25 @@ goal directly (see `../../docs/AWS_ROADMAP.md` Phase 3 and
 
 - **start**: `MarkRunning` writes the initial `RUNNING` record.
 - **bounded retry**: every `LambdaInvoke` task in this state machine gets
-  the same `add_retry` for transient Lambda-service throttling -- native
-  Step Functions retry, not a hand-rolled loop. Originally only wired
-  onto `InvokeAgent`; a live burst test (see `../../docs/STRESS_TEST.md`)
-  found this account's Lambda concurrency ceiling could throttle
-  `MarkRunning` too, and with no retry there the whole execution failed
-  in under 200ms without ever reaching `InvokeAgent`'s retry/catch logic.
+  the same custom `add_retry` (3 attempts, 2s/2x backoff) for
+  `Lambda.TooManyRequestsException` specifically -- native Step Functions
+  retry, not a hand-rolled loop. Originally only wired onto `InvokeAgent`;
+  a live burst test (see `../../docs/STRESS_TEST.md`) found this
+  account's Lambda concurrency ceiling could throttle `MarkRunning` too,
+  and with no retry there the whole execution failed in under 200ms
+  without ever reaching `InvokeAgent`'s retry/catch logic. Note: CDK also
+  inserts its *own* default retry policy (6 attempts, for
+  `Lambda.ClientExecutionTimeoutException`/`ServiceException`/
+  `AWSLambdaException`/`SdkClientException`) onto every `LambdaInvoke`
+  task ahead of this custom one -- confirmed by inspecting the synthesized
+  ASL, not assumed. Step Functions resolves this by using the first
+  `Retry` entry whose `ErrorEquals` list contains the specific error that
+  occurred, so the custom policy above is what actually governs
+  `TooManyRequestsException` (the only error type this project has
+  observed in practice), while the other three error codes fall under
+  CDK's own 6-attempt default instead. An independent review caught the
+  earlier version of this docstring describing "3 attempts" as a uniform,
+  complete policy -- see `docs/DECISIONS.md`.
 - **timeout**: `InvokeAgent`'s `task_timeout=` -- native per-task timeout.
 - **cancellation**: `../lambda_src/cancel_run.py`, called from outside the
   state machine (via `POST /runs/{run_id}/cancel`) at any time while a run
@@ -149,6 +162,7 @@ class OrchestrationStack(Stack):
                     "run_id": sfn.JsonPath.string_at("$.run_id"),
                     "user_id": sfn.JsonPath.string_at("$.user_id"),
                     "question": sfn.JsonPath.string_at("$.question"),
+                    "owner_sub": sfn.JsonPath.string_at("$.owner_sub"),
                 }
             ),
             result_path=sfn.JsonPath.DISCARD,

@@ -19,6 +19,7 @@ import os
 import uuid
 from typing import Any
 
+import auth_context
 import boto3
 
 _STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
@@ -63,11 +64,13 @@ def handler(event: dict, context: object) -> dict:
         # error instead of a clean 400 -- the caller's mistake, not ours.
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
 
+    owner_sub = auth_context.owner_sub_from_event(event)
+
     try:
         _sfn().start_execution(
             stateMachineArn=_STATE_MACHINE_ARN,
             name=run_id,
-            input=json.dumps({"run_id": run_id, "user_id": user_id, "question": question}),
+            input=json.dumps({"run_id": run_id, "user_id": user_id, "question": question, "owner_sub": owner_sub}),
         )
     except _sfn().exceptions.ExecutionAlreadyExists:
         # Same run_id submitted twice -- not an error, just point the

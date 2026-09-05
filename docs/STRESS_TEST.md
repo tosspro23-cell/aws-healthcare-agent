@@ -115,7 +115,7 @@ hit.
 | Run | Result | Detail |
 |---|---|---|
 | With the SDK's default throttle-retry | 15/15 ok | p50 5.75s, **p95 29.68s** (near the Lambda's own 30s timeout) |
-| With the SDK's retry disabled (`--no-retry`) -- what a real API Gateway caller actually sees | **10/15 ok, 5 failed** | all 5 failures: `TooManyRequestsException`, p50 3.99s |
+| With the SDK's retry disabled (`--no-retry`) -- what a real API Gateway caller actually sees | **10/15 ok, 5 failed** | all 5 failures: `TooManyRequestsException`, p50 4.06s |
 
 `ConcurrentExecutions` peaked at exactly `10` and `Throttles` recorded 14
 events during the retried run (CloudWatch, independently confirms the
@@ -126,6 +126,19 @@ retry a throttled Lambda invocation on a real caller's behalf. The second
 row is the honest number: **a burst of 11+ concurrent `/ask` requests
 today gets roughly a third of them a hard error, with zero built-in
 resilience.**
+
+> **Correction (2026-09-05)**: an independent review found that
+> `--no-retry`'s original implementation (`Config(retries={"max_attempts":
+> 1})`) didn't actually disable retries -- botocore resolves that to
+> `total_max_attempts: 2` (one retry still happens), confirmed directly
+> against `client.meta.config.retries`, not assumed. The number above
+> (10/15) is the *corrected* result, re-measured with the actual
+> zero-retry setting (`total_max_attempts=1`) after fixing the harness --
+> it happens to match what was originally published, so the conclusion
+> this section draws is unchanged, but the earlier number was reached via
+> an incorrect method and it was worth re-verifying rather than assuming
+> the coincidence made it fine. See `docs/DECISIONS.md` and
+> `docs/INDEPENDENT_REVIEW_FINDINGS.md` (finding #6).
 
 ### Async path (`/runs`, Step Functions + `AgentTaskHandler`) -- same burst of 15
 
@@ -145,11 +158,29 @@ ceiling throttles *any* of the state machine's Lambda tasks with equal
 likelihood, not just the one everyone was watching.
 
 **Fixed**: `infra/stacks/orchestration_stack.py` now applies the same
-throttling-retry policy (3 attempts, 2s interval, 2x backoff, matching
-`Lambda.ServiceException`/`AWSLambdaException`/`SdkClientException`/
-`TooManyRequestsException`) to **every** `LambdaInvoke` task in the state
-machine via one shared `_add_throttling_retry()` helper, not just
-`InvokeAgent`. Redeployed, then re-ran the identical burst:
+custom throttling-retry policy (3 attempts, 2s interval, 2x backoff,
+matching `Lambda.ServiceException`/`AWSLambdaException`/
+`SdkClientException`/`TooManyRequestsException`) to **every**
+`LambdaInvoke` task in the state machine via one shared
+`_add_throttling_retry()` helper, not just `InvokeAgent`. Redeployed, then
+re-ran the identical burst:
+
+> **Correction (2026-09-05)**: an independent review found this section's
+> "3 attempts" description was incomplete. Synthesizing the actual ASL
+> shows CDK inserts its *own* default retry policy (6 attempts, for
+> `Lambda.ClientExecutionTimeoutException`/`ServiceException`/
+> `AWSLambdaException`/`SdkClientException`) onto every `LambdaInvoke`
+> task automatically, ahead of the custom policy above in the array. Step
+> Functions resolves overlapping policies by using the *first* one whose
+> `ErrorEquals` list contains the specific error that occurred -- so for
+> `Lambda.TooManyRequestsException` (the only error type actually observed
+> in every run below, and the only one of the four codes *not* also in
+> CDK's default policy), the custom 3-attempt policy above genuinely is
+> what governed, and the numbers below are unaffected. But the other three
+> error codes would get CDK's 6-attempt default instead, not the 3
+> described here -- see `docs/DECISIONS.md` and
+> `docs/INDEPENDENT_REVIEW_FINDINGS.md` (finding #9) for the full
+> reasoning.
 
 | Burst size | Result | p50 / p95 / max latency |
 |---|---|---|
@@ -242,17 +273,30 @@ At every burst size, `JobsDLQ` stayed empty (`ApproximateNumberOfMessages: 0`)
 -- confirmed after each run, not assumed.
 
 **The trade-off, stated plainly**: SQS-buffering trades *latency* for
-*guaranteed eventual success at unlimited scale*. 100 concurrent
-submissions, 10x the account's real Lambda concurrency ceiling, still
-resolved with zero failures -- something Step Functions' bounded retry
-provably cannot do (it already started failing at 50). The cost is that
-total latency scales up with burst size in a way Step Functions' retry
-doesn't (a throttled Step Functions execution either recovers within a
-few retry attempts or fails; a queued job always eventually runs, but
+*substantially higher eventual-success capacity than retry alone*. 100
+concurrent submissions, 10x the account's real Lambda concurrency
+ceiling, still resolved with zero failures in every burst size actually
+tested here -- something Step Functions' bounded retry provably cannot do
+(it already started failing at 50). The cost is that total latency scales
+up with burst size in a way Step Functions' retry doesn't (a throttled
+Step Functions execution either recovers within a few retry attempts or
+fails; a queued job keeps waiting rather than failing outright, but
 "eventually" stretches out as more jobs compete for the same 5 consumer
 slots) -- p50 latency went from ~13s at 15 concurrent to ~60s at 100
 concurrent, roughly linear in burst size given a fixed consumer count,
 exactly as basic queueing theory predicts.
+
+> **Correction (2026-09-05)**: an independent review pointed out that
+> "guaranteed eventual success at unlimited scale" -- the original wording
+> here -- overstates what SQS buffering actually provides. It has finite
+> retries (`maxReceiveCount`), finite message retention, a DLQ a message
+> can still land in, and the consumer still ultimately draws from the same
+> account-wide Lambda concurrency pool as everything else -- `max_concurrency`
+> caps this queue's own consumption, it doesn't reserve capacity against
+> every *other* Lambda function in the account. Reworded above to
+> "substantially higher capacity," which is what was actually measured
+> (100/100 at the largest burst tested), not an unconditional guarantee at
+> any scale. See `docs/INDEPENDENT_REVIEW_FINDINGS.md` (finding #8).
 
 **Which one is "better" depends entirely on what the caller needs**: if a
 result is wanted within a bounded time and an occasional failure under

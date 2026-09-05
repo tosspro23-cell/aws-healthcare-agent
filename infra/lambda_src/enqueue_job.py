@@ -12,6 +12,22 @@ meaningful rather than a 404, using the exact same table/schema
 `start_run.py`'s Step Functions path uses -- `get_run.py` is schema-agnostic
 (just returns whatever's under `run_id`), so no changes were needed there
 to support polling this path too.
+
+The put is a conditional *create* (`attribute_not_exists(run_id)`), not a
+plain overwrite -- `/ask`, `/runs`, and `/jobs` share the same `run_id`
+keyspace, and a collision used to silently let one path's record replace
+another's. `owner_sub` (the authenticated caller's Cognito `sub`) is
+persisted so `get_run.py`/`cancel_run.py` can enforce that only the run's
+creator may read or cancel it. See
+`docs/INDEPENDENT_REVIEW_FINDINGS.md` (findings #1/#2).
+
+Known remaining gap, deliberately not fixed here (tracked in
+`docs/INDEPENDENT_REVIEW_FINDINGS.md`, finding #3): the DynamoDB write and
+the SQS `send_message` below are two separate, non-atomic operations. If
+the send fails after the record is created, the run is left `QUEUED`
+forever with no message behind it. Fixing that properly needs an
+outbox-style pattern or an explicit reconciliation sweep, not just a
+try/except here.
 """
 
 from __future__ import annotations
@@ -22,7 +38,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import auth_context
 import boto3
+from botocore.exceptions import ClientError
 
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
 _QUEUE_URL = os.environ["JOBS_QUEUE_URL"]
@@ -71,10 +89,25 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
 
+    owner_sub = auth_context.owner_sub_from_event(event)
     now = datetime.now(timezone.utc).isoformat()
-    _dynamodb().Table(_RUNS_TABLE_NAME).put_item(
-        Item={"run_id": run_id, "status": "QUEUED", "user_id": user_id, "question": question, "queued_at": now}
-    )
+    try:
+        _dynamodb().Table(_RUNS_TABLE_NAME).put_item(
+            Item={
+                "run_id": run_id,
+                "status": "QUEUED",
+                "owner_sub": owner_sub,
+                "execution_type": "SQS",
+                "user_id": user_id,
+                "question": question,
+                "queued_at": now,
+            },
+            ConditionExpression="attribute_not_exists(run_id)",
+        )
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return _json_response(409, {"error": f"run_id={run_id!r} is already in use by another run."})
 
     _sqs().send_message(
         QueueUrl=_QUEUE_URL,

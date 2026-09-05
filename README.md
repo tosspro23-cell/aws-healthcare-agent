@@ -22,9 +22,18 @@ the account's actual quotas, persistence under repeated concurrent
 access) found and fixed three real bugs, and added a third async
 architecture path — SQS-buffered, alongside the existing Step Functions
 one — load-tested head-to-head against it at identical burst sizes: SQS
-buffering held 100% success up to 100 concurrent requests (2x the size
-where Step Functions' retry started failing), trading latency for that
-guarantee. Full numbers: [`docs/STRESS_TEST.md`](docs/STRESS_TEST.md).
+buffering held 100% success at every burst size tested, up to 100
+concurrent requests (2x the size where Step Functions' retry started
+failing), trading latency for that. Full numbers:
+[`docs/STRESS_TEST.md`](docs/STRESS_TEST.md).
+
+An independent, second AI review of the whole repository then found a
+real authorization vulnerability (any authenticated caller could read or
+cancel any other caller's run) and exploitable gaps in the safety checks
+— both fixed and live-verified against the real account, alongside
+corrections to two previously-published stress-test claims. Ten
+lower-severity findings remain tracked as open work. See
+[`docs/INDEPENDENT_REVIEW_FINDINGS.md`](docs/INDEPENDENT_REVIEW_FINDINGS.md).
 See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md`
 for the full writeup.
 A live deployment (Cognito +

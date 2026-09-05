@@ -10,6 +10,13 @@ does (in particular, never construct or alter the answer text here).
 This is the *synchronous* path (Phase 1/2). `agent_task.py` is the async
 equivalent invoked as a Step Functions Task (Phase 3) -- both share the
 same `HealthAgent` construction via `agent_runtime.py`.
+
+The DynamoDB write is a conditional *create* (`attribute_not_exists`), not
+a plain overwrite -- `/ask`, `/runs` (Step Functions), and `/jobs` (SQS)
+all share the same `run_id` keyspace, and a plain `put_item` here used to
+silently replace whatever another path had already written for that
+run_id, including erasing its `status`. See
+`docs/INDEPENDENT_REVIEW_FINDINGS.md` (finding #2).
 """
 
 from __future__ import annotations
@@ -20,8 +27,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import auth_context
 import boto3
 from agent_runtime import agent as _agent
+from botocore.exceptions import ClientError
 
 from care_agent.data_store import UnknownUserError
 
@@ -82,29 +91,75 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
 
+    owner_sub = auth_context.owner_sub_from_event(event)
+    table = _dynamodb().Table(_RUNS_TABLE_NAME) if _RUNS_TABLE_NAME else None
+
+    if table is not None:
+        # Reserve the run_id *before* calling the agent -- a doomed
+        # request (run_id already used by another path) fails fast here
+        # instead of after an avoidable Bedrock call. `attribute_not_exists`
+        # is what makes this a genuine cross-path collision guard rather
+        # than a plain overwrite.
+        try:
+            table.put_item(
+                Item={
+                    "run_id": run_id,
+                    "status": "RUNNING",
+                    "owner_sub": owner_sub,
+                    "execution_type": "SYNC",
+                    "user_id": user_id,
+                    "question": question,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ConditionExpression="attribute_not_exists(run_id)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            return _json_response(409, {"error": f"run_id={run_id!r} is already in use by another run."})
+
     try:
         response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)
     except UnknownUserError:
+        if table is not None:
+            table.update_item(
+                Key={"run_id": run_id},
+                UpdateExpression="SET #status = :failed, error_message = :e, completed_at = :t",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":failed": "FAILED",
+                    ":e": f"No data on file for user_id={user_id!r}.",
+                    ":t": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         return _json_response(404, {"error": f"No data on file for user_id={user_id!r}."})
     except Exception as exc:  # noqa: BLE001 -- outermost boundary: turn any
         # unexpected internal failure into a clean 500 with context, rather
         # than an opaque Lambda platform error.
+        if table is not None:
+            table.update_item(
+                Key={"run_id": run_id},
+                UpdateExpression="SET #status = :failed, error_message = :e, completed_at = :t",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":failed": "FAILED", ":e": str(exc), ":t": datetime.now(timezone.utc).isoformat()},
+            )
         return _json_response(500, {"error": f"Agent execution failed: {exc}"})
 
     trace_dict = response.trace.as_dict()
     created_at = datetime.now(timezone.utc).isoformat()
 
-    if _RUNS_TABLE_NAME:
-        _dynamodb().Table(_RUNS_TABLE_NAME).put_item(
-            Item={
-                "run_id": run_id,
-                "user_id": user_id,
-                "question": question,
-                "answer": response.answer,
-                "safe": response.safe,
-                "narrator_backend": response.trace.narrator_backend,
-                "created_at": created_at,
-            }
+    if table is not None:
+        table.update_item(
+            Key={"run_id": run_id},
+            UpdateExpression="SET #status = :succeeded, answer = :a, safe = :safe, narrator_backend = :nb, completed_at = :t",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":succeeded": "SUCCEEDED",
+                ":a": response.answer,
+                ":safe": response.safe,
+                ":nb": response.trace.narrator_backend,
+                ":t": created_at,
+            },
         )
 
     if _EVIDENCE_BUCKET_NAME:
