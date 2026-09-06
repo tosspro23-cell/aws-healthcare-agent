@@ -412,5 +412,9 @@ On a push to `main` only, a `deploy` job assumes an AWS role via GitHub's
 OIDC provider (no stored AWS credential anywhere in this repo -- see
 [`infra/stacks/cicd_stack.py`](infra/stacks/cicd_stack.py)) and runs
 `cdk deploy --all`, gated behind a required-reviewer approval on a GitHub
-`production` environment. See `docs/DECISIONS.md` (2026-09-06) for the
-full reasoning.
+`production` environment. A `check-deploy-paths` job runs first and skips
+`deploy` (approval prompt included) entirely when the push only touched
+paths nothing deployed actually reads (docs, README, `scripts/`, tests)
+-- see `docs/DECISIONS.md` (2026-09-06) for the full reasoning, including
+why `src/care_agent/` counts as deploy-relevant even though most of it
+isn't imported by any Lambda handler.

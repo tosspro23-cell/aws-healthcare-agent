@@ -202,15 +202,70 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  check-deploy-paths:
+    name: Check whether this push touches anything actually deployed
+    runs-on: ubuntu-latest
+    # Independent of test/smoke/infra/frontend -- pure git-diff, so it
+    # finishes well before deploy would need its answer instead of
+    # adding to the critical path.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      deploy_relevant: ${{ steps.filter.outputs.deploy_relevant }}
+    steps:
+      - name: Checkout (full history -- the pre-push commit must be present locally to diff against)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether this push changed anything cdk deploy or the built assets would actually pick up
+        id: filter
+        run: |
+          # github.event.before is all-zeros for a push that creates a
+          # branch (nothing to diff against) -- deploy rather than guess.
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "No previous commit to diff against (new branch) -- deploying to be safe."
+            echo "deploy_relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")
+          echo "Files changed by this push:"
+          echo "$CHANGED"
+
+          # infra/ (CDK stacks + Lambda handlers), frontend/ (the built
+          # Workbench), src/care_agent/ and data/ (both copied wholesale
+          # into the Lambda asset by infra/build_lambda_asset.py -- see
+          # its own docstring -- so *any* change under either changes
+          # the deployed code's own content hash, even a module no
+          # handler imports), and this workflow file itself (a change
+          # to the deploy job's own steps is best confirmed by actually
+          # running them). Deliberately coarse per-directory, not
+          # per-file: under-matching would silently skip a deploy that
+          # should have happened, which is the one failure mode worse
+          # than an unnecessary approval prompt. docs/, README.md,
+          # scripts/ (dev-only tooling, never bundled into any deployed
+          # asset), and tests/ are the common case this exists to skip.
+          if echo "$CHANGED" | grep -Eq '^(infra/|frontend/|src/care_agent/|data/|\.github/workflows/ci\.yml)'; then
+            echo "deploy_relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
     name: Deploy to AWS (main only, requires manual approval)
     runs-on: ubuntu-latest
-    needs: [test, smoke, infra, frontend]
-    # Only a real push to main -- never a PR (a fork's PR could not
+    needs: [test, smoke, infra, frontend, check-deploy-paths]
+    # Only a real push to main (never a PR -- a fork's PR could not
     # assume this role anyway, since the OIDC trust condition below is
     # scoped to this exact ref, but this also keeps a PR run from ever
-    # reaching the `environment: production` approval prompt at all).
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # reaching the `environment: production` approval prompt at all),
+    # and only when check-deploy-paths found something actually
+    # deployed changed -- a docs-only or scripts-only push shouldn't
+    # cost a human a manual approval for a deploy that would change
+    # nothing in AWS.
+    if: >-
+      github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.check-deploy-paths.outputs.deploy_relevant == 'true'
     environment: production
     permissions:
       # id-token: write is what lets this job request an OIDC token from

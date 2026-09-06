@@ -8,6 +8,63 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-06 — Deploy job skips its own approval gate for docs-only pushes
+
+**Context**: The eval-trend-chart push (previous entry) required the
+same manual production approval as every other push to `main`, despite
+changing a chart and some documentation. The reasonable-sounding
+objection to that -- "this didn't touch anything, why does it need a
+human to approve a deploy" -- turned out to be only half right on
+inspection: `infra/build_lambda_asset.py` copies the *entire*
+`src/care_agent/` directory into the Lambda deployment package
+wholesale (see its own docstring), so the new `eval_trend.py` module
+did change the deployed code's content hash, even though no Lambda
+handler imports it. `cdk deploy` would have found a real (if
+practically inert) Lambda code update, not a no-op. But `docs/`,
+`README.md`, and `scripts/` changes genuinely don't touch anything any
+stack or asset reads -- forcing a human through the same approval
+prompt for those has no corresponding safety benefit, just friction on
+every small edit.
+
+**Decision**: a new `check-deploy-paths` job runs independently
+alongside `test`/`smoke`/`infra`/`frontend` (pure `git diff`, no
+dependency on the others, so it doesn't lengthen the critical path) and
+diffs `github.event.before` against `github.sha` -- the exact commit
+range this push introduced, not the whole PR/branch history. `deploy`'s
+`if` now also requires `needs.check-deploy-paths.outputs.deploy_relevant
+== 'true'`. The path set that counts as deploy-relevant: `infra/`,
+`frontend/`, `src/care_agent/`, `data/` (also copied wholesale into the
+Lambda asset), and `.github/workflows/ci.yml` itself (a change to the
+deploy job's own steps is best confirmed by actually running them, not
+skipped by the same job it's changing). Deliberately coarse per-directory
+matching, not per-file or per-import-graph: a change that's *inside*
+one of these directories but provably unreachable at runtime (like
+`eval_trend.py` itself) still counts, because under-matching -- silently
+skipping a deploy that should have happened -- is the one failure mode
+worse than an occasional unnecessary approval prompt. A push that
+creates a new branch (`github.event.before` all-zeros, nothing to diff
+against) also deploys rather than guesses.
+
+**What this doesn't change**: the approval gate itself, and the OIDC
+trust scoping it's tied to (see the CD pipeline entry above), are
+untouched -- this only decides *whether* the `deploy` job runs at all
+for a given push, not what it's allowed to do once it does. A push that
+touches even one deploy-relevant file still goes through the exact same
+human-approval flow as before.
+
+**Verification**: confirmed the filter's regex against two real commits
+from this session's own history -- a docs/chart-only "chore: update eval
+history" bot commit (correctly `false`) and a commit touching
+`infra/stacks/cicd_stack.py` (correctly `true`) -- via `git diff
+--name-only <before> <after>` run locally against the actual repo, not
+a synthetic example. `python3 -c "import yaml; yaml.safe_load(...)"`
+confirms the workflow file itself still parses and that `deploy`'s
+`needs`/`if` reference the new job correctly. The next real push is the
+end-to-end confirmation that a docs-only change skips the approval
+prompt entirely -- not yet observed as of this entry.
+
+---
+
 ## 2026-09-06 — Eval pass-rate trend chart, hand-rolled SVG instead of a charting library
 
 **Context**: The last of three post-eval-framework asks (CD pipeline and
