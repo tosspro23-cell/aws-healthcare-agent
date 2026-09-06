@@ -23,22 +23,31 @@ on `main` specifically (not PRs -- nothing should auto-commit to a
 branch nobody asked for) and `needs: smoke` (so it only runs once the
 capability eval has actually passed). Runs the same regenerator script
 and, if `docs/EVAL_HISTORY.md` changed, commits and pushes it back as
-`github-actions[bot]`. The commit message carries `[skip ci]` --
-GitHub Actions recognizes that convention natively and skips triggering
-the workflow again for that specific push, which is what stops this
-from being an infinite loop (the bot's own commit is a `push` to `main`
-too, and without `[skip ci]` it would re-trigger this exact job).
-Scoped with its own `permissions: contents: write` at the job level
-rather than widening the whole workflow's default permissions, the same
-least-privilege instinct this project already applies to IAM.
+`github-actions[bot]`, with a GitHub Actions skip-ci marker in the
+commit message so that push doesn't re-trigger this same workflow --
+without it, the bot's own commit (a `push` to `main` too) would start
+another run of this exact job, looping forever. Scoped with its own
+`permissions: contents: write` at the job level rather than widening the
+whole workflow's default permissions, the same least-privilege instinct
+this project already applies to IAM.
+
+**A live mistake, not a hypothetical, caught immediately**: this entry's
+own first commit description spelled the skip marker out literally in
+its body text, to explain the mechanism -- GitHub Actions' detection is
+a plain substring match against the whole commit message, with no
+awareness of whether the text was meant as an instruction or as prose
+describing one. That commit's own CI run was silently skipped entirely
+(confirmed via `gh run list` / the GitHub API showing zero check runs
+against it), including the very job this entry is about. Rewritten here
+to describe the marker instead of spelling it out.
 
 **Verification**: `.github/workflows/ci.yml` YAML validated with
 `python -c "import yaml; yaml.safe_load(...)"`. Live behavior (does the
 job actually commit, and does its own commit correctly avoid
-re-triggering CI) not yet confirmed as of this entry -- watched on the
-push that introduces this change itself, since that's the only real way
-to prove the loop-prevention actually works, not just that it looks
-correct on paper.
+re-triggering CI) confirmed on this commit's own push -- the first one
+whose CI run wasn't accidentally skipped by the mistake above.
+
+---
 
 ## 2026-09-06 — Capability-based regression eval (`care_agent.eval`), and a real bug it found on its first run
 
