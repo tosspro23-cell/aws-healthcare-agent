@@ -128,7 +128,7 @@ jobs:
           fi
 
   infra:
-    name: infra (cdk synth + moto-mocked tests, no live AWS account)
+    name: infra (cdk synth + cdk-nag + moto-mocked tests, no live AWS account)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -165,7 +165,7 @@ jobs:
         working-directory: infra
         run: pytest tests/ -v
 
-      - name: cdk synth (validates the CDK app compiles; no deploy, no credentials)
+      - name: cdk synth (compiles the app + cdk-nag security scan; no deploy, no credentials)
         working-directory: infra
         run: cdk synth --quiet
         env:
@@ -201,3 +201,75 @@ jobs:
       - name: Build (tsc -b && vite build)
         working-directory: frontend
         run: npm run build
+
+  deploy:
+    name: Deploy to AWS (main only, requires manual approval)
+    runs-on: ubuntu-latest
+    needs: [test, smoke, infra, frontend]
+    # Only a real push to main -- never a PR (a fork's PR could not
+    # assume this role anyway, since the OIDC trust condition below is
+    # scoped to this exact ref, but this also keeps a PR run from ever
+    # reaching the `environment: production` approval prompt at all).
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    permissions:
+      # id-token: write is what lets this job request an OIDC token from
+      # GitHub to exchange for short-lived AWS credentials -- no stored
+      # AWS secret anywhere in this repo. See infra/stacks/cicd_stack.py.
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC, no stored secret)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: infra/requirements*.txt
+
+      - name: Set up Node (for the CDK CLI and the frontend build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install AWS CDK CLI
+        run: npm install -g aws-cdk
+
+      - name: Install infra dependencies
+        working-directory: infra
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # frontend/.env.local is gitignored (see its own .env.example) and
+      # holds no secret -- every value in it ends up embedded in the
+      # publicly-served JS bundle regardless (a public Cognito app client
+      # ID and a public API URL, not a credential). Read fresh from the
+      # stacks' own CloudFormation outputs rather than duplicating them
+      # into a GitHub variable that could drift out of sync.
+      - name: Write frontend/.env.local from the currently deployed stacks
+        run: |
+          COGNITO_DOMAIN=$(aws cloudformation describe-stacks --stack-name CareAgentAuthStack --query "Stacks[0].Outputs[?OutputKey=='HostedUiDomain'].OutputValue" --output text)
+          APP_CLIENT_ID=$(aws cloudformation describe-stacks --stack-name CareAgentAuthStack --query "Stacks[0].Outputs[?OutputKey=='AppClientId'].OutputValue" --output text)
+          API_URL=$(aws cloudformation describe-stacks --stack-name CareAgentApiStack --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+          {
+            echo "VITE_COGNITO_DOMAIN=$COGNITO_DOMAIN"
+            echo "VITE_COGNITO_APP_CLIENT_ID=$APP_CLIENT_ID"
+            echo "VITE_API_BASE_URL=$API_URL"
+          } > frontend/.env.local
+
+      - name: cdk deploy --all
+        working-directory: infra
+        run: cdk deploy --all --require-approval never
+        env:
+          # See app.py's own docstring on the two-pass deployment pattern
+          # -- both of these are already known (this isn't this app's
+          # first-ever deploy), so both are set on every run.
+          CARE_AGENT_WORKBENCH_URL: ${{ vars.CARE_AGENT_WORKBENCH_URL }}
+          CARE_AGENT_BUDGET_EMAIL: ${{ secrets.CARE_AGENT_BUDGET_EMAIL }}

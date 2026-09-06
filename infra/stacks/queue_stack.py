@@ -92,7 +92,7 @@ class QueueStack(Stack):
         self.enqueue_job_handler = _lambda.Function(
             self,
             "EnqueueJobHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="enqueue_job.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
@@ -106,7 +106,7 @@ class QueueStack(Stack):
         process_job_handler = _lambda.Function(
             self,
             "ProcessJobHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="process_job.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(30),
@@ -132,7 +132,7 @@ class QueueStack(Stack):
         reconcile_dlq_handler = _lambda.Function(
             self,
             "ReconcileDlqHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="reconcile_dlq.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),

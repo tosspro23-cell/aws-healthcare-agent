@@ -13,15 +13,17 @@ route to poll, since `get_run.py` just returns whatever's under `run_id`
 regardless of which path wrote it.
 """
 
+import json
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_apigatewayv2 as apigwv2
 from aws_cdk import aws_apigatewayv2_authorizers as apigwv2_authorizers
 from aws_cdk import aws_apigatewayv2_integrations as apigwv2_integrations
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_lambda as _lambda
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
@@ -62,7 +64,7 @@ class ApiStack(Stack):
         ask_handler = _lambda.Function(
             self,
             "AskHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="adapter.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(30),
@@ -119,6 +121,39 @@ class ApiStack(Stack):
         assert isinstance(cfn_stage, apigwv2.CfnStage)
         cfn_stage.add_property_override("DefaultRouteSettings.ThrottlingRateLimit", _STAGE_THROTTLE_RATE_LIMIT)
         cfn_stage.add_property_override("DefaultRouteSettings.ThrottlingBurstLimit", _STAGE_THROTTLE_BURST_LIMIT)
+
+        # Access logging (flagged by cdk-nag's AwsSolutions-APIG1) -- who
+        # called which route, when, with what status, independent of
+        # whatever a specific Lambda handler chose to log about its own
+        # request. Same L1-override mechanism as the throttle above, for
+        # the same reason (the auto-created default stage has no other
+        # way to reach after construction).
+        access_log_group = logs.LogGroup(
+            self, "ApiAccessLogs", retention=logs.RetentionDays.ONE_MONTH, removal_policy=RemovalPolicy.DESTROY
+        )
+        # A plain dict with CloudFormation's own PascalCase keys, not the
+        # `AccessLogSettingsProperty` jsii object -- `add_property_override`
+        # (unlike a normal constructor prop) doesn't run that object
+        # through the usual camelCase-to-PascalCase conversion, and
+        # CloudFormation rejects the resulting camelCase keys outright
+        # (confirmed live via `cdk synth`, not assumed).
+        cfn_stage.add_property_override(
+            "AccessLogSettings",
+            {
+                "DestinationArn": access_log_group.log_group_arn,
+                "Format": json.dumps(
+                    {
+                        "requestId": "$context.requestId",
+                        "ip": "$context.identity.sourceIp",
+                        "requestTime": "$context.requestTime",
+                        "httpMethod": "$context.httpMethod",
+                        "routeKey": "$context.routeKey",
+                        "status": "$context.status",
+                        "responseLength": "$context.responseLength",
+                    }
+                ),
+            },
+        )
 
         authorizer = apigwv2_authorizers.HttpJwtAuthorizer(
             "CognitoAuthorizer",

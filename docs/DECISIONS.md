@@ -8,6 +8,198 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-06 — cdk-nag security gate, and a live bug it caught during its own rollout
+
+**Context**: The last of three post-eval-framework asks, in priority
+order: a real CD pipeline (previous entry), automated security scanning
+(`cdk-nag`), and eval trend charts. Every IAM grant in this project had
+already been manually reviewed across three independent-review rounds --
+`AwsSolutionsChecks` turns that into a standing, automatic gate against
+AWS's own Well-Architected security rules on every `cdk synth`, so a
+*new* stack or resource added later doesn't quietly regress on something
+this project already knows how to check for.
+
+**A version incompatibility found before any real check could run**:
+`cdk-nag` 3.0.2 (latest on PyPI at the time) fails outright against this
+project's aws-cdk-lib/jsii combination -- `TypeError:
+aspectApplication.aspect.visit is not a function` -- reproduced against
+a minimal single-bucket stack with no other code involved, not just this
+app, so it's a real library incompatibility, not a bug in this project's
+usage. Pinned to `cdk-nag==2.38.2` instead, confirmed working the same
+way.
+
+**Findings, fixed** (see `stacks/` diffs for each): Cognito password
+policy now requires symbols (`AwsSolutions-COG1` -- the policy already
+required length/case/digits, just not symbols); DynamoDB point-in-time
+recovery enabled on `RunsTable` (`DDB3`); every Lambda bumped from
+Python 3.12 to 3.13 (`L1`); the Step Functions state machine now logs
+`ALL` events to CloudWatch and has X-Ray tracing enabled (`SF1`/`SF2`);
+the HTTP API's stage now has access logging (`APIG1`) via the same
+L1-property-override mechanism the throttle fix already used on this
+same auto-created stage -- the first attempt passed a jsii
+`AccessLogSettingsProperty` object to `add_property_override`, which
+CloudFormation rejected outright (`Additional properties are not
+allowed ('destinationArn' was unexpected)`) since property overrides
+don't run objects through the usual camelCase-to-PascalCase conversion
+a normal constructor prop would; fixed with a plain PascalCase dict
+instead.
+
+**Findings, deliberately not fixed, tried and reverted**: raising
+CloudFront's minimum TLS version (`CFR4`) turned out to be impossible
+without a custom domain + ACM certificate -- confirmed directly via
+`cdk synth`'s own warning (*"Ignoring 'minimumProtocolVersion': ... The
+distribution uses the CloudFront default certificate, whose security
+policy is fixed at TLSv1"*), not assumed. Registering a real domain
+solely to raise this floor is out of scope for a demo project with no
+domain of its own; suppressed instead, with that exact synth output
+quoted in the suppression's own `reason` field.
+
+**Findings, suppressed with a written, per-finding reason** (see the new
+`infra/nag_suppressions.py` -- every `reason` is also visible in the
+deployed stack's own template metadata, not just in source): Cognito
+MFA/Plus-tier (`COG2`/`COG8` -- real ongoing cost or friction with no
+benefit against this project's actual threat model: synthetic data,
+`AdminCreateUser`-only accounts); S3 server access logs on both buckets
+(`S1` -- would roughly double storage cost logging access to
+non-sensitive demo data); CloudFront geo-restriction/WAF/access-logging
+(`CFR1`/`CFR2`/`CFR3` -- no real traffic to defend, and API-level access
+is already logged at `ApiStack`'s own stage); the `AWSLambdaBasicExecutionRole`
+managed policy (`IAM4` -- CDK's own standard minimal-logging policy,
+attached automatically); and every `IAM5` wildcard remaining after the
+fixes above, each traced to its exact source and confirmed unavoidable:
+an object-key-suffix wildcard on the evidence bucket (the only way to
+grant "any object in this bucket"), a state-machine "any execution of
+this one machine" ARN pattern, Lambda-invoke grants' CDK-standard `:*`
+alias suffix, the `logs:CreateLogDelivery`/`xray:PutTraceSegments`-family
+APIs that don't support resource-level scoping *at all* per AWS's own
+IAM reference (confirmed by reading the actual synthesized policy, not
+assumed), and CDK's own `BucketDeployment` L3 construct's internal
+Lambda role (entirely AWS's own generated code, not this project's
+grant). `assert_no_overly_broad_iam_policy` (this project's own,
+stricter test helper, predating cdk-nag) needed a matching, narrowly
+scoped exception for the `logs`/`xray` case specifically -- it's an
+explicit action allow-list, not a blanket exemption, so a statement
+mixing in any other action still fails.
+
+**A real, live bug found during this work's own post-deploy smoke
+test, not a hypothetical**: after redeploying every Lambda to Python
+3.13, a live queue-path run against the real Bedrock backend came back
+`narrator_backend: mock` instead of the expected `bedrock` --
+`trace.rejected_draft` showed a perfectly good answer whose numbered
+list had its ordinal markers wrapped in Markdown bold
+(`"**1. See your clinician soon**"`), which `_ORDINAL_LIST_MARKER_RE`
+(requiring digits at the exact start of a line) never recognized as a
+list marker at all, since `**` came first -- so "1", "3", "4" looked
+like fabricated bare numbers. The safety pipeline's own fallback
+behavior worked exactly as designed (a safe mock answer was served
+instead of a wrongly-rejected real one, the same asymmetry this
+project has applied throughout), but the underlying false positive is
+worth closing so real Bedrock answers stop being needlessly discarded.
+Fixed by tolerating up to two leading `*`/`_` characters before the
+ordinal digits; re-ran the exact rejected draft text directly against
+the fixed regex to confirm it now passes, then confirmed the same live
+question again post-redeploy: `narrator_backend: bedrock`, `safe: true`.
+
+**Verification**: `cdk synth`/`cdk deploy` (the real CLI entrypoints,
+not a bespoke test script) now run `AwsSolutionsChecks` automatically --
+confirmed zero unsuppressed `AwsSolutions-*` findings across all 8
+stacks, including `CareAgentBudgetStack` (only built when
+`CARE_AGENT_BUDGET_EMAIL` is set) and `CareAgentCiCdStack`. Full infra
+suite (157 tests, all passing after extending the IAM-wildcard test
+helper's exception list) and full kernel suite (170 tests, up from 168,
+after the ordinal-list-marker fix) both pass; `ruff`/`mypy` clean on
+both. All 8 stacks redeployed live; password policy, point-in-time
+recovery, Step Functions logging/tracing, and API access logging all
+confirmed directly against the real deployed resources (not assumed
+from the template alone). The existing `infra` CI job's `cdk synth`
+step now enforces this gate on every push for free, no new CI step
+needed.
+
+---
+
+## 2026-09-06 — CD pipeline: GitHub Actions deploys via OIDC, gated by a manual production approval
+
+**Context**: The first of three post-eval-framework asks (cdk-nag and
+eval trend charts follow). Every deploy up to this point was a human
+manually running `cdk deploy` from a local session with the AWS `dev`
+profile's long-lived credentials -- no audit trail independent of that
+session, no gate other than "did the person doing it also happen to run
+the tests first," and (demonstrated live earlier this same project,
+twice) a real risk of a forgotten deploy-time env var silently breaking
+something (the CORS regression from omitting
+`CARE_AGENT_WORKBENCH_URL` -- see the 2026-09-05 entries above).
+
+**Decision, identity**: a new `CiCdStack` creates a GitHub Actions OIDC
+identity provider plus an IAM role GitHub can assume -- no AWS access
+key/secret stored anywhere in the repo or its GitHub configuration. The
+trust condition is `StringEquals` (not `StringLike`) on both
+`token.actions.githubusercontent.com:aud` (`sts.amazonaws.com`) and
+`:sub` (`repo:tosspro23-cell/aws-healthcare-agent:ref:refs/heads/main`)
+-- an exact match, so a pull request, a fork, or any other branch can
+never assume this role, confirmed directly against the deployed role's
+own trust policy (`aws iam get-role`), not assumed from the CDK source
+alone. The role itself carries almost no direct permission: only
+`sts:AssumeRole` on the four CDK-bootstrap-generated roles
+(`deploy-role`/`file-publishing-role`/`image-publishing-role`/`lookup-role`)
+for this exact account/region -- the same roles a human's local
+`cdk deploy` already uses, confirmed live via this account's own
+`CDKToolkit` bootstrap stack (default `hnb659fds` qualifier, standard
+bootstrap, no custom exec-policy restriction) before writing a single
+line of this stack.
+
+**A live deploy mistake, not a design flaw, caught before it could
+actually happen**: the first attempt set `create_default_stage=False`
+on `ApiStack`'s `HttpApi` and created a brand-new, explicitly-throttled
+`HttpStage` construct -- reasonable in isolation, since `HttpApiProps`
+has no way to pass `throttle` through to the stage that `HttpApi`
+creates automatically. Deployed live, this failed outright: `Resource of type
+'AWS::ApiGatewayV2::Stage' ... already exists`, because the new
+construct's logical ID differs from the one the already-deployed
+auto-created stage uses, and CloudFormation won't let two different
+logical resources both claim the same physical stage name. Fixed with
+an L1 property override on the existing stage instead (same logical
+ID, so CloudFormation treats it as an in-place update) -- this predates
+today's cdk-nag work but is the exact mechanism the access-logging fix
+above reused.
+
+**Decision, the pipeline itself**: a new `deploy` job in the existing
+`ci.yml`, gated on every other job (`test`/`smoke`/`infra`/`frontend`)
+passing first, `push`-to-`main`-only (never a PR), that assumes the
+OIDC role and runs the exact same `cdk deploy --all` a human would run
+locally -- `frontend/.env.local` (gitignored, and holds nothing actually
+secret: a public Cognito app client ID and a public API URL, both
+already embedded in the publicly-served JS bundle regardless) is
+written fresh from the currently-deployed stacks' own CloudFormation
+outputs immediately before the build, rather than duplicated into a
+GitHub variable that could silently drift out of sync with the real
+deployed values.
+
+**Decision, the approval gate**: rather than standing up a second,
+separate AWS account purely to get a "staging" environment (a real
+option, but disproportionate infrastructure for a single-account demo
+project), the `deploy` job references a GitHub `environment: production`
+configured with a required reviewer (created via the GitHub API,
+confirmed via `gh api .../environments` afterward) -- every deploy
+pauses for a human's explicit approval in the GitHub UI before it runs,
+regardless of how the four gating jobs came out. This gets the actual
+property that matters (a human approves before production changes,
+every time) without the cost/complexity of a second environment.
+
+**Verification**: `infra/tests/test_cicd_stack.py` (5 tests) asserts the
+exact trust-condition shape (`StringEquals`, not `StringLike`; the
+literal expected `sub` string) and that the assumable-role list is
+exactly the four bootstrap roles, never a wildcard resource -- the same
+rigor `tests/iam_assertions.py` already applies elsewhere in this
+project. Deployed live: `aws iam list-open-id-connect-providers` and
+`aws iam get-role` confirm the exact scoping described above against
+the real account, not just the synthesized template. `AWS_DEPLOY_ROLE_ARN`
+and `CARE_AGENT_WORKBENCH_URL` stored as GitHub repository *variables*
+(not secrets -- neither is sensitive); `CARE_AGENT_BUDGET_EMAIL` stored
+as a secret, matching `BudgetStack`'s own existing opt-in-via-env-var
+design. The `production` environment's approval gate itself will be
+exercised for real the next time this pipeline actually runs against a
+push to `main` -- not yet observed as of this entry.
+
 ## 2026-09-06 — Automated docs/EVAL_HISTORY.md updates on every push to main
 
 **Context**: The capability eval (previous entry) shipped with

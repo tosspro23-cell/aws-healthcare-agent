@@ -40,6 +40,7 @@ from build_lambda_asset import build_lambda_asset
 from stacks.api_stack import ApiStack
 from stacks.auth_stack import AuthStack
 from stacks.budget_stack import BudgetStack
+from stacks.cicd_stack import CiCdStack
 from stacks.data_stack import DataStack
 from stacks.frontend_stack import FrontendStack
 from stacks.orchestration_stack import OrchestrationStack
@@ -55,6 +56,7 @@ class AppStacks:
     queue_stack: QueueStack
     api_stack: ApiStack
     frontend_stack: FrontendStack
+    cicd_stack: CiCdStack
     # Only built when CARE_AGENT_BUDGET_EMAIL is set -- see build_app()'s
     # own comment and budget_stack.py's docstring for why this one is
     # opt-in rather than always present.
@@ -133,6 +135,11 @@ def build_app() -> AppStacks:
         env=env,
     )
 
+    # IAM/OIDC trust only -- no coupling to any other stack's resources,
+    # so it has no add_stack_dependency calls. See cicd_stack.py's own
+    # docstring for the actual security scoping.
+    cicd_stack = CiCdStack(app, "CareAgentCiCdStack", env=env)
+
     # Opt-in, not hardcoded: this repository is public, and an email
     # address is more personal than the account IDs this project already
     # avoids committing (see docs/DECISIONS.md). A budget with no
@@ -149,9 +156,30 @@ def build_app() -> AppStacks:
         queue_stack=queue_stack,
         api_stack=api_stack,
         frontend_stack=frontend_stack,
+        cicd_stack=cicd_stack,
         budget_stack=budget_stack,
     )
 
 
 if __name__ == "__main__":
-    build_app().app.synth()
+    # cdk-nag applied here, not inside build_app() -- Aspects only run
+    # during .synth(), so this doesn't affect test_stacks.py-style tests
+    # that call build_app() directly without ever synthesizing. This is
+    # the actual gate: `cdk synth`/`cdk deploy` (this file's own CLI
+    # entrypoint) fails outright on any unsuppressed finding. See
+    # nag_suppressions.py's own docstring for what's suppressed and why.
+    from aws_cdk import Aspects
+    from cdk_nag import AwsSolutionsChecks
+    from nag_suppressions import apply_nag_suppressions
+
+    stacks = build_app()
+    apply_nag_suppressions(
+        auth_stack=stacks.auth_stack,
+        data_stack=stacks.data_stack,
+        orchestration_stack=stacks.orchestration_stack,
+        queue_stack=stacks.queue_stack,
+        api_stack=stacks.api_stack,
+        frontend_stack=stacks.frontend_stack,
+    )
+    Aspects.of(stacks.app).add(AwsSolutionsChecks())
+    stacks.app.synth()

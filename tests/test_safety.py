@@ -119,6 +119,31 @@ def test_numeric_grounding_still_flags_a_number_matching_an_ordinal_value_used_e
     assert "5mg/dL" in check.detail or "5" in check.detail
 
 
+def test_numeric_grounding_allows_an_ordinal_list_marker_wrapped_in_markdown_emphasis():
+    """Regression test: found live against a real Bedrock answer (a
+    manual post-deploy smoke test of the SQS queue path), not a
+    hypothetical -- the answer's numbered list bolded the marker itself
+    ("**1. See your clinician soon** with these results."), which the
+    original regex (requiring digits at the very start of the line) never
+    recognized as a list marker at all, since "**" came first. That made
+    "1", "3", "4" look like fabricated bare numbers, and only the safety
+    pipeline's own fallback-to-template behavior kept the (perfectly
+    safe) answer from being wrongly discarded silently."""
+    facts: list[GroundedFact] = []
+    text = "**1. See your clinician soon** with these results.\n**2. Start with nutrition.**\n**3. Add movement.**"
+    check = verify_numeric_grounding(text, facts)
+    assert check.passed is True
+
+
+def test_numeric_grounding_still_flags_a_bolded_number_that_is_not_actually_a_list_marker():
+    """The other half of the fix above: bolding a number doesn't make it
+    exempt in general -- only a genuine "N. " list marker at the start of
+    a line, still at that exact position, counts."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    check = verify_numeric_grounding("**1. Focus on your results.**\nYour LDL-C is **5** mg/dL.", facts)
+    assert check.passed is False
+
+
 def test_numeric_grounding_does_not_flag_digits_embedded_in_the_unit_itself():
     """Regression test: a second independent review found that the fix for
     the previous finding only excluded the *value*'s own span from the

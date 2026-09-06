@@ -44,10 +44,11 @@ this stack is pure orchestration plumbing.
 
 from pathlib import Path
 
-from aws_cdk import CfnOutput, Duration, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_stepfunctions as sfn
 from aws_cdk import aws_stepfunctions_tasks as tasks
@@ -74,7 +75,7 @@ class OrchestrationStack(Stack):
         mark_running_handler = _lambda.Function(
             self,
             "MarkRunningHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="mark_running.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
@@ -90,7 +91,7 @@ class OrchestrationStack(Stack):
         agent_task_handler = _lambda.Function(
             self,
             "AgentTaskHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="agent_task.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(25),
@@ -107,7 +108,7 @@ class OrchestrationStack(Stack):
         record_result_handler = _lambda.Function(
             self,
             "RecordResultHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="record_result.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
@@ -119,7 +120,7 @@ class OrchestrationStack(Stack):
         self.start_run_handler = _lambda.Function(
             self,
             "StartRunHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="start_run.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
@@ -128,7 +129,7 @@ class OrchestrationStack(Stack):
         self.get_run_handler = _lambda.Function(
             self,
             "GetRunHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="get_run.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
@@ -150,7 +151,7 @@ class OrchestrationStack(Stack):
         self.cancel_run_handler = _lambda.Function(
             self,
             "CancelRunHandler",
-            runtime=_lambda.Runtime.PYTHON_3_12,
+            runtime=_lambda.Runtime.PYTHON_3_13,
             handler="cancel_run.handler",
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(10),
@@ -276,12 +277,27 @@ class OrchestrationStack(Stack):
 
         definition = mark_running_task.next(invoke_agent_task).next(record_success_task)
 
+        state_machine_log_group = logs.LogGroup(
+            self,
+            "AgentRunStateMachineLogs",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
         self.state_machine = sfn.StateMachine(
             self,
             "AgentRunStateMachine",
             definition_body=sfn.DefinitionBody.from_chainable(definition),
             timeout=Duration.minutes(5),
             state_machine_type=sfn.StateMachineType.STANDARD,
+            # Both flagged by cdk-nag (AwsSolutions-SF1/SF2) and genuinely
+            # useful: ALL-level execution history in CloudWatch Logs (not
+            # just errors) and X-Ray tracing give an actual per-execution
+            # timeline across every Lambda task, which the trace stored in
+            # S3 (see data_stack.py's EvidenceBucket) doesn't capture --
+            # that's the agent's own reasoning trace, not the orchestration
+            # layer's timing/retry behavior.
+            logs=sfn.LogOptions(destination=state_machine_log_group, level=sfn.LogLevel.ALL),
+            tracing_enabled=True,
         )
 
         self.state_machine.grant_start_execution(self.start_run_handler)

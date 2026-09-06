@@ -116,7 +116,18 @@ _VALUE_UNIT_RE = re.compile(r"(-?\d+\.?\d*)\s?(" + "|".join(re.escape(u) for u i
 # punctuation, or the start of the text.
 _NUMBER_RE = re.compile(r"(?<![\w.])-?\d+\.?\d*")
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
-_ORDINAL_LIST_MARKER_RE = re.compile(r"(?m)^\s*(\d+\.)\s")
+# `[*_]{0,2}` tolerates a numbered list item wrapped in Markdown emphasis
+# ("**1. See your clinician**"), not just a bare "1. " -- caught live
+# against a real Bedrock answer (a manual post-deploy smoke test of the
+# SQS queue path, not a hypothetical): the ordinal marker itself was
+# bolded, which doesn't change that it's still a list marker, but did
+# make it invisible to this regex, so "1", "3", "4" were rejected as
+# ungrounded bare numbers even though they were never claiming to be
+# clinical values -- the safety pipeline's own fallback caught this
+# correctly (the mock template was served instead), but the underlying
+# false positive is worth closing so real Bedrock answers stop being
+# needlessly discarded for this reason.
+_ORDINAL_LIST_MARKER_RE = re.compile(r"(?m)^\s*[*_]{0,2}(\d+\.)\s")
 
 # Boundary characters for the marker-name proximity window used by
 # verify_numeric_grounding's cross-marker check (below): the *current

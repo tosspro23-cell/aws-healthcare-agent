@@ -531,6 +531,27 @@ Entra/MSAL?
   above: `DECISIONS.md`; eval pass-rate history over time:
   [`EVAL_HISTORY.md`](EVAL_HISTORY.md).
 
+  **Beyond the review cleanup**, three further asks in priority order:
+  a real CD pipeline (`CiCdStack` -- GitHub Actions deploys via OIDC, no
+  stored AWS credential, gated by a required-reviewer approval on a
+  `production` GitHub environment rather than a second AWS account); an
+  automated `cdk-nag` security gate (`AwsSolutionsChecks`, wired into
+  `cdk synth`/`cdk deploy` themselves so the existing CI `infra` job
+  enforces it for free) with every finding either fixed (Cognito password
+  symbols, DynamoDB point-in-time recovery, every Lambda bumped to Python
+  3.13, Step Functions logging + X-Ray tracing, API Gateway access
+  logging) or suppressed with a written, per-finding reason
+  (`infra/nag_suppressions.py`); and a real, live bug the cdk-nag
+  rollout's own post-deploy smoke test caught along the way -- a
+  numbered list whose ordinal markers were wrapped in Markdown bold
+  made `safety.py`'s ordinal-list exemption invisible, silently
+  discarding otherwise-safe real Bedrock answers in favor of the mock
+  fallback. All three deployed and live-verified; see `DECISIONS.md`
+  (2026-09-06 entries) for the full account, including the version
+  incompatibility (`cdk-nag` 3.0.2 vs this project's aws-cdk-lib/jsii
+  combination) and two other live deploy mistakes caught and fixed
+  before they could cause real harm.
+
 ## Cost notes
 
 - Lambda / DynamoDB / API Gateway / Step Functions / Cognito are effectively

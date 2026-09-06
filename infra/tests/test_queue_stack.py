@@ -69,19 +69,19 @@ def test_consumer_lambda_has_bounded_max_concurrency():
     )
 
 
-def test_consumer_lambda_uses_python312_runtime_and_expected_handler():
+def test_consumer_lambda_uses_python313_runtime_and_expected_handler():
     template = _synth_queue_stack()
     template.has_resource_properties(
         "AWS::Lambda::Function",
-        {"Runtime": "python3.12", "Handler": "process_job.handler"},
+        {"Runtime": "python3.13", "Handler": "process_job.handler"},
     )
 
 
-def test_enqueue_lambda_uses_python312_runtime_and_expected_handler():
+def test_enqueue_lambda_uses_python313_runtime_and_expected_handler():
     template = _synth_queue_stack()
     template.has_resource_properties(
         "AWS::Lambda::Function",
-        {"Runtime": "python3.12", "Handler": "enqueue_job.handler"},
+        {"Runtime": "python3.13", "Handler": "enqueue_job.handler"},
     )
 
 
@@ -89,11 +89,11 @@ def test_no_iam_policy_uses_wildcard_resource():
     assert_no_overly_broad_iam_policy(_synth_queue_stack())
 
 
-def test_reconcile_dlq_lambda_uses_python312_runtime_and_expected_handler():
+def test_reconcile_dlq_lambda_uses_python313_runtime_and_expected_handler():
     template = _synth_queue_stack()
     template.has_resource_properties(
         "AWS::Lambda::Function",
-        {"Runtime": "python3.12", "Handler": "reconcile_dlq.handler"},
+        {"Runtime": "python3.13", "Handler": "reconcile_dlq.handler"},
     )
 
 

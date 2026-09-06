@@ -35,6 +35,11 @@ class DataStack(Stack):
             partition_key=dynamodb.Attribute(name="run_id", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=RemovalPolicy.DESTROY,
+            # Continuous backups (35-day restore window) against an
+            # accidental overwrite/delete -- essentially free at this
+            # table's write volume, so there's no real tradeoff being
+            # made here (flagged by cdk-nag's AwsSolutions-DDB3).
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(point_in_time_recovery_enabled=True),
         )
 
         self.evidence_bucket = s3.Bucket(

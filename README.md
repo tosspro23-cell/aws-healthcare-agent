@@ -393,9 +393,19 @@ no credentials to try immediately:
 - Capability eval pass-rate history over time: [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md)
 - AWS infrastructure (CDK): `infra/` *(added as the AWS phases land)*
 
-## CI
+## CI/CD
 
 `.github/workflows/ci.yml` runs on every push/PR: `ruff check`, `mypy`, and
 `pytest` with coverage (which includes the capability eval gate), on Python
-3.11–3.13. The `infra`/`frontend` jobs separately cover the CDK app and the
-Workbench. No secrets are required.
+3.11–3.13. The `infra` job additionally runs `cdk synth` with `cdk-nag`'s
+`AwsSolutionsChecks` applied (see [`infra/nag_suppressions.py`](infra/nag_suppressions.py)
+for what's suppressed and why) -- a real AWS security-best-practices gate,
+not just "does it compile". The `frontend` job separately covers the
+Workbench. No secrets are required for any of this.
+
+On a push to `main` only, a `deploy` job assumes an AWS role via GitHub's
+OIDC provider (no stored AWS credential anywhere in this repo -- see
+[`infra/stacks/cicd_stack.py`](infra/stacks/cicd_stack.py)) and runs
+`cdk deploy --all`, gated behind a required-reviewer approval on a GitHub
+`production` environment. See `docs/DECISIONS.md` (2026-09-06) for the
+full reasoning.

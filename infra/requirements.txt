@@ -1,3 +1,10 @@
 aws-cdk-lib>=2.266.0,<3.0.0
 constructs>=10.5.0,<11.0.0
 boto3>=1.34.0
+# Pinned to 2.38.2, not the current 3.x line: 3.0.2 (the latest at the
+# time of this pin) fails outright against this aws-cdk-lib/jsii
+# combination with "aspectApplication.aspect.visit is not a function" --
+# reproduced directly, not assumed, including against a minimal
+# single-bucket stack with no other code involved. 2.38.2 was confirmed
+# to work the same way. See docs/DECISIONS.md.
+cdk-nag==2.38.2

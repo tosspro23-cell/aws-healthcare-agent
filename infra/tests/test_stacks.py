@@ -93,12 +93,12 @@ def test_data_stack_has_exactly_one_table_and_one_bucket():
     data_template.resource_count_is("AWS::S3::Bucket", 1)
 
 
-def test_lambda_uses_python312_runtime_and_expected_handler():
+def test_lambda_uses_python313_runtime_and_expected_handler():
     _, _, api_template = _synth_stacks()
     api_template.has_resource_properties(
         "AWS::Lambda::Function",
         {
-            "Runtime": "python3.12",
+            "Runtime": "python3.13",
             "Handler": "adapter.handler",
         },
     )

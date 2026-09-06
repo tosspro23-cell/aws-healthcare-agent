@@ -71,7 +71,7 @@ class AuthStack(Stack):
                 require_lowercase=True,
                 require_uppercase=True,
                 require_digits=True,
-                require_symbols=False,
+                require_symbols=True,
             ),
             account_recovery=cognito.AccountRecovery.EMAIL_ONLY,
             removal_policy=RemovalPolicy.DESTROY,
