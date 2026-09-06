@@ -48,6 +48,21 @@ confirmed via `cdk bootstrap`'s own CloudFormation stack, not assumed).
 This stack doesn't widen what those roles can do; it only adds a second,
 narrowly-scoped way to reach them, so the actual deploy permissions
 continue to live exactly where they already lived.
+
+**A third real failure, one layer past the OIDC fix**: even once
+`sts:AssumeRoleWithWebIdentity` succeeded, `ci.yml`'s own
+"write `frontend/.env.local`" step calls `aws cloudformation
+describe-stacks` *directly* with this role's own credentials, not
+through one of the bootstrap roles `cdk deploy` itself knows how to
+assume -- `AccessDenied ... is not authorized to perform
+cloudformation:DescribeStacks`, confirmed live, not assumed from
+reading the workflow alone. `cloudformation:DescribeStacks` is granted
+directly here, scoped to exactly the two stacks that step reads
+(`CareAgentAuthStack`, `CareAgentApiStack`), not a broader
+`cloudformation:*` or account-wide resource pattern -- the only
+concession this stack makes to "almost no direct permission," and only
+because a read-only describe call has no equivalent bootstrap-role path
+the way the actual deploy does.
 """
 
 from aws_cdk import CfnOutput, Stack
@@ -109,5 +124,17 @@ class CiCdStack(Stack):
         # bootstrap role ARNs, nothing else -- the same scoping discipline
         # this project applies to every other IAM grant.
         deploy_role.add_to_policy(iam.PolicyStatement(actions=["sts:AssumeRole"], resources=bootstrap_role_arns))
+
+        # ci.yml's own "write frontend/.env.local" step reads these two
+        # stacks' outputs directly (no bootstrap-role equivalent for a
+        # plain read) -- see this class's own docstring for the live
+        # AccessDenied this closes. Read-only, and scoped to exactly the
+        # two stacks that step actually queries, not every stack in the
+        # account.
+        describe_stacks_arns = [
+            f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{stack_name}/*"
+            for stack_name in ("CareAgentAuthStack", "CareAgentApiStack")
+        ]
+        deploy_role.add_to_policy(iam.PolicyStatement(actions=["cloudformation:DescribeStacks"], resources=describe_stacks_arns))
 
         CfnOutput(self, "GitHubActionsDeployRoleArn", value=deploy_role.role_arn)

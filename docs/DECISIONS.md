@@ -254,6 +254,35 @@ end-to-end confirmation that a deploy can complete this way -- not yet
 observed as of this entry, after two wrong guesses already corrected
 here rather than left in as "should work."
 
+**Third failure, one layer past the OIDC fix -- the trust condition
+was right, the role just had no permission for a step that doesn't go
+through `cdk deploy` at all.** The very next approval got past
+`sts:AssumeRoleWithWebIdentity` cleanly (confirming the second fix
+actually worked), then failed one step later: `ci.yml`'s own "write
+frontend/.env.local" step calls `aws cloudformation describe-stacks`
+*directly* with the OIDC-derived credentials, not through one of the
+four bootstrap roles `cdk deploy` itself knows how to assume --
+`AccessDenied ... is not authorized to perform
+cloudformation:DescribeStacks`, confirmed via `gh run view --log`, not
+assumed from reading the workflow alone. Fixed by granting
+`GitHubActionsDeployRole` a direct, read-only
+`cloudformation:DescribeStacks` grant scoped to exactly the two stacks
+that step reads (`CareAgentAuthStack`, `CareAgentApiStack`), not a
+broader `cloudformation:*` action or an account-wide resource pattern
+-- the only concession this stack makes to "almost no direct
+permission," and only because a plain describe call has no
+bootstrap-role equivalent the way the actual deploy does. cdk-nag
+flagged the resulting ARNs' trailing `/*` as `AwsSolutions-IAM5`;
+suppressed with a `RegexAppliesTo` matched to exactly those two ARN
+shapes, on the same reasoning already applied to the evidence bucket's
+object-key wildcard elsewhere in this project: there is no way to name
+a CloudFormation stack's resource without a trailing wildcard for its
+stack-id suffix, which changes on every replacement. `test_cicd_stack.py`
+gained a matching regression test asserting exactly one
+`DescribeStacks` statement with exactly two resources, one per stack
+name. Redeployed live; `aws iam get-role-policy` confirms the new
+statement present and scoped to exactly those two ARNs.
+
 ## 2026-09-06 — Automated docs/EVAL_HISTORY.md updates on every push to main
 
 **Context**: The capability eval (previous entry) shipped with

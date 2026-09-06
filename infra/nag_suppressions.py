@@ -68,7 +68,14 @@ _EVIDENCE_BUCKET_OBJECT_WILDCARD: dict[str, Any] = {
 
 
 def apply_nag_suppressions(
-    *, auth_stack: Stack, data_stack: Stack, orchestration_stack: Stack, queue_stack: Stack, api_stack: Stack, frontend_stack: Stack
+    *,
+    auth_stack: Stack,
+    data_stack: Stack,
+    orchestration_stack: Stack,
+    queue_stack: Stack,
+    api_stack: Stack,
+    frontend_stack: Stack,
+    cicd_stack: Stack,
 ) -> None:
     NagSuppressions.add_stack_suppressions(
         auth_stack,
@@ -215,6 +222,28 @@ def apply_nag_suppressions(
                     "appears not to recognize access logging configured via a raw property override on an "
                     "HttpApi v2 stage the way it does for a REST API v1 stage's L2-native access-logging props."
                 ),
+            },
+        ],
+    )
+
+    NagSuppressions.add_stack_suppressions(
+        cicd_stack,
+        [
+            {
+                "id": "AwsSolutions-IAM5",
+                "reason": (
+                    "cdk-nag flags any trailing '/*' as a wildcard, but this is a stack-ID wildcard, not a "
+                    "resource-type-wide one: each ARN names one exact stack (CareAgentAuthStack or "
+                    "CareAgentApiStack) and the trailing '/*' only covers that stack's own CloudFormation "
+                    "stack-id suffix, which changes on every replacement -- there is no way to grant "
+                    "DescribeStacks on a specific stack without it. Confirmed via the synthesized template: "
+                    "exactly two resources, each naming one of the two stacks ci.yml's own 'write "
+                    "frontend/.env.local' step actually reads, not a wildcard across the account."
+                ),
+                "applies_to": [
+                    RegexAppliesTo(regex=r"/^Resource::.*stack\/CareAgentAuthStack\/\*$/"),
+                    RegexAppliesTo(regex=r"/^Resource::.*stack\/CareAgentApiStack\/\*$/"),
+                ],
             },
         ],
     )

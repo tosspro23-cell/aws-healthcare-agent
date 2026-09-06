@@ -180,6 +180,7 @@ if __name__ == "__main__":
         queue_stack=stacks.queue_stack,
         api_stack=stacks.api_stack,
         frontend_stack=stacks.frontend_stack,
+        cicd_stack=stacks.cicd_stack,
     )
     Aspects.of(stacks.app).add(AwsSolutionsChecks())
     stacks.app.synth()

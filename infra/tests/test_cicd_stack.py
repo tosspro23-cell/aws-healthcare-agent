@@ -99,6 +99,30 @@ def test_deploy_role_can_only_assume_the_four_cdk_bootstrap_roles():
         assert "role-" in resource_str
 
 
+def test_deploy_role_can_describe_stacks_only_for_the_two_stacks_ci_actually_reads():
+    """Regression guard for a real live failure: ci.yml's own
+    "write frontend/.env.local" step calls `aws cloudformation
+    describe-stacks` directly with this role's credentials (no
+    bootstrap-role equivalent for a plain read) -- confirmed via a real
+    AccessDenied, not assumed. Scoped to exactly the two stacks that
+    step reads, not a wildcard or every stack in the account."""
+    template = _synth_cicd_stack()
+    policies = template.find_resources("AWS::IAM::Policy")
+    describe_statements = [
+        stmt
+        for policy in policies.values()
+        for stmt in policy["Properties"]["PolicyDocument"]["Statement"]
+        if stmt["Action"] == "cloudformation:DescribeStacks"
+    ]
+    assert len(describe_statements) == 1
+    resources = describe_statements[0]["Resource"]
+    assert isinstance(resources, list)
+    assert len(resources) == 2
+    resource_strs = [json.dumps(r) for r in resources]
+    assert any("CareAgentAuthStack" in r for r in resource_strs)
+    assert any("CareAgentApiStack" in r for r in resource_strs)
+
+
 def test_no_iam_policy_uses_wildcard_resource():
     assert_no_overly_broad_iam_policy(_synth_cicd_stack())
 
