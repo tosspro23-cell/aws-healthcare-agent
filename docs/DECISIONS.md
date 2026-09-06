@@ -218,9 +218,41 @@ the *only* way to reach this role is now a job running under the
 `production` environment specifically, so an attacker who somehow got a
 workflow onto `main` still couldn't assume it without also clearing
 that same approval gate. Redeployed live; `aws iam get-role` confirms
-the corrected `sub` condition against the real role. The next push to
-`main` will be the actual end-to-end confirmation that a deploy can
-complete this way -- not yet observed as of this entry.
+the corrected `sub` condition against the real role.
+
+**Second guess, same failure -- the real fix needed a decoded token,
+not a better guess.** The environment-shaped claim (still using plain
+`owner/repo` names) failed the exact same way on the very next real
+approval. Guessing a third shape from documentation would have been
+the same mistake twice over, so instead a temporary debug step was
+added to `ci.yml`: fetch the real OIDC token via
+`ACTIONS_ID_TOKEN_REQUEST_URL`/`ACTIONS_ID_TOKEN_REQUEST_TOKEN` (both
+auto-populated by `permissions: id-token: write`, no extra config
+needed) and decode its JWT payload directly. The real `sub` GitHub
+issues for this exact job:
+
+```
+repo:tosspro23-cell@231253569/aws-healthcare-agent@1355988718:environment:production
+```
+
+-- each name carries its *immutable numeric ID* inline
+(`owner@owner_id`, `repo@repo_id`), a shape not shown in the
+ref-based-vs-environment-based examples this project had been going
+by. Confirmed the two IDs independently against the live GitHub API
+(`gh api repos/tosspro23-cell/aws-healthcare-agent --jq '.id,
+.owner.id'`) rather than trusting a single decoded token alone.
+`cicd_stack.py`'s constructor now takes explicit
+`github_owner`/`github_owner_id`/`github_repo_name`/`github_repo_id`
+parameters (defaulting to this repo's real values) and builds the sub
+claim from all four -- the debug step removed from `ci.yml` once this
+was confirmed, and `test_cicd_stack.py` gained a dedicated regression
+test asserting the default parameters produce this *exact* string, not
+just that some plausible-looking condition exists. Redeployed live a
+second time; `aws iam get-role` now shows the condition matching the
+decoded token byte-for-byte. The next push to `main` is the actual
+end-to-end confirmation that a deploy can complete this way -- not yet
+observed as of this entry, after two wrong guesses already corrected
+here rather than left in as "should work."
 
 ## 2026-09-06 — Automated docs/EVAL_HISTORY.md updates on every push to main
 

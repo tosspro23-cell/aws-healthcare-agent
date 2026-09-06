@@ -4,13 +4,12 @@ AWS credential (see `../stacks/cicd_stack.py` for the full reasoning).
 
 The point of these tests isn't "does an OIDC provider exist" (trivially
 true) -- it's that the trust condition is scoped as narrowly as the
-stack's own docstring claims: exact repo, exact GitHub *environment*
-(not a branch ref -- see the stack's own docstring for why: the ref-based
-form is what most guides lead with, but it's wrong once a job references
-`environment:`, confirmed by a real failed deploy, not assumed), and
-`StringEquals` (not `StringLike`, which could be tricked with a crafted
-value), and the assumable role list is exactly the four CDK bootstrap
-roles, never a wildcard resource.
+stack's own docstring claims: exact repo (including the immutable
+numeric owner/repo IDs GitHub's real token embeds -- see the stack's own
+docstring for the two prior, wrong guesses this replaced), exact GitHub
+*environment* (not a branch ref), and `StringEquals` (not `StringLike`,
+which could be tricked with a crafted value), and the assumable role
+list is exactly the four CDK bootstrap roles, never a wildcard resource.
 """
 
 import json
@@ -41,23 +40,44 @@ def test_trust_policy_is_scoped_to_the_exact_repo_and_environment_with_string_eq
     """Regression guard: a `StringLike` condition (or a wildcard in the
     `sub` value) would let a crafted claim or a similarly-named fork
     potentially match -- this must be an exact match. Also a regression
-    guard for the real failed-deploy bug this stack's docstring
-    describes: the sub claim must use GitHub's `environment:` shape, not
-    a branch-ref shape -- the latter is silently rejected by GitHub's own
-    OIDC token issuance once a job references `environment:`, which
-    `ci.yml`'s `deploy` job does for its own approval gate."""
-    template = _synth_cicd_stack(github_repo="someone/example-repo", deploy_environment="production")
-    roles = template.find_resources(
-        "AWS::IAM::Role", {"Properties": {"Description": Match.string_like_regexp("Assumed by GitHub Actions")}}
+    guard for two real failed-deploy bugs this stack's docstring
+    describes: the sub claim must use GitHub's `environment:` shape (not
+    a branch-ref shape, silently rejected once a job references
+    `environment:`), *and* it must embed each name's immutable numeric
+    ID inline (`owner@id/repo@id`), not just the plain names -- both
+    confirmed by real failed deploys and a decoded token, not assumed
+    from documentation."""
+    template = _synth_cicd_stack(
+        github_owner="someone",
+        github_owner_id="111",
+        github_repo_name="example-repo",
+        github_repo_id="222",
+        deploy_environment="production",
     )
+    roles = template.find_resources("AWS::IAM::Role", {"Properties": {"Description": Match.string_like_regexp("GitHub Actions OIDC")}})
     (role,) = roles.values()
     statement = role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]
     assert statement["Action"] == "sts:AssumeRoleWithWebIdentity"
     condition = statement["Condition"]
     assert "StringEquals" in condition
     assert "StringLike" not in condition
-    assert condition["StringEquals"]["token.actions.githubusercontent.com:sub"] == "repo:someone/example-repo:environment:production"
+    assert (
+        condition["StringEquals"]["token.actions.githubusercontent.com:sub"] == "repo:someone@111/example-repo@222:environment:production"
+    )
     assert condition["StringEquals"]["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
+
+
+def test_trust_policy_matches_this_projects_real_deployed_repo_by_default():
+    """The default parameter values must match this repo's actual GitHub
+    identity -- confirmed independently via `gh api repos/<org>/<repo>`
+    (`.id` and `.owner.id`), not just copied once out of a decoded
+    token."""
+    template = _synth_cicd_stack()
+    roles = template.find_resources("AWS::IAM::Role", {"Properties": {"Description": Match.string_like_regexp("GitHub Actions OIDC")}})
+    (role,) = roles.values()
+    condition = role["Properties"]["AssumeRolePolicyDocument"]["Statement"][0]["Condition"]
+    expected = "repo:tosspro23-cell@231253569/aws-healthcare-agent@1355988718:environment:production"
+    assert condition["StringEquals"]["token.actions.githubusercontent.com:sub"] == expected
 
 
 def test_deploy_role_can_only_assume_the_four_cdk_bootstrap_roles():

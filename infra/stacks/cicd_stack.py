@@ -9,20 +9,35 @@ claim to *exactly* one thing, matched with `StringEquals` (not
 
 That one thing is the GitHub *environment*, not the branch ref --
 `repo:<org>/<repo>:environment:<name>`, not
-`repo:<org>/<repo>:ref:refs/heads/main`. Tried the ref-based claim first
-(the shape most OIDC-to-AWS guides lead with) and it failed live with
-`Not authorized to perform sts:AssumeRoleWithWebIdentity` on the very
+`repo:<org>/<repo>:ref:refs/heads/main`. Tried the ref-based claim
+first (the shape most OIDC-to-AWS guides lead with) and it failed live
+with `Not authorized to perform sts:AssumeRoleWithWebIdentity` on the
 first real deploy attempt: GitHub replaces the `sub` claim's shape
 entirely once a job references `environment:` (as `ci.yml`'s `deploy`
-job does, for its own required-reviewer approval gate) -- confirmed by
-reading the actual error and GitHub's own OIDC claims documentation, not
-assumed from how the ref-based form is usually presented. This ties two
-independent controls together usefully, not just accidentally: the
-*only* way to reach this role is a job running under the `production`
-environment specifically, which is the exact same environment gated by
-a human's approval -- an attacker who somehow got a workflow onto `main`
-still couldn't assume this role without also clearing that same
-approval gate.
+job does, for its own required-reviewer approval gate).
+
+**The environment-shaped claim still wasn't enough, and guessing a
+second time was the actual mistake, not the first wrong guess itself**:
+switching to `repo:<org>/<repo>:environment:<name>` (still using the
+plain owner/repo *names*) failed the exact same way on the very next
+real approval. Rather than guess a third shape, a temporary debug step
+was added to `ci.yml` to decode and print the real token's claims
+directly -- the actual `sub` GitHub issues includes each name's
+*immutable numeric ID* inline:
+`repo:<owner>@<owner_id>/<repo>@<repo_id>:environment:<name>` -- not
+documented in the form most guides show, and not something a `StringLike`
+prefix/suffix match would have papered over correctly either, since the
+numeric IDs sit in the middle of the string. `github_owner_id` and
+`github_repo_id` below are this repo's real values, confirmed
+independently via `gh api repos/<org>/<repo> --jq '.id, .owner.id'`
+against the live GitHub API, not just read once out of a token.
+
+This ties two independent controls together usefully, not just
+accidentally: the *only* way to reach this role is a job running under
+the `production` environment specifically, which is the exact same
+environment gated by a human's approval -- an attacker who somehow got
+a workflow onto `main` still couldn't assume this role without also
+clearing that same approval gate.
 
 The role itself carries almost no direct permission of its own -- only
 `sts:AssumeRole` on the CDK bootstrap's own roles (deploy,
@@ -54,7 +69,10 @@ class CiCdStack(Stack):
         scope: Construct,
         construct_id: str,
         *,
-        github_repo: str = "tosspro23-cell/aws-healthcare-agent",
+        github_owner: str = "tosspro23-cell",
+        github_owner_id: str = "231253569",
+        github_repo_name: str = "aws-healthcare-agent",
+        github_repo_id: str = "1355988718",
         deploy_environment: str = "production",
         **kwargs,
     ) -> None:
@@ -67,6 +85,11 @@ class CiCdStack(Stack):
             for role in ("deploy-role", "file-publishing-role", "image-publishing-role", "lookup-role")
         ]
 
+        # The exact shape GitHub actually issues (confirmed by decoding a
+        # real token, not assumed) -- see this class's own docstring for
+        # the two prior, wrong guesses.
+        sub_claim = f"repo:{github_owner}@{github_owner_id}/{github_repo_name}@{github_repo_id}:environment:{deploy_environment}"
+
         deploy_role = iam.Role(
             self,
             "GitHubActionsDeployRole",
@@ -75,11 +98,11 @@ class CiCdStack(Stack):
                 conditions={
                     "StringEquals": {
                         f"{_GITHUB_OIDC_HOST}:aud": _STS_AUDIENCE,
-                        f"{_GITHUB_OIDC_HOST}:sub": f"repo:{github_repo}:environment:{deploy_environment}",
+                        f"{_GITHUB_OIDC_HOST}:sub": sub_claim,
                     },
                 },
             ),
-            description=f"Assumed by GitHub Actions (OIDC) -- only {github_repo}'s {deploy_environment!r} environment can assume this.",
+            description=f"GitHub Actions OIDC -- only {github_owner}/{github_repo_name}'s {deploy_environment!r} env can assume this.",
         )
         # Not grant_read_write_data-style convenience: this is the exact
         # action needed (assume the bootstrap roles), on exactly the four
