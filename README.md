@@ -10,8 +10,21 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phases 0–4 complete, plus a dedicated stress-test
-pass.** Phase 4 (Bedrock) closed out both its acceptance items: a real,
+**Current status: Phases 0–6 complete** (kernel import → deployment
+skeleton → auth → Step Functions orchestration → Bedrock → stress test →
+frontend Workbench — see [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
+the phase-by-phase writeup), **plus CI/CD, security, and eval
+infrastructure beyond the original roadmap**: a GitHub Actions pipeline
+deploys via GitHub OIDC (no stored AWS credential anywhere in this repo)
+behind a required human approval on every push that actually touches
+something deployed; `cdk synth` runs cdk-nag's `AwsSolutionsChecks` as a
+hard gate, not an optional lint; and a capability-based regression eval
+(`care_agent.eval`) runs against the real agent on every push, with a
+pass-rate trend chart tracked over time in
+[`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md). See "CI/CD" below and
+[`docs/DECISIONS.md`](docs/DECISIONS.md) for the full reasoning on each.
+
+Phase 4 (Bedrock) closed out both its acceptance items: a real,
 non-mocked `bedrock-runtime.Converse` call, and that same integration
 wired into the deployed Lambdas (`/ask` and the Step Functions run path)
 under IAM scoped to exactly the model ARNs they need — real output/trace
@@ -72,6 +85,28 @@ for the phased build-out plan and current status, and
 
 > The dataset is synthetic and this is a personal reference/demo project,
 > not a medical product. Nothing it outputs is clinical guidance.
+
+## Live demo
+
+**[d355ijp67vmjbx.cloudfront.net](https://d355ijp67vmjbx.cloudfront.net)**
+-- the Workbench above, actually running (CloudFront + S3, backed by the
+real API Gateway/Lambda/Cognito stack). Self-sign-up is deliberately
+disabled (synthetic demo data, single account, created via
+`AdminCreateUser` -- see `docs/DECISIONS.md`), so the login page won't
+take a new account; reach out if you'd like a demo login to try it live.
+
+A real, non-mocked run against the deployed backend (`narrator: bedrock`
+in the trace) -- personalized guidance grounded in this user's own
+bloodwork and questionnaire answers, not a generic template:
+
+![The Workbench's answer to "What should I focus on first in my results?" -- a SAFE-tagged, personalized recommendation citing this user's own LDL-C, HbA1c, and questionnaire context](docs/screenshots/workbench-answer.png)
+
+Every answer ships with its own trace, not just the prose: which safety
+checks ran and passed, and every numeric claim traced back to the exact
+bloodwork/questionnaire field it came from -- the grounding this whole
+project's safety model depends on, made visible rather than asserted:
+
+![The same answer's full trace: four passed safety checks (non_empty, no_diagnosis, no_dosing, numeric_grounding) and 12 grounded facts, each citing its exact source field](docs/screenshots/workbench-grounding.png)
 
 ## Quickstart
 
