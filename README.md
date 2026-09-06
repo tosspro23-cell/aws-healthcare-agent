@@ -125,10 +125,12 @@ python -m care_agent eval-capabilities
 CARE_AGENT_NARRATOR_BACKEND=bedrock python -m care_agent eval-capabilities
 ```
 
-History of pass rate over time (regenerate after any change to
-`reasoning.py`, `safety.py`, or a narrator): `python
-scripts/update_eval_history.py`, appended to
-[`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md).
+History of pass rate over time (mock narrator only -- the free, CI-run
+path) is appended to [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md)
+automatically on every push to `main` (a dedicated CI job runs
+`scripts/update_eval_history.py` and commits the result). Run it by hand
+(`python scripts/update_eval_history.py`) to record an LLM-narrator run
+instead, which CI never does on its own.
 
 ## Architecture
 

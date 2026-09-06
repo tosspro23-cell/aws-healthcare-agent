@@ -87,6 +87,46 @@ jobs:
           name: eval-report
           path: eval-report.json
 
+  update-eval-history:
+    name: Update eval history (main only)
+    runs-on: ubuntu-latest
+    needs: smoke
+    # Only for a real push to main -- not a PR (would commit to a branch
+    # nobody asked for) and not workflow_dispatch/other events. The bot's
+    # own commit below carries [skip ci], which GitHub Actions recognizes
+    # natively and skips triggering this workflow again for it -- without
+    # that, this job's own push would trigger another run of itself.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Regenerate docs/EVAL_HISTORY.md
+        run: python scripts/update_eval_history.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- docs/EVAL_HISTORY.md; then
+            echo "No change to docs/EVAL_HISTORY.md -- nothing to commit."
+          else
+            git add docs/EVAL_HISTORY.md
+            git commit -m "chore: update eval history [skip ci]"
+            git push
+          fi
+
   infra:
     name: infra (cdk synth + moto-mocked tests, no live AWS account)
     runs-on: ubuntu-latest

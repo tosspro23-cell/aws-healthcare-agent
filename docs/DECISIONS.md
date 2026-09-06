@@ -8,6 +8,38 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-06 — Automated docs/EVAL_HISTORY.md updates on every push to main
+
+**Context**: The capability eval (previous entry) shipped with
+`scripts/update_eval_history.py` as a manually-run regenerator, the same
+pattern `scripts/run_examples.py` already used -- deliberately, at the
+time, to match existing convention. In practice that means the pass-rate
+history it exists to build only grows when someone remembers to run it,
+which defeats the actual point (a real trend over time, not a single
+snapshot from whenever the harness was built).
+
+**Decision**: a new `update-eval-history` CI job, gated to `push` events
+on `main` specifically (not PRs -- nothing should auto-commit to a
+branch nobody asked for) and `needs: smoke` (so it only runs once the
+capability eval has actually passed). Runs the same regenerator script
+and, if `docs/EVAL_HISTORY.md` changed, commits and pushes it back as
+`github-actions[bot]`. The commit message carries `[skip ci]` --
+GitHub Actions recognizes that convention natively and skips triggering
+the workflow again for that specific push, which is what stops this
+from being an infinite loop (the bot's own commit is a `push` to `main`
+too, and without `[skip ci]` it would re-trigger this exact job).
+Scoped with its own `permissions: contents: write` at the job level
+rather than widening the whole workflow's default permissions, the same
+least-privilege instinct this project already applies to IAM.
+
+**Verification**: `.github/workflows/ci.yml` YAML validated with
+`python -c "import yaml; yaml.safe_load(...)"`. Live behavior (does the
+job actually commit, and does its own commit correctly avoid
+re-triggering CI) not yet confirmed as of this entry -- watched on the
+push that introduces this change itself, since that's the only real way
+to prove the loop-prevention actually works, not just that it looks
+correct on paper.
+
 ## 2026-09-06 — Capability-based regression eval (`care_agent.eval`), and a real bug it found on its first run
 
 **Context**: With the post-review punch list closed (backlog items,
