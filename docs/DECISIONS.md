@@ -196,9 +196,31 @@ the real account, not just the synthesized template. `AWS_DEPLOY_ROLE_ARN`
 and `CARE_AGENT_WORKBENCH_URL` stored as GitHub repository *variables*
 (not secrets -- neither is sensitive); `CARE_AGENT_BUDGET_EMAIL` stored
 as a secret, matching `BudgetStack`'s own existing opt-in-via-env-var
-design. The `production` environment's approval gate itself will be
-exercised for real the next time this pipeline actually runs against a
-push to `main` -- not yet observed as of this entry.
+design.
+
+**The approval gate worked; the OIDC trust condition itself didn't, on
+the very first real run** -- exercised for real (not a synth-only
+guess) the moment this stack's own introducing commit was pushed:
+`test`/`smoke`/`infra`/`frontend`/`update-eval-history` all passed, the
+`deploy` job correctly paused on the `production` environment, a human
+approved it in the GitHub UI, and the job then failed immediately with
+`Could not assume role with OIDC: Not authorized to perform
+sts:AssumeRoleWithWebIdentity`. The trust condition's `sub` claim used
+the ref-based shape (`repo:<org>/<repo>:ref:refs/heads/main`) -- the
+form most OIDC-to-AWS guides show first -- but GitHub replaces that
+shape entirely once a job references `environment:` (as `deploy` does,
+for the very approval gate that had just correctly paused it), issuing
+`repo:<org>/<repo>:environment:<name>` instead. Fixed in
+`cicd_stack.py` to match the environment-based shape instead of the
+ref-based one -- which, incidentally, ties the OIDC trust and the
+human-approval gate together more tightly than originally intended:
+the *only* way to reach this role is now a job running under the
+`production` environment specifically, so an attacker who somehow got a
+workflow onto `main` still couldn't assume it without also clearing
+that same approval gate. Redeployed live; `aws iam get-role` confirms
+the corrected `sub` condition against the real role. The next push to
+`main` will be the actual end-to-end confirmation that a deploy can
+complete this way -- not yet observed as of this entry.
 
 ## 2026-09-06 — Automated docs/EVAL_HISTORY.md updates on every push to main
 

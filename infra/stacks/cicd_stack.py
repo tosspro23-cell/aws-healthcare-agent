@@ -4,9 +4,25 @@ credentials stored as a repository secret.
 GitHub's OIDC provider issues each workflow run a short-lived token; this
 stack creates the AWS side of that trust -- an OIDC identity provider
 plus a role GitHub Actions can assume, scoped by the token's own `sub`
-claim to *exactly* one thing: a push to this specific repo's `main`
-branch, matched with `StringEquals` (not `StringLike`), so a pull
-request, a fork, or any other branch is never eligible to assume it.
+claim to *exactly* one thing, matched with `StringEquals` (not
+`StringLike`).
+
+That one thing is the GitHub *environment*, not the branch ref --
+`repo:<org>/<repo>:environment:<name>`, not
+`repo:<org>/<repo>:ref:refs/heads/main`. Tried the ref-based claim first
+(the shape most OIDC-to-AWS guides lead with) and it failed live with
+`Not authorized to perform sts:AssumeRoleWithWebIdentity` on the very
+first real deploy attempt: GitHub replaces the `sub` claim's shape
+entirely once a job references `environment:` (as `ci.yml`'s `deploy`
+job does, for its own required-reviewer approval gate) -- confirmed by
+reading the actual error and GitHub's own OIDC claims documentation, not
+assumed from how the ref-based form is usually presented. This ties two
+independent controls together usefully, not just accidentally: the
+*only* way to reach this role is a job running under the `production`
+environment specifically, which is the exact same environment gated by
+a human's approval -- an attacker who somehow got a workflow onto `main`
+still couldn't assume this role without also clearing that same
+approval gate.
 
 The role itself carries almost no direct permission of its own -- only
 `sts:AssumeRole` on the CDK bootstrap's own roles (deploy,
@@ -39,7 +55,7 @@ class CiCdStack(Stack):
         construct_id: str,
         *,
         github_repo: str = "tosspro23-cell/aws-healthcare-agent",
-        deploy_ref: str = "refs/heads/main",
+        deploy_environment: str = "production",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -59,11 +75,11 @@ class CiCdStack(Stack):
                 conditions={
                     "StringEquals": {
                         f"{_GITHUB_OIDC_HOST}:aud": _STS_AUDIENCE,
-                        f"{_GITHUB_OIDC_HOST}:sub": f"repo:{github_repo}:ref:{deploy_ref}",
+                        f"{_GITHUB_OIDC_HOST}:sub": f"repo:{github_repo}:environment:{deploy_environment}",
                     },
                 },
             ),
-            description=f"Assumed by GitHub Actions (OIDC) to deploy this app -- only for a push to {github_repo}@{deploy_ref}.",
+            description=f"Assumed by GitHub Actions (OIDC) -- only {github_repo}'s {deploy_environment!r} environment can assume this.",
         )
         # Not grant_read_write_data-style convenience: this is the exact
         # action needed (assume the bootstrap roles), on exactly the four

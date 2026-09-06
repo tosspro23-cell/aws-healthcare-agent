@@ -4,10 +4,13 @@ AWS credential (see `../stacks/cicd_stack.py` for the full reasoning).
 
 The point of these tests isn't "does an OIDC provider exist" (trivially
 true) -- it's that the trust condition is scoped as narrowly as the
-stack's own docstring claims: exact repo, exact ref, `StringEquals` (not
-`StringLike`, which could be tricked with a crafted ref), and the
-assumable role list is exactly the four CDK bootstrap roles, never a
-wildcard resource.
+stack's own docstring claims: exact repo, exact GitHub *environment*
+(not a branch ref -- see the stack's own docstring for why: the ref-based
+form is what most guides lead with, but it's wrong once a job references
+`environment:`, confirmed by a real failed deploy, not assumed), and
+`StringEquals` (not `StringLike`, which could be tricked with a crafted
+value), and the assumable role list is exactly the four CDK bootstrap
+roles, never a wildcard resource.
 """
 
 import json
@@ -34,11 +37,16 @@ def test_exactly_one_oidc_provider_for_github_actions():
     assert provider["Properties"]["ClientIDList"] == ["sts.amazonaws.com"]
 
 
-def test_trust_policy_is_scoped_to_the_exact_repo_and_ref_with_string_equals():
+def test_trust_policy_is_scoped_to_the_exact_repo_and_environment_with_string_equals():
     """Regression guard: a `StringLike` condition (or a wildcard in the
-    `sub` value) would let a crafted ref or a similarly-named fork
-    potentially match -- this must be an exact match."""
-    template = _synth_cicd_stack(github_repo="someone/example-repo", deploy_ref="refs/heads/main")
+    `sub` value) would let a crafted claim or a similarly-named fork
+    potentially match -- this must be an exact match. Also a regression
+    guard for the real failed-deploy bug this stack's docstring
+    describes: the sub claim must use GitHub's `environment:` shape, not
+    a branch-ref shape -- the latter is silently rejected by GitHub's own
+    OIDC token issuance once a job references `environment:`, which
+    `ci.yml`'s `deploy` job does for its own approval gate."""
+    template = _synth_cicd_stack(github_repo="someone/example-repo", deploy_environment="production")
     roles = template.find_resources(
         "AWS::IAM::Role", {"Properties": {"Description": Match.string_like_regexp("Assumed by GitHub Actions")}}
     )
@@ -48,7 +56,7 @@ def test_trust_policy_is_scoped_to_the_exact_repo_and_ref_with_string_equals():
     condition = statement["Condition"]
     assert "StringEquals" in condition
     assert "StringLike" not in condition
-    assert condition["StringEquals"]["token.actions.githubusercontent.com:sub"] == "repo:someone/example-repo:ref:refs/heads/main"
+    assert condition["StringEquals"]["token.actions.githubusercontent.com:sub"] == "repo:someone/example-repo:environment:production"
     assert condition["StringEquals"]["token.actions.githubusercontent.com:aud"] == "sts.amazonaws.com"
 
 
