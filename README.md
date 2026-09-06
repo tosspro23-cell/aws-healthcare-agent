@@ -125,12 +125,17 @@ python -m care_agent eval-capabilities
 CARE_AGENT_NARRATOR_BACKEND=bedrock python -m care_agent eval-capabilities
 ```
 
-History of pass rate over time (mock narrator only -- the free, CI-run
-path) is appended to [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md)
-automatically on every push to `main` (a dedicated CI job runs
-`scripts/update_eval_history.py` and commits the result). Run it by hand
-(`python scripts/update_eval_history.py`) to record an LLM-narrator run
-instead, which CI never does on its own.
+History of pass rate over time is appended to
+[`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md) automatically on every
+push to `main` (a dedicated CI job runs `scripts/update_eval_history.py`
+and commits the result) -- mock narrator only, the free, CI-run path.
+Run it by hand (`python scripts/update_eval_history.py`) to record an
+LLM-narrator run instead, which CI never does on its own. Each run also
+appends a structured record to `docs/eval_history.jsonl` and
+regenerates `docs/eval_trend.svg`, a small hand-rolled SVG line chart
+(no charting library -- see `care_agent/eval_trend.py`) embedded at the
+top of `EVAL_HISTORY.md` so the pass-rate trend is a picture, not
+something to eyeball out of a growing stack of per-commit tables.
 
 ## Architecture
 
@@ -390,7 +395,7 @@ no credentials to try immediately:
 - General (cloud-agnostic) deployment thinking: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - AWS-specific phased build-out plan + status: [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md)
 - Running design-decision log (ADR-style): [`docs/DECISIONS.md`](docs/DECISIONS.md)
-- Capability eval pass-rate history over time: [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md)
+- Capability eval pass-rate history over time (with a trend chart): [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md)
 - AWS infrastructure (CDK): `infra/` *(added as the AWS phases land)*
 
 ## CI/CD

@@ -3,6 +3,12 @@ capability-eval run (see care_agent.eval) -- the same "regenerate a
 checked-in doc from the live agent" pattern scripts/run_examples.py
 already uses, applied to eval results instead of raw example output.
 
+Also appends one line to docs/eval_history.jsonl (a structured record of
+this same run -- see care_agent.eval_trend) and regenerates
+docs/eval_trend.svg from the full log, so the markdown history has a
+pass-rate-over-time chart embedded at the top instead of requiring
+someone to eyeball a growing stack of per-commit tables.
+
 Run with: python scripts/update_eval_history.py
 Or against an LLM narrator (costs real Bedrock tokens, not run in CI):
     CARE_AGENT_NARRATOR_BACKEND=bedrock python scripts/update_eval_history.py
@@ -15,9 +21,12 @@ from datetime import date
 from pathlib import Path
 
 from care_agent.eval import git_short_sha, run_eval, summarize
+from care_agent.eval_trend import append_history_record, build_history_record, read_history_records, render_svg_trend
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HISTORY_PATH = REPO_ROOT / "docs" / "EVAL_HISTORY.md"
+HISTORY_JSONL_PATH = REPO_ROOT / "docs" / "eval_history.jsonl"
+TREND_SVG_PATH = REPO_ROOT / "docs" / "eval_trend.svg"
 
 _HEADER = """# Capability Eval History
 
@@ -37,11 +46,15 @@ fully reproducible. Run manually against
 capabilities hold for an LLM's free-form prose, not just the mock
 narrator's fixed templates -- that run costs real Bedrock tokens, so
 it's not part of CI.
+
+Pass rate over time, plotted straight from `docs/eval_history.jsonl`
+(green = mock narrator, orange = bedrock -- see `care_agent.eval_trend`):
+
+![Eval pass-rate trend](eval_trend.svg)
 """
 
 
-def _render_entry(summary) -> str:
-    narrator_backend = summary.results[0].narrator_backend if summary.results else os.environ.get("CARE_AGENT_NARRATOR_BACKEND", "mock")
+def _render_entry(summary, narrator_backend: str) -> str:
     lines = [f"## {date.today().isoformat()} — commit `{git_short_sha()}`, narrator: `{narrator_backend}`", ""]
     lines.append(
         f"**{summary.passed_checks}/{summary.total_checks} checks passed ({summary.pass_rate:.0%}), {summary.total_skipped} skipped.**"
@@ -78,18 +91,26 @@ def _render_entry(summary) -> str:
 def main() -> None:
     results = run_eval()
     summary = summarize(results)
+    narrator_backend = results[0].narrator_backend if results else os.environ.get("CARE_AGENT_NARRATOR_BACKEND", "mock")
 
+    record = build_history_record(summary, narrator_backend=narrator_backend)
+    append_history_record(record, HISTORY_JSONL_PATH)
+    TREND_SVG_PATH.write_text(render_svg_trend(read_history_records(HISTORY_JSONL_PATH)), encoding="utf-8")
+
+    # Re-split on the header/entries boundary rather than reusing the
+    # existing file's own header text: this run's _HEADER is the single
+    # source of truth (e.g. the trend-chart embed added above), so a
+    # change to it here must propagate on the very next run instead of
+    # only applying to files that don't exist yet.
     existing = HISTORY_PATH.read_text(encoding="utf-8") if HISTORY_PATH.exists() else _HEADER + "\n---\n"
     marker = "\n---\n"
-    if marker in existing:
-        header, _, rest = existing.partition(marker)
-    else:
-        header, rest = existing, ""
+    _, _, rest = existing.partition(marker) if marker in existing else ("", "", "")
 
-    new_entry = _render_entry(summary)
-    content = header.rstrip("\n") + "\n\n---\n" + new_entry + "\n\n---\n" + rest.lstrip("\n")
+    new_entry = _render_entry(summary, narrator_backend)
+    content = _HEADER.rstrip("\n") + "\n\n---\n" + new_entry + "\n\n---\n" + rest.lstrip("\n")
     HISTORY_PATH.write_text(content, encoding="utf-8")
     print(f"Wrote a new entry to {HISTORY_PATH} ({summary.passed_checks}/{summary.total_checks} passed)")
+    print(f"Appended a record to {HISTORY_JSONL_PATH} and regenerated {TREND_SVG_PATH}")
     if not os.environ.get("CARE_AGENT_NARRATOR_BACKEND"):
         print("(ran against the default mock narrator; set CARE_AGENT_NARRATOR_BACKEND=bedrock to eval an LLM narrator instead)")
 
