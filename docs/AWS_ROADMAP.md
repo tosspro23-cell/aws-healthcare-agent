@@ -341,15 +341,31 @@ stages so the larger, riskier one doesn't block the smaller, safer one.
   stage. See `docs/DECISIONS.md` for the full design (why Chroma over
   FAISS, the read-only-filesystem copy-before-open design, and why this
   wasn't wired into the deployed Lambda).
-- ⬜ **Stage B — one-time pgvector-on-Aurora-Serverless-v2 experiment**,
-  not yet started. Plan: reuse Stage A's committed `data/knowledge_base_
-  embeddings.jsonl` (no re-embedding), build a small opt-in `VectorStack`
-  via a fully separate CDK app entrypoint (never wired into `infra/app.py`
-  or `cdk deploy --all`, so it structurally cannot be touched by CI),
-  collect real comparison-query evidence against BM25 and Chroma, then
-  tear it down (`cdk destroy`) to stop billing — this project's first-ever
-  VPC/RDS construct, and a materially larger, higher-risk unit of work
-  than Stage A, so deliberately sequenced after it rather than alongside it.
+- 🔶 **Stage B — one-time pgvector-on-Aurora-Serverless-v2 experiment**,
+  attempted live, **stopped deliberately at a real account-level wall**
+  rather than completed. A CDK `VectorStack` (isolated-subnet VPC +
+  Aurora Serverless v2 + Data API) was built and live-deployed, but this
+  AWS account requires Aurora clusters to use RDS's own `WithExpress
+  Configuration` API parameter — a real property CloudFormation's
+  `AWS::RDS::DBCluster` doesn't expose at all, confirmed directly. Pivoted
+  to a plain `boto3` script (`infra/scripts/create_pgvector_cluster.py`),
+  which found and worked around four more live-only Express Configuration
+  parameter constraints (no custom VPC, no explicit engine version, no
+  initial database name, no `ManageMasterUserPassword` at create time) —
+  only to hit the actual wall: **RDS Data API does not work at all** on
+  this account's VPC-less Express Configuration clusters, confirmed by a
+  real `rds-data.execute_statement` call failing with `HttpEndpoint
+  NotEnabledException`, reproduced after a reboot and on a second
+  from-scratch cluster. The real, supported path from here is standard
+  PostgreSQL connectivity against a public endpoint with IAM auth — a
+  materially less isolated architecture than this project holds itself to
+  everywhere else, so continuing down that path was a deliberate choice
+  *not* to make, not a limitation of effort. `create_pgvector_cluster.py`
+  / `destroy_pgvector_cluster.py` (real, live-verified, kept) are the
+  actual deliverable: a precise, evidence-backed account constraint. See
+  `docs/DECISIONS.md` for the full narrative, including the
+  security/isolation comparison between the VPC-based design this
+  replaced and the public-endpoint path not taken.
 
 ## Phase 6 — Frontend / Workbench (complete: all three backend paths, full async trace, public hosting)
 

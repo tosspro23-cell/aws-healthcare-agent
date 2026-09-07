@@ -8,6 +8,122 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-07 — Stage B (pgvector on Aurora) stopped deliberately at a real account-level wall, not completed
+
+**Context**: Stage A (local Chroma retrieval) shipped; Stage B was
+planned as a one-time, evidence-collecting pgvector-on-Aurora-
+Serverless-v2 experiment -- build it, load Stage A's committed
+embeddings, run comparison queries, write up evidence, tear it down. A
+`VectorStack` (CDK, isolated-subnet VPC + Aurora Serverless v2 +
+`enable_data_api`) was designed and planned first, mirroring this
+project's existing IAM/opt-in-stack patterns closely, with the same
+live-verification discipline as every other phase (confirmed via Python
+introspection against the actual installed `aws-cdk-lib` and a live
+`aws cloudformation describe-type` call that `enable_data_api` and
+`serverless_v2_*` scaling coexist on one real `AWS::RDS::DBCluster`
+resource). None of that verification was wrong -- the actual blocker
+was one layer further down, in this specific AWS account, and only
+showed up on a real deploy attempt.
+
+**First real wall: this account requires Express Configuration, which
+CloudFormation cannot express.** The first live `cdk deploy` failed:
+`CREATE_FAILED ... "To use Aurora clusters with free plan accounts you
+need to set WithExpressConfiguration. To remove all limitations,
+upgrade your account plan."` -- AWS's own account classification, not
+an assumption. Confirmed directly that `AWS::RDS::DBCluster`'s full
+~60-property CloudFormation schema has no such property at all (`aws
+cloudformation describe-type --type-name AWS::RDS::DBCluster`); `aws
+rds create-db-cluster help` confirms `--with-express-configuration` is
+an RDS-API/CLI-only parameter. No CDK/CFN construct -- this project's
+or anyone else's -- can satisfy this account's requirement, so the
+whole approach pivoted from CDK to a plain `boto3` script
+(`infra/scripts/create_pgvector_cluster.py`).
+
+**Second wall, found immediately after: Express Configuration on this
+account is VPC-less.** A minimal probe (`WithExpressConfiguration=True`,
+no other parameters) came back with `VPCNetworkingEnabled: False` and
+`InternetAccessGatewayEnabled: True` -- passing an explicit custom VPC
+subnet group/security group alongside the express flag failed live:
+`InvalidParameterCombination: Amazon RDS can't associate a VPC because
+Internet Access Gateway is enabled.` The planned `VectorStack` VPC
+(already deployed once, cleanly torn down again) turned out to be
+entirely unnecessary on this account -- not an error in its own design
+(it synthesized correctly, had zero NAT/IGW/EIP cost, and would have
+worked fine on a standard account), just inapplicable here.
+
+**Four more real, incremental parameter constraints, found by trying
+each one and fixing it, not by reading documentation up front**:
+`EngineVersion` can't be specified alongside `WithExpressConfiguration`
+(Express picks its own -- 17.7, still far above any documented pgvector
+minimum); `DatabaseName` can't be set at create time (create it after,
+via SQL); `ManageMasterUserPassword` can't be set at create time either
+(apply it via a follow-up `modify_db_cluster`, which has no such
+restriction). Each fix was verified by actually retrying the live call,
+not assumed from the error message alone -- `infra/scripts/
+create_pgvector_cluster.py`'s own docstring and inline comments carry
+the exact error text for each, in the order they were actually hit.
+
+**The wall that actually stopped Stage B: RDS Data API does not work on
+this account's Express Configuration clusters at all.** Once the
+cluster was up, `modify_db_cluster(EnableHttpEndpoint=True)` reported
+success and the cluster returned to `available` -- but a direct
+`rds-data.execute_statement` call against the real cluster/secret ARNs
+failed with `HttpEndpointNotEnabledException`, reproduced after a full
+instance reboot (ruling out a timing issue) and confirmed a second time
+on a second, from-scratch cluster (ruling out a one-off fluke on the
+first). This account's VPC-less, Internet-Access-Gateway clusters carry
+a real, public `*.rds.amazonaws.com` endpoint with
+`IAMDatabaseAuthenticationEnabled: true` -- the actually-supported
+connectivity path is standard PostgreSQL wire protocol against that
+public endpoint, authenticated via `rds.generate_db_auth_token()` or the
+managed master password, not Data API's HTTP/JSON interface. `create_
+pgvector_cluster.py` proves this fresh on every run (a real `SELECT 1;`
+Data API call, not an assertion resting on an earlier finding) rather
+than just trusting the `HttpEndpointEnabled` flag, which reports `True`
+looking fine while the actual capability is absent.
+
+**Decision: stop here, deliberately, rather than switch to a public
+endpoint + IAM auth to keep going.** That path is real and would work
+(install a Postgres driver, generate IAM auth tokens, connect over the
+internet) -- but it's a materially different, and materially less
+isolated, architecture than this project holds itself to everywhere
+else: every other AWS resource in this project that isn't meant to be
+public sits behind Cognito auth, API Gateway, or a VPC boundary with no
+inbound rules; this would be the first resource in the whole project
+with a credential-gated *public* network endpoint and no network-layer
+isolation at all. `VectorStack`'s VPC-isolated design (no NAT, no IGW,
+security group with zero inbound rules, reachable only via AWS's own
+internal Data API path) was a real defense-in-depth choice, not
+boilerplate -- switching to a public endpoint purely to finish a
+one-time learning exercise would trade that isolation property away for
+no benefit the project actually needs. Express Configuration's
+VPC-less/public-endpoint model is a genuine, reasonable AWS feature --
+explicitly framed as a quick-start/prototyping convenience (`aws rds
+create-db-cluster help`: "creates ... in seconds"), not the production
+pattern most compliance frameworks and standard architectures require a
+database to follow. A standard (non-free-tier) account would have hit
+none of this -- the original `VectorStack` CDK design would have
+deployed and worked exactly as planned.
+
+**What ships from Stage B**: `infra/scripts/create_pgvector_cluster.py`
+and `infra/scripts/destroy_pgvector_cluster.py` -- both real, live-run,
+working code (create a real cluster, confirm the exact Data API
+boundary with a live call, tear down cleanly with a live post-teardown
+`describe_db_clusters` confirmation) -- kept as the actual, honest
+deliverable of this stage: a precise, evidence-backed account
+constraint, not a working three-way retrieval comparison. The
+originally-planned `infra/stacks/vector_stack.py`, `infra/vector_app.py`,
+`infra/scripts/load_pgvector_index.py`, `infra/scripts/query_pgvector_
+evidence.py`, and `scripts/build_phase5_evidence.py` were written,
+lint/mypy-clean, and (for the CDK stack) live-deployed and destroyed
+once to confirm the VPC-less finding -- but removed rather than kept as
+unverified code once Data API was confirmed unusable, since none of
+them were ever actually exercised against a working Data API path. This
+project's own standing discipline is to never claim untested code
+works; keeping them around with a caveat would have been exactly that.
+
+---
+
 ## 2026-09-07 — Fixed the omega-3 false positive in safety.py, checked for what the fix could newly hide
 
 **Context**: follow-up to the previous entry's finding, once the user
