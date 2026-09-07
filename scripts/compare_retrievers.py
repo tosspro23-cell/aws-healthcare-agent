@@ -16,6 +16,27 @@ Run with:
 Regenerates docs/RETRIEVAL_COMPARISON.md, the same "regenerate a
 checked-in doc from a live run" pattern `scripts/update_eval_history.py`
 and `scripts/run_examples.py` already use.
+
+**Important caveat this comparison alone doesn't show**: a retrieval
+difference here does not automatically mean a different final answer.
+Checked directly (see docs/DECISIONS.md's Stage A entry for the full
+experiment): with the default MockNarrator, `HealthAgent.ask()`'s
+returned answer text is byte-for-byte identical between backends except
+for the trailing "Sources:" line -- `mock_narrator.py` only ever reads
+`retrieved_chunks` to build that citation footer (`_sources_line()`);
+every other line comes from `grounded_facts`/`questionnaire_modifiers`,
+never from a chunk's own `content`. With the real Bedrock narrator, the
+retrieved chunks' *names* do reach the model's prompt (via the
+already-grounded text `BedrockNarrator` asks it to rephrase), but two
+repeated runs per backend showed content differences at least as large
+between two runs of the *same* backend as between backends -- Bedrock's
+own generation isn't run at a fixed temperature/seed, so a couple of
+runs isn't enough evidence to attribute a "better" answer to retrieval
+choice specifically. Either way, the retrieved chunk's own text content
+is never actually inserted into a prompt or template anywhere in this
+codebase today -- retrieval currently drives *citations*, not
+*generation content*. See docs/DECISIONS.md for the full reasoning on
+whether/how to close that gap.
 """
 
 from __future__ import annotations
@@ -68,6 +89,18 @@ def main() -> None:
         "compare which chunks were surfaced, not the score magnitudes.",
         "",
         f"`overlap` = how many of the top {TOP_K} chunk ids the two backends agree on.",
+        "",
+        "**Does this reach the final answer?** With the default MockNarrator, no -- "
+        "`HealthAgent.ask()`'s returned text is identical between backends except for "
+        "the trailing `Sources:` line (`mock_narrator.py` only reads `retrieved_chunks` "
+        "to build that citation footer; every other line comes from `grounded_facts`/"
+        "`questionnaire_modifiers`, never from a chunk's own `content`). With the real "
+        "Bedrock narrator, retrieved chunks' *names* reach the model's prompt, but "
+        "repeated runs showed run-to-run variance (Bedrock isn't called at a fixed "
+        "temperature/seed) at least as large as the variance between backends -- not "
+        'enough evidence to attribute a "better" answer to retrieval choice alone. '
+        "Retrieval currently drives citations, not generation content, anywhere in this "
+        "codebase -- see docs/DECISIONS.md for the full experiment and reasoning.",
         "",
     ]
 

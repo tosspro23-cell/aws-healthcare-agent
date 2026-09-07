@@ -143,6 +143,66 @@ queries (see `agent.py`'s own tag construction) -- but the comparison
 is a real, concrete illustration of lexical vs. semantic retrieval's
 actual tradeoff, not just an assertion of one.
 
+**Follow-up question, and a real architectural gap it surfaced: does a
+better-retrieved chunk actually produce a better final answer?** Checked
+directly rather than assumed. With the default `MockNarrator`: no
+measurable effect at all -- `HealthAgent.ask()` run against the same 4
+questions under both backends returned byte-for-byte identical answer
+text except for the trailing `Sources:` line. Reading `mock_narrator.py`
+confirms why: `_sources_line()` is the *only* place `brief.retrieved_
+chunks` is read anywhere in that file (one `grep` match), and it only
+extracts `chunk.source_name`/`chunk.source_url` for the citation footer
+-- every other line of the template comes from `grounded_facts` and
+`questionnaire_modifiers`, never from a retrieved chunk's own `content`
+field. The knowledge-base text itself is inert for narration purposes;
+retrieval only selects which citations get named.
+
+With the real Bedrock narrator (what the deployed Workbench actually
+runs), the retrieved chunks' *names* do reach the model, since
+`BedrockNarrator.compose()` sends `MockNarrator`'s full output --
+including that same `Sources:` line -- as the "grounded text" to
+rephrase. A first real run on "What foods should I eat to lower my LDL
+cholesterol?" looked like a clean win for Chroma: its sources (NHLBI's
+"DASH Eating Plan", AHA's "lower-your-ldl") produced a specific,
+useful food list, while BM25's sources (a CRP MedlinePlus link, a
+"metabolic-priority" mock policy) produced a much more hedged "I can't
+recommend specific foods" response. **A second repeat of the exact same
+comparison undercut that conclusion**: BM25 this time also produced a
+specific food list (oats, barley, fatty fish, nuts), just as detailed as
+Chroma's. Bedrock's `converse` call isn't made at a fixed
+temperature/seed, so run-to-run generation variance for the *same*
+backend was at least as large as the difference between backends --
+two runs each is not enough evidence to attribute the first run's
+apparent difference to retrieval quality rather than sampling noise.
+
+**The honest conclusion, and what it says about the architecture, not
+just this experiment**: retrieval's actual reach into the final
+user-visible answer is currently narrow by design, not by accident. The
+mock path's entire safety argument rests on never emitting anything that
+wasn't already independently verified by `reasoning.py` (`grounded_
+facts`, structured `questionnaire_modifiers`) -- deliberately excluding
+free-text KB content from that template is the *correct* choice there,
+not a gap, since introducing unstructured prose into a path whose whole
+value proposition is "inspectable, deterministic, nothing unverified"
+would weaken exactly what makes it safe. The LLM path is different: it's
+already meant to synthesize free text, and today it only ever sees
+*citation names*, never the actual educational content those citations
+represent -- meaning its specific advice is drawn from the model's own
+training knowledge, not from this project's curated knowledge base, even
+though a knowledge base exists and was retrieved. That's the real,
+closable gap: extending `BedrockNarrator.compose()` (and the other LLM
+narrators) to include a short excerpt of each retrieved chunk's own
+`content` in the prompt -- clearly labeled as reference material, not
+new grounded fact -- would make the LLM's specific suggestions
+genuinely traceable to the vetted KB rather than incidental to the
+model's general knowledge, without touching `safety.py`'s existing
+post-hoc verification at all (the final text is still independently
+re-checked regardless of what fed the prompt, so the safety net doesn't
+need to change to add this). Not implemented as part of this stage --
+recorded here as a genuine, scoped follow-up rather than left as an
+unexamined assumption that retrieval quality obviously mattered
+end-to-end.
+
 ---
 
 ## 2026-09-06 — Deploy job skips its own approval gate for docs-only pushes
