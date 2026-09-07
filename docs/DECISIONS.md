@@ -114,6 +114,35 @@ BACKEND=chroma python -m care_agent ask ... --trace`) against the real
 committed index, real live Bedrock query embedding, confirm real,
 sensible results and the new `retriever_backend` trace field.
 
+**Retrieval-quality comparison, run for real** (`scripts/
+compare_retrievers.py`, output: `docs/RETRIEVAL_COMPARISON.md`): both
+backends queried directly (no `topic_filter`, isolating pure
+text-to-relevance matching from the full agent pipeline's own
+topic-tag construction) against 8 differently-styled real questions.
+Average top-5 overlap across all 8: 2.0/5 -- not identical, but not
+random either. The actual pattern, not assumed going in: **when a
+query shares vocabulary with the target content** (technical/exact
+phrasing -- "high hs-CRP inflammation marker", "vitamin D low what does
+that mean", "I have knee pain, how should I exercise?"), both backends
+converge heavily, often agreeing on the exact same top-2/top-3 ranked
+results. **When a query paraphrases rather than matching KB vocabulary
+directly** -- "What foods should I eat to lower my LDL cholesterol?"
+never says "nutrition" or "DASH" -- Chroma's semantic match stays
+on-topic (4 of its top 5 are genuinely about food/LDL) while BM25's
+tag-boost-free lexical score surfaces less relevant chunks. One concrete
+BM25 failure mode this surfaced: `kb_eval_003` ("Presentation quality
+expectations" -- a meta chunk about how this project should be reviewed
+in an interview, entirely unrelated to health content) appeared in
+BM25's top 5 for three unrelated real questions (LDL foods, knee pain,
+vitamin D), purely from generic word overlap ("should", "explain",
+"how") scoring well enough on IDF -- Chroma never surfaced it once. This
+is the honest headline finding, not overstated: neither backend is
+strictly better at this corpus size, and the project's own default
+(BM25) remains the right choice for `topic_filter`-heavy production
+queries (see `agent.py`'s own tag construction) -- but the comparison
+is a real, concrete illustration of lexical vs. semantic retrieval's
+actual tradeoff, not just an assertion of one.
+
 ---
 
 ## 2026-09-06 — Deploy job skips its own approval gate for docs-only pushes
