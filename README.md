@@ -213,11 +213,15 @@ loop. Every step is deterministic and independently testable:
    family history → more cautious follow-up framing without treating it as
    proof), and computes trend/staleness/missing-data limitations. Produces a
    `Brief`: a fully structured, source-attributed set of facts — no prose.
-6. **`retrieval`** — a from-scratch BM25 index over the 68-chunk
-   `knowledge_base.jsonl`, boosted by exact matches against each chunk's
+6. **`retrieval`** — a `Retriever` protocol (mirroring `narrator`'s own
+   swappable-backend shape) with two implementations: the default
+   `KnowledgeRetriever`, a from-scratch BM25 index over the 68-chunk
+   `knowledge_base.jsonl` boosted by exact matches against each chunk's
    `topic` tags (mapped from the ranked markers, the intent, and the
-   questionnaire modifiers actually in play). No embedding model or network
-   call; deterministic and inspectable.
+   questionnaire modifiers actually in play; no embedding model or network
+   call, deterministic and inspectable); and an optional `ChromaRetriever`
+   (`CARE_AGENT_RETRIEVER_BACKEND=chroma`) doing real semantic search over a
+   precomputed local Chroma index, described further below.
 7. **`narrator`** — turns the `Brief` into text. The default (`MockNarrator`)
    is plain string templates: no model call, no randomness. An optional
    LLM narrator (`AnthropicNarrator`) is described below.
@@ -261,9 +265,13 @@ enough trace/debug information" requirement.
   formal proof, and the numeric-grounding check that verifies *any*
   narrator's output has its own known, documented limits; see
   `docs/INDEPENDENT_REVIEW_FINDINGS.md`.)
-- **BM25 + topic-tag boosting instead of embeddings.** 68 documents doesn't
-  justify a vector store; a small, transparent, dependency-free ranker is
-  easier to review, debug, and test exhaustively (see `tests/test_retrieval.py`).
+- **BM25 + topic-tag boosting as the default, not embeddings.** 68 documents
+  doesn't justify a vector store for this app's own needs; a small,
+  transparent, dependency-free ranker is easier to review, debug, and test
+  exhaustively (see `tests/test_retrieval.py`). A real local vector backend
+  exists too (`CARE_AGENT_RETRIEVER_BACKEND=chroma`, see "Known limitations"
+  below) -- built as a learning/portfolio exercise, not because this corpus
+  needed it.
 - **Classification is never recomputed.** The mock bloodwork already carries
   a `classification` field. The catalog's numeric ranges are read for
   context (importance ranking, safety notes) but the agent trusts the
@@ -407,9 +415,19 @@ no credentials to try immediately:
   patterns falls through to the general intent rather than a more specific
   one. A small trained/few-shot classifier would generalize further without
   giving up determinism if its confidence were thresholded and logged.
-- **Retrieval is lexical only.** BM25 + tag boosting works well at this
-  corpus size but won't generalize to a large, noisier KB without an
-  embedding-based retriever behind the same interface.
+- **Retrieval is lexical by default; an embedding-based backend exists but
+  is local/CLI-only.** BM25 + tag boosting (the default, `bm25`) works well
+  at this corpus size but won't generalize to a large, noisier KB.
+  `Retriever` (`src/care_agent/retrieval/base.py`) is a `Protocol` mirroring
+  `Narrator`'s own swappable-backend shape, and `ChromaRetriever`
+  (`CARE_AGENT_RETRIEVER_BACKEND=chroma`) is a real, tested second
+  implementation -- a local Chroma vector index (`data/vector_index/`,
+  precomputed via `scripts/build_vector_index.py` against Bedrock Titan
+  Embeddings) with only the live query embedded per request. It's kept at
+  the same status as the `anthropic`/`openai`/`google` narrators: fully
+  implemented and tested, never wired into the deployed Lambda (`chromadb`
+  pulls in a compiled `hnswlib` wheel that this project's flat-copy Lambda
+  packaging can't handle without new work -- see `docs/DECISIONS.md`).
 - **No conversation memory.** Each `ask()` is a single turn; a follow-up
   ("what about my triglycerides specifically?") reruns the whole pipeline
   from scratch rather than refining a prior answer.

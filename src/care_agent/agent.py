@@ -77,6 +77,17 @@ def _select_narrator():
     )
 
 
+def _select_retriever(kb_path):
+    backend = os.environ.get("CARE_AGENT_RETRIEVER_BACKEND", "bm25").lower()
+    if backend == "bm25":
+        return KnowledgeRetriever(kb_path=kb_path)
+    if backend == "chroma":
+        from care_agent.retrieval.chroma_retriever import ChromaRetriever
+
+        return ChromaRetriever(kb_path=kb_path)
+    raise ValueError(f"Unknown CARE_AGENT_RETRIEVER_BACKEND={backend!r}; expected 'bm25' or 'chroma'.")
+
+
 class HealthAgent:
     def __init__(
         self,
@@ -84,15 +95,22 @@ class HealthAgent:
         catalog_path: Path | str = DEFAULT_CATALOG_PATH,
         kb_path: Path | str = DEFAULT_KB_PATH,
         narrator=None,
+        retriever=None,
     ):
         self.data_store = DataStore(data_dir)
         self.catalog = BiomarkerCatalog(catalog_path)
-        self.retriever = KnowledgeRetriever(kb_path=kb_path)
+        self.retriever = retriever or _select_retriever(kb_path)
         self.narrator = narrator or _select_narrator()
         self._mock_narrator = MockNarrator()
 
     def ask(self, user_id: str, question_text: str, question_id: str | None = None) -> AgentResponse:
-        trace = AgentTrace(question_id=question_id, user_id=user_id, intent="", narrator_backend=self.narrator.backend_name)
+        trace = AgentTrace(
+            question_id=question_id,
+            user_id=user_id,
+            intent="",
+            narrator_backend=self.narrator.backend_name,
+            retriever_backend=self.retriever.backend_name,
+        )
 
         intent_result = classify(question_text)
         trace.intent = intent_result.intent

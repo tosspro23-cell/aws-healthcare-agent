@@ -322,11 +322,34 @@ closing section for the full reasoning on each.
 
 ## Phase 5 — Vector retrieval experiment (optional, lowest priority)
 
-- ⬜ Try vector retrieval over the existing 68-chunk `knowledge_base.jsonl`
-  using either pgvector (Aurora Serverless) or OpenSearch Serverless.
-- Not because keyword/BM25 retrieval is insufficient at this corpus size —
-  it isn't — but as a hands-on learning exercise.
-- ⬜ Tear down whatever gets provisioned afterward to avoid ongoing cost.
+Not because keyword/BM25 retrieval is insufficient at this corpus size —
+it isn't — but as a hands-on learning exercise, done in two independent
+stages so the larger, riskier one doesn't block the smaller, safer one.
+
+- ✅ **Stage A — local Chroma backend.** `Retriever` (`src/care_agent/
+  retrieval/base.py`) is a `Protocol` mirroring `narrator`'s own
+  swappable-backend shape; `ChromaRetriever` is a real, fully tested
+  second implementation doing semantic search over a local Chroma index
+  (`data/vector_index/`, precomputed via `scripts/build_vector_index.py`
+  against real Bedrock Titan Embeddings — 68 real embedding calls, see
+  that script's own docstring) with only the live query embedded per
+  request. Selectable via `CARE_AGENT_RETRIEVER_BACKEND=chroma`. Kept
+  local/CLI-only, same status as the `anthropic`/`openai`/`google`
+  narrators — `chromadb` pulls in a compiled `hnswlib` wheel this
+  project's flat-copy Lambda packaging (`infra/build_lambda_asset.py`)
+  can't handle without new work, deliberately out of scope for this
+  stage. See `docs/DECISIONS.md` for the full design (why Chroma over
+  FAISS, the read-only-filesystem copy-before-open design, and why this
+  wasn't wired into the deployed Lambda).
+- ⬜ **Stage B — one-time pgvector-on-Aurora-Serverless-v2 experiment**,
+  not yet started. Plan: reuse Stage A's committed `data/knowledge_base_
+  embeddings.jsonl` (no re-embedding), build a small opt-in `VectorStack`
+  via a fully separate CDK app entrypoint (never wired into `infra/app.py`
+  or `cdk deploy --all`, so it structurally cannot be touched by CI),
+  collect real comparison-query evidence against BM25 and Chroma, then
+  tear it down (`cdk destroy`) to stop billing — this project's first-ever
+  VPC/RDS construct, and a materially larger, higher-risk unit of work
+  than Stage A, so deliberately sequenced after it rather than alongside it.
 
 ## Phase 6 — Frontend / Workbench (complete: all three backend paths, full async trace, public hosting)
 

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from care_agent.models import KnowledgeChunk, RetrievedChunk
 
-DEFAULT_KB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "knowledge_base.jsonl"
+DEFAULT_KB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "knowledge_base.jsonl"
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-]*")
 
@@ -107,6 +107,8 @@ class _Doc:
 
 class KnowledgeRetriever:
     """A small BM25 index with topic-tag boosting, kept dependency-free."""
+
+    backend_name = "bm25"
 
     K1 = 1.5
     B = 0.75

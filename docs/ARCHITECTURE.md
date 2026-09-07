@@ -11,7 +11,9 @@ the module map and an explicit policy → code traceability table.
 | `models.py` | Typed dataclasses shared everywhere; no logic | — |
 | `data_store.py` | Loads/parses the JSON dataset, per-user scoped | `models` |
 | `catalog.py` | Read-only SQLite biomarker metadata lookups | `models` |
-| `retrieval.py` | BM25 + topic-tag ranking over `knowledge_base.jsonl` | `models` |
+| `retrieval/base.py` | `Retriever` protocol (mirrors `narrator/base.py`'s shape) | `models` |
+| `retrieval/bm25_retriever.py` | Default: BM25 + topic-tag ranking over `knowledge_base.jsonl` | `models` |
+| `retrieval/chroma_retriever.py` | Optional local vector search (`CARE_AGENT_RETRIEVER_BACKEND=chroma`), CLI-only | `models`, `retrieval.bm25_retriever` |
 | `staleness.py` | Panel-age policy (fresh / potentially stale / stale) | — |
 | `trend.py` | Two-point trend computation, unit/availability gated | `models` |
 | `intent.py` | Regex-based question routing | — |

@@ -260,6 +260,7 @@ class AgentTrace(DictMixin):
     limitations: list[Limitation] = field(default_factory=list)
     safety_checks: list[SafetyCheck] = field(default_factory=list)
     narrator_backend: str = "mock"
+    retriever_backend: str = "bm25"
     # Populated only when a non-mock narrator's draft failed a safety
     # check and the agent fell back to the deterministic narrator (see
     # `agent.py` and the "narrator_fallback" entry this produces in

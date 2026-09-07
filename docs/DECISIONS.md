@@ -8,6 +8,114 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-07 — Local vector retrieval (Chroma), Stage A of a two-stage learning exercise
+
+**Context**: A deliberate, explicitly-optional Phase 5 item (see
+`AWS_ROADMAP.md`) -- BM25 genuinely isn't insufficient at this 68-chunk
+corpus size, this is a hands-on-learning + portfolio addition, done as
+two independent stages so the larger, riskier cloud stage (a one-time
+pgvector-on-Aurora-Serverless-v2 experiment, not yet started) can't block
+or complicate the smaller, safer local one.
+
+**Decision, the interface**: `retrieval.py` became a `retrieval/` package,
+mirroring `narrator/`'s existing swappable-backend shape exactly, for the
+same reason narrator has several backends -- retrieval just gained its
+second real one. `retrieval/base.py` defines `Retriever` as a
+`typing.Protocol` (matching `Narrator`, not an ABC); `agent.py` gained
+`_select_retriever()` (mirroring `_select_narrator()`'s env-var-driven,
+lazy-import-per-branch shape) and a `retriever=None` constructor
+parameter on `HealthAgent` -- a real gap this closed, since retrieval
+previously had no injection seam at all (`self.retriever =
+KnowledgeRetriever(kb_path=kb_path)` was hardcoded). `AgentTrace` gained
+a `retriever_backend` field alongside the existing `narrator_backend`,
+for the same reason: visible in `--trace` output which backend actually
+answered.
+
+**Decision, Chroma over FAISS**: the user has hands-on experience with
+both. Chroma was chosen specifically because it's pure Python + SQLite
+persistence, which fits this project's existing Lambda packaging model
+(`infra/build_lambda_asset.py` does a plain `shutil.copytree`, no `pip
+install`/Docker bundling step) far better than FAISS's compiled
+`hnswlib`-backed wheel would. **This turned out to be only half the
+packaging problem**: `chromadb` itself still pulls in compiled
+dependencies (also `hnswlib`, among others) via a platform-specific
+wheel, so even Chroma can't be added to the deployed Lambda's flat-copy
+asset without a real `pip install --platform ...`-style step -- new
+packaging work, not attempted here. `ChromaRetriever` is therefore kept
+**local/CLI-only for now**, deliberately, at the same status this
+project's `anthropic`/`openai`/`google` narrators already have: fully
+implemented, fully tested, never wired into any deployed Lambda's
+environment. Extending `build_lambda_asset.py` to actually bundle it is
+documented future work, not silently dropped.
+
+**Decision, embeddings**: never bundle a heavy embedding library
+(`sentence-transformers`/`torch` would be multi-hundred-MB, infeasible
+for the flat-copy model regardless of Chroma's own packaging). Instead:
+`scripts/build_vector_index.py` makes 68 real, one-time Bedrock Titan
+Embeddings calls (`amazon.titan-embed-text-v2:0`, confirmed live against
+this account rather than assumed -- request shape `{"inputText": ...,
+"dimensions": 512, "normalize": true}`, response has an `embedding` field
+-- see that script and `chroma_retriever.py`'s own module docstring) to
+precompute the corpus's embeddings once, committing both a JSONL sidecar
+(`data/knowledge_base_embeddings.jsonl`, the single source of truth these
+vectors -- also what a future Stage B would reuse rather than
+re-embedding) and the resulting Chroma index directory
+(`data/vector_index/`) to git, mirroring the already-committed, generated
+`data/mock_biomarker_catalog.sqlite` as precedent for a generated binary
+artifact checked in and bundled via flat copy. Only the *live query text*
+is embedded at request time, via one small Bedrock call -- the same "one
+paid model call the app is already allowed to make" policy every other
+cloud-backed component here follows. `tests/test_vector_index_freshness.py`
+is a free, always-run (no `chromadb`/`boto3` needed) regression guard
+that the committed sidecar's id set and embedding dimension still match
+the live KB and `EMBEDDING_DIMENSIONS` constant.
+
+**A real, if minor, correctness fix found while building this**: Chroma's
+raw default distance space is squared L2, not cosine -- `1.0 - distance`
+against that default produced negative, unbounded "similarity" values
+(confirmed by an actual smoke-test run, not assumed). Fixed by explicitly
+setting `metadata={"hnsw:space": "cosine"}` on collection creation, after
+which `1.0 - distance` is a real cosine similarity in `[-1, 1]`. Ranking
+*order* was identical either way (squared L2 over normalized vectors is a
+monotonic transform of cosine distance), so this was a score-interpretability
+fix, not a retrieval-quality bug -- caught before committing the index by
+comparing raw output against the expected range, the same "verify the
+actual behavior, don't assume" discipline this project applies everywhere
+else.
+
+**Decision, the read-only-filesystem copy**: `ChromaRetriever` never opens
+a `PersistentClient` directly against the committed `data/vector_index/`
+-- it copies it to a fresh `tempfile.mkdtemp()` location first (cached
+per source path so repeated construction in one process doesn't recopy),
+unconditionally, not just as a Lambda-specific `/var/task`-is-read-only
+workaround. Reasoning: never mutate a committed, version-controlled
+directory as a side effect of opening it for reads, locally or deployed --
+Chroma's persistent client can attempt to write lock/WAL files on open
+even for read-mostly access.
+
+**Verification**: `tests/test_chroma_retriever.py` (skipped via
+`pytest.importorskip("chromadb")` when the optional extra isn't
+installed -- CI's default `pip install -e ".[dev]"` never installs it,
+confirmed by running the exact CI install in a fresh venv and checking
+the skip is clean, not an error) builds a small fully-synthetic index
+per test (hand-picked orthogonal unit vectors, never the real 68-chunk
+corpus) with an injected fake `embed_fn`, so ranking/`top_k`/topic-filter-
+boost/`get_by_id` assertions are deterministic without any real Bedrock
+call -- mirroring `tests/test_bedrock_narrator.py`'s exact two-layer
+pattern (fake business logic + `unittest.mock.patch("boto3.client")` for
+the default wiring). Full suite (`pytest -q --cov`, `ruff check`, `ruff
+format --check`, `mypy src`) reconfirmed both with the `chroma` extra
+installed (91% coverage, 100% on the new module) and, separately, in a
+from-scratch venv matching CI's exact install (no `chroma`/`bedrock`
+extras) to directly confirm the skip path and that `mypy` doesn't choke
+on `chromadb`'s transitively-installed `numpy` stubs when `chromadb`
+itself is absent. Real end-to-end CLI runs (`CARE_AGENT_RETRIEVER_
+BACKEND=chroma python -m care_agent ask ... --trace`) against the real
+committed index, real live Bedrock query embedding, confirm real,
+sensible results and the new `retriever_backend` trace field.
+
+---
+
 ## 2026-09-06 — Deploy job skips its own approval gate for docs-only pushes
 
 **Context**: The eval-trend-chart push (previous entry) required the
