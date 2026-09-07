@@ -275,6 +275,58 @@ def test_numeric_grounding_flags_ungrounded_date():
     assert "2099-01-01" in check.detail
 
 
+def test_numeric_grounding_does_not_flag_a_digit_inside_a_hyphenated_compound_word():
+    """Regression test for a real live failure, not found by inspection:
+    asking the real Bedrock narrator about food for LDL cholesterol (with
+    reference material about fish -- see docs/DECISIONS.md) made it write
+    "omega-3 fatty acids" often enough to fail this check on the bare "3"
+    in 3 of 6 real runs. The character right before "3" is a hyphen, not
+    a word character, so the original lookbehind didn't exclude it even
+    though the hyphen itself is part of an ordinary English compound, not
+    a sign or a genuinely separate number. Covers the general class
+    (omega-3, COVID-19, type-2, stage-4), not just the one example that
+    was caught live."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    for text in [
+        "Your LDL-C is 162 mg/dL. Fish rich in omega-3 fatty acids may help.",
+        "Your LDL-C is 162 mg/dL. Current COVID-19 guidance is unrelated here.",
+        "Your LDL-C is 162 mg/dL, consistent with type-2 risk factors in general education.",
+        "Your LDL-C is 162 mg/dL. This is not stage-4 kidney disease.",
+    ]:
+        check = verify_numeric_grounding(text, facts)
+        assert check.passed is True, f"expected {text!r} to pass (compound word, not a real ungrounded number)"
+
+
+def test_numeric_grounding_still_flags_both_numbers_in_a_genuine_hyphenated_range():
+    """The fix above must not also swallow a real numeric range: unlike a
+    hyphenated compound *word*, "5-10" is two separate digit-only numbers
+    joined by a hyphen, and both are still ungrounded generic-guideline
+    numbers that should still require grounding -- the fix only excludes
+    a digit immediately preceded by a *letter* then a hyphen, never a
+    digit-then-hyphen."""
+    facts: list[GroundedFact] = []
+    check = verify_numeric_grounding("Aim for 5-10 servings of vegetables.", facts)
+    assert check.passed is False
+    assert "5" in check.detail
+    assert "10" in check.detail
+
+
+def test_numeric_grounding_known_gap_a_hyphen_glued_dose_is_not_caught_by_this_check_alone():
+    """Documents an accepted, narrow residual gap rather than leaving it
+    silently undiscovered: the same fix that stops "omega-3" from being
+    misread also means a deliberately hyphen-glued number right after a
+    word ("medication-500mg") is invisible to *this* check. No real
+    narrator output has ever produced this phrasing (real dosing language
+    reads "take 500 mg", not "medication-500mg"), and check_no_dosing's
+    own independent pattern list is a separate defense layer against
+    realistic dosing phrasing -- but this specific check alone does not
+    catch this specific contrived construction, and this test says so
+    explicitly rather than leaving that gap unexamined."""
+    facts: list[GroundedFact] = []
+    check = verify_numeric_grounding("Try medication-500mg for this.", facts)
+    assert check.passed is True  # the known gap: "500" is not detected here
+
+
 def test_run_safety_checks_aggregates_all_four():
     facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
     report = run_safety_checks("You have diabetes with LDL 162 mg/dL, take 50 mg daily.", facts)

@@ -8,6 +8,58 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-07 — Fixed the omega-3 false positive in safety.py, checked for what the fix could newly hide
+
+**Context**: follow-up to the previous entry's finding, once the user
+explicitly asked for the `_NUMBER_RE` fix and to specifically look for
+counterexamples the fix itself might introduce -- not just "does this
+fix the one case observed live."
+
+**Decision**: `_NUMBER_RE` gained a second negative lookbehind,
+`(?<![A-Za-z]-)`, alongside the original `(?<![\w.])` -- excludes a
+match starting immediately after a *letter* followed by a hyphen
+(`omega-3`, `COVID-19`, `type-2`, `stage-4`), while deliberately leaving
+a match starting after a *digit* followed by a hyphen untouched, so a
+genuine numeric range ("5-10 servings") still flags both numbers exactly
+as before -- verified directly against 14 hand-picked cases (compounds,
+ranges, negative numbers in prose and parens, unit-glued values,
+internal identifiers) before touching the real file, not just the one
+case that failed live.
+
+**The counterexample search the user asked for did find one real, if
+narrow, residual gap**: the same lookbehind that stops "omega-3" from
+being misread also hides a number *deliberately* hyphen-glued to a
+preceding word from this one check -- `verify_numeric_grounding("Try
+medication-500mg for this.", [])` now passes when it previously
+wouldn't have. Judged acceptable and left as-is rather than chased
+further: no real narrator output (mock or any of the five LLM backends,
+across everything run so far) has ever produced this phrasing --
+natural dosing language reads "take 500 mg", which `check_no_dosing`'s
+own independent pattern list already catches regardless of this fix --
+and closing this one narrow, contrived construction without a new false
+positive on a real compound word would need a much more complex rule for
+a benefit that's speculative, not observed. Recorded explicitly as a
+known gap (a dedicated test asserts it, docstring updated, this entry
+exists) rather than silently introduced and left for someone else to
+discover later -- the same "honest about limits, not a claim of
+completeness" standard `safety.py`'s own module docstring already holds
+itself to.
+
+**Verification**: `tests/test_safety.py` gained three tests -- the fix
+itself (four real compound-word phrasings, all now pass), the regression
+guard (the hyphenated range case, still correctly fails on both numbers),
+and the known-gap test (asserts the hyphen-glued dose passes, documenting
+rather than hiding it). Full suite unaffected (204 passed, unchanged
+coverage). Re-ran the exact live experiment from the previous entry
+end-to-end against real Bedrock, not just the unit tests: 8/8 real runs
+of "What foods should I eat to lower my LDL cholesterol?" (Chroma
+retriever) returned `narrator_backend=bedrock` with zero fallbacks,
+against the previous entry's measured 3/6 fallback rate before this fix
+-- the same live scenario that exposed the bug, now confirmed fixed
+live, not just believed fixed from the regex change alone.
+
+---
+
 ## 2026-09-07 — Closed the retrieval-to-generation gap for LLM narrators; found a real false-positive it exposed in safety.py
 
 **Context**: The previous entry's honest finding was that retrieval drove

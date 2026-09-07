@@ -43,10 +43,16 @@ described above, closes the "real number, wrong marker" bypass for any
 fact carrying a ``display_name`` -- but a number attached to a unit *not*
 in ``_KNOWN_UNITS``, or a fact with no ``display_name`` to check (e.g. a
 panel-age or questionnaire-derived fact, which has no single "marker
-name" to begin with), still only gets the weaker value-only check. None
-of this is a substitute for ``agent.py``'s existing fallback-to-mock-
-narrator behavior on any check failure, which remains the actual safety
-net.
+name" to begin with), still only gets the weaker value-only check.
+``_NUMBER_RE`` also won't flag a number immediately glued to a preceding
+word by a hyphen ("medication-500mg") -- added deliberately to stop
+flagging hyphenated English compounds ("omega-3", "COVID-19") as fake
+ungrounded numbers, a real, measured cost found live (see
+``_NUMBER_RE``'s own comment and ``docs/DECISIONS.md``), at the accepted
+cost of this one narrow, contrived phrasing no real narrator output has
+ever produced. None of this is a substitute for ``agent.py``'s existing
+fallback-to-mock-narrator behavior on any check failure, which remains
+the actual safety net.
 """
 
 from __future__ import annotations
@@ -107,14 +113,41 @@ _VALUE_UNIT_RE = re.compile(r"(-?\d+\.?\d*)\s?(" + "|".join(re.escape(u) for u i
 
 # No longer requires a non-word/non-period lookahead after the digits --
 # that used to make "999mg" (no space before the unit) invisible to this
-# check entirely, since a following letter blocked the match. Leading
-# lookbehind is unchanged: still won't match the "006" inside an
-# identifier like "kb_a1c_006", since "_" is a word character -- and still
-# won't treat the hyphen in a hyphenated identifier ("test-162") as a sign,
-# since the position right after a word character is excluded the same way
-# it always was; `-?` only ever captures a hyphen preceded by whitespace,
-# punctuation, or the start of the text.
-_NUMBER_RE = re.compile(r"(?<![\w.])-?\d+\.?\d*")
+# check entirely, since a following letter blocked the match. First
+# lookbehind: still won't match the "006" inside an identifier like
+# "kb_a1c_006", since "_" is a word character.
+#
+# Second lookbehind added after a real live failure, not found by
+# inspection: a hyphenated English compound -- "omega-3", "COVID-19",
+# "type-2", "stage-4" -- has its trailing digit(s) extracted as if they
+# were a standalone ungrounded number, since the character immediately
+# before the digit is a hyphen (not `\w`/`.`), even though the hyphen
+# itself is correctly excluded from starting a match (the first
+# lookbehind already blocks that, since a letter precedes the hyphen).
+# Reproduced live: asking the real Bedrock narrator "what foods should I
+# eat" with reference material about fish (see docs/DECISIONS.md) made it
+# write "omega-3 fatty acids" often enough to fail numeric_grounding on
+# "3" in 3 of 6 real runs -- a real, measured cost, not a hypothetical
+# one. `(?<![A-Za-z]-)` excludes a match starting right after a
+# letter-then-hyphen, fixing exactly that class, while deliberately NOT
+# excluding a match after a *digit*-then-hyphen: "aim for 5-10 servings"
+# must still flag both 5 and 10 (a real, if separate, source of
+# unnecessary fallback for generic-guideline numbers -- accepted as
+# consistent with this check's own conservative "every standalone number
+# needs grounding" design, not a bug this fix should also paper over).
+#
+# **Known residual gap, not closed by this fix**: a hyphen immediately
+# after a letter also hides a *deliberately* hyphen-glued number from
+# this specific check -- "medication-500mg" no longer flags "500" the
+# way "500 mg" would. This is a narrow, contrived phrasing no observed
+# narrator output has ever produced (real dosing language reads "take
+# 500 mg", not "medication-500mg"), and `check_no_dosing`'s own
+# independent pattern list is a separate defense layer for realistic
+# dosing phrasing regardless of this check -- but it is a real, accepted
+# limit of this specific regex, consistent with this file's own "Honest
+# limits, not a claim of completeness" section above, not a claim that
+# this closes every hyphen-based bypass.
+_NUMBER_RE = re.compile(r"(?<![\w.])(?<![A-Za-z]-)-?\d+\.?\d*")
 _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 # `[*_]{0,2}` tolerates a numbered list item wrapped in Markdown emphasis
 # ("**1. See your clinician**"), not just a bare "1. " -- caught live
