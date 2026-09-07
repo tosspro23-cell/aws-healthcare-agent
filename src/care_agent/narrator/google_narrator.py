@@ -6,10 +6,12 @@ falls back to ``MockNarrator``. Nothing in this file is required for this
 project's "no paid API" goal or for tests -- Gemini has a free usage tier,
 but this backend is still fully optional.
 
-Same safety contract as the other cloud/local narrators: only the mock
-narrator's already-grounded bullet list is sent to the model, and
-``agent.py`` re-verifies the returned text, falling back to the mock
-narrator if it fails a safety check.
+Same safety contract as every other narrator: the model only ever sees
+the mock narrator's already-grounded bullet list plus a short, labeled
+excerpt of the top few retrieved knowledge-base chunks
+(``_prompt.build_user_message``), and ``agent.py`` re-verifies the
+returned text, falling back to the mock narrator if it fails a safety
+check regardless of what fed the prompt.
 
 Uses the ``google-genai`` SDK (``pip install google-genai``, imported as
 ``from google import genai``). If Google renames or reshapes this SDK after
@@ -22,7 +24,7 @@ from __future__ import annotations
 import os
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT
+from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -54,10 +56,7 @@ class GoogleNarrator:
 
     def compose(self, brief: Brief, question_text: str, profile: UserProfile) -> str:
         grounded_text = self._mock.compose(brief, question_text, profile)
-
-        user_content = (
-            f"User's question: {question_text}\n\nGrounded facts and constraints to rephrase (do not add to this list):\n{grounded_text}"
-        )
+        user_content = build_user_message(question_text, grounded_text, brief.retrieved_chunks)
 
         try:
             response = self._client.models.generate_content(

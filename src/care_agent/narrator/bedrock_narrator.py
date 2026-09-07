@@ -17,11 +17,14 @@ IAM: the caller needs `bedrock:InvokeModel` scoped to the specific model
 or wherever this backend is wired into a deployed Lambda for the actual
 grant. No broad `bedrock:*` permission is required or should be granted.
 
-Same safety contract as every other narrator: only the mock narrator's
-already-grounded bullet list is sent to the model -- never raw dataset
-JSON -- and `agent.py` re-verifies the returned text with
-`safety.run_safety_checks`, falling back to the mock narrator if it fails
-any check. This is the whole point of Phase 4's test: does that same
+Same safety contract as every other narrator: the model only ever sees
+the mock narrator's already-grounded bullet list plus a short, labeled
+excerpt of the top few retrieved knowledge-base chunks (`_prompt.
+build_user_message` -- general educational background, explicitly not
+a new grounded fact) -- never raw dataset JSON -- and `agent.py`
+re-verifies the returned text with `safety.run_safety_checks`, falling
+back to the mock narrator if it fails any check regardless of what fed
+the prompt. This is the whole point of Phase 4's test: does that same
 safety net hold up against a model with a materially different output
 style, without having been rewritten for it?
 """
@@ -31,7 +34,7 @@ from __future__ import annotations
 import os
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT
+from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -66,22 +69,11 @@ class BedrockNarrator:
 
     def compose(self, brief: Brief, question_text: str, profile: UserProfile) -> str:
         grounded_text = self._mock.compose(brief, question_text, profile)
+        user_message = build_user_message(question_text, grounded_text, brief.retrieved_chunks)
 
         response = self._client.converse(
             modelId=self._model_id,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "text": (
-                                f"User's question: {question_text}\n\n"
-                                f"Grounded facts and constraints to rephrase (do not add to this list):\n{grounded_text}"
-                            )
-                        }
-                    ],
-                }
-            ],
+            messages=[{"role": "user", "content": [{"text": user_message}]}],
             system=[{"text": SYSTEM_PROMPT}],
             inferenceConfig={"maxTokens": 500},
         )

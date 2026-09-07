@@ -6,12 +6,15 @@ Off by default. Enable with ``CARE_AGENT_NARRATOR_BACKEND=anthropic`` and
 file is required for this project's "no paid API" goal or for tests.
 
 Safety design: the LLM is given the same grounded bullet points the mock
-narrator uses -- never raw JSON, never the full dataset -- and is instructed
-to rephrase only, not add numbers or claims. That instruction is a courtesy,
-not the guarantee: the real guarantee is that ``agent.py`` re-runs
-``safety.run_safety_checks`` (including numeric-grounding verification) on
-whatever text comes back, LLM or not, and falls back to the mock narrator's
-output if the LLM output fails any check.
+narrator uses, plus a short, labeled excerpt of the top few retrieved
+knowledge-base chunks (``_prompt.build_user_message``) -- never raw
+JSON, never the full dataset -- and is instructed to rephrase the
+grounded facts only, treating the reference material as general
+background, not a source of new numbers or claims. That instruction is
+a courtesy, not the guarantee: the real guarantee is that ``agent.py``
+re-runs ``safety.run_safety_checks`` (including numeric-grounding
+verification) on whatever text comes back, LLM or not, and falls back
+to the mock narrator's output if the LLM output fails any check.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from __future__ import annotations
 import os
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT
+from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -52,20 +55,13 @@ class AnthropicNarrator:
         # dataset JSON and cannot introduce facts the deterministic core
         # didn't already verify.
         grounded_text = self._mock.compose(brief, question_text, profile)
+        user_message = build_user_message(question_text, grounded_text, brief.retrieved_chunks)
 
         message = self._client.messages.create(
             model=self._model,
             max_tokens=500,
             system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"User's question: {question_text}\n\n"
-                        f"Grounded facts and constraints to rephrase (do not add to this list):\n{grounded_text}"
-                    ),
-                }
-            ],
+            messages=[{"role": "user", "content": user_message}],
         )
         # message.content can include non-text blocks (tool use, thinking, ...);
         # getattr rather than block.text keeps this safe for mypy and for any

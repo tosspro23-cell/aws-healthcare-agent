@@ -7,11 +7,13 @@ or local LLM if you want" path the project brief explicitly allows, and it
 needs zero pip installs (stdlib ``urllib`` only), no API key, no cost, and no
 data leaving the machine -- everything stays on localhost.
 
-Same safety contract as ``AnthropicNarrator``: it only rephrases the mock
-narrator's already-grounded bullet list -- the model never sees raw dataset
-JSON -- and ``agent.py`` re-verifies its output with the same
-diagnosis/dosing/numeric-grounding checks, falling back to the mock narrator
-if it fails any of them.
+Same safety contract as every other narrator: the model only ever sees
+the mock narrator's already-grounded bullet list plus a short, labeled
+excerpt of the top few retrieved knowledge-base chunks
+(``_prompt.build_user_message``) -- never raw dataset JSON -- and
+``agent.py`` re-verifies its output with the same diagnosis/dosing/
+numeric-grounding checks, falling back to the mock narrator if it fails
+any of them, regardless of what fed the prompt.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import urllib.error
 import urllib.request
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT
+from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -50,18 +52,13 @@ class OllamaNarrator:
         # Same pattern as AnthropicNarrator: the model only ever sees the
         # already-grounded bullet list, never the raw dataset.
         grounded_text = self._mock.compose(brief, question_text, profile)
+        user_message = build_user_message(question_text, grounded_text, brief.retrieved_chunks)
 
         payload = {
             "model": self._model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"User's question: {question_text}\n\n"
-                        f"Grounded facts and constraints to rephrase (do not add to this list):\n{grounded_text}"
-                    ),
-                },
+                {"role": "user", "content": user_message},
             ],
             "stream": False,
         }

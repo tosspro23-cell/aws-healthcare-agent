@@ -298,13 +298,20 @@ enough trace/debug information" requirement.
 
 Four pluggable narrator backends exist besides the default mock one, all
 sharing one contract: each does exactly one thing — *rephrase* the mock
-narrator's already-grounded bullet list into more natural prose. The model
-never sees raw dataset JSON, only the already-verified facts and a shared
+narrator's already-grounded bullet list into more natural prose, optionally
+drawing on a short, clearly labeled excerpt of the top few retrieved
+knowledge-base chunks as general background (`narrator/_prompt.py::
+build_user_message` — shared by all five LLM backends, including Bedrock —
+explicitly instructed as reference material, not a new grounded fact; the
+mock narrator itself never reads a chunk's content, only its citation, on
+purpose — see `docs/DECISIONS.md`). The model never sees raw dataset JSON,
+only the already-verified facts, that reference excerpt, and a shared
 system prompt (`narrator/_prompt.py`) that also requires it to keep every
 specific number and unit rather than vaguely paraphrasing it away ("LDL-C
 162 mg/dL", not just "elevated"). Every backend's output still passes
-through the same `run_safety_checks`; if it fails any check, the agent
-transparently falls back to the mock narrator and the trace records why
+through the same `run_safety_checks` regardless of what fed the prompt; if
+it fails any check, the agent transparently falls back to the mock
+narrator and the trace records why
 (see `tests/test_agent_edge_cases.py::test_unsafe_llm_output_triggers_fallback_to_mock`,
 `::test_ungrounded_number_from_llm_triggers_fallback`, and the equivalent
 tests in `test_ollama_narrator.py` for that guarantee exercised against

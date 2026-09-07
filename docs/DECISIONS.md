@@ -8,6 +8,81 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-09-07 — Closed the retrieval-to-generation gap for LLM narrators; found a real false-positive it exposed in safety.py
+
+**Context**: The previous entry's honest finding was that retrieval drove
+*citations*, not *generation content*, for every narrator -- deliberately
+correct for `MockNarrator` (its whole safety argument is "template over
+already-verified structured facts only"), but a real, closable gap for
+the LLM narrators, which only ever saw citation *names*, never the
+educational text those citations represent.
+
+**Decision**: added `narrator/_prompt.py::build_user_message()`, a single
+shared function replacing five near-identical, duplicated f-strings (one
+per narrator -- Bedrock/Anthropic/OpenAI/Google/Ollama all built the
+exact same "User's question... Grounded facts..." string inline). When
+`brief.retrieved_chunks` is non-empty, it now appends a clearly labeled
+"Reference material" section -- the top `MAX_REFERENCE_CHUNKS` (3)
+chunks' own `content`, explicitly instructed as "general educational
+background... not a new grounded fact... do not restate any specific
+number from here unless it already appears in the grounded facts above."
+`SYSTEM_PROMPT` gained the same instruction. With no retrieved chunks
+(every existing narrator test's `Brief()`), the function produces
+byte-identical output to the old inline string -- confirmed by a
+dedicated test (`tests/test_prompt.py`) before touching any narrator,
+and all five pre-existing narrator test suites (bedrock/openai/google
+already in CI's optional-extra tier; ollama already unconditional; a
+from-scratch manual smoke test for `AnthropicNarrator`, which has no
+test file at all -- a pre-existing gap, not introduced here) still pass
+unmodified. `safety.py` was not touched -- the instruction is a
+courtesy, same as always; the real guarantee stays `run_safety_checks`
+re-verifying whatever text comes back regardless of what fed the prompt.
+
+**A real false positive this surfaced, found by actually running it
+against live Bedrock, not assumed safe**: asking "What foods should I
+eat to lower my LDL cholesterol?" with the Chroma retriever (whose top
+chunks are genuinely about food/LDL, so the model now has real
+reference material to draw on) produced a **50% fallback rate** over 6
+real runs (3/6), every one flagged as `numeric_grounding (ungrounded
+numbers: ['3'])`. The actual cause, found by reading the full rejected
+draft and reproducing it directly against `safety.py`'s own regex: the
+model naturally writes "omega-3 fatty acids" once nudged toward
+fish/nutrition content, and `_NUMBER_RE = re.compile(r"(?<![\w.])-?\d+
+\.?\d*")`'s negative lookbehind only excludes a preceding word character
+or period -- a hyphen isn't either, so `omega-3` extracts a bare `'3'`
+as if it were a standalone ungrounded numeric claim:
+```
+>>> _NUMBER_RE.finditer("omega-3 fatty acids")
+['3']  # at the position right after the hyphen
+```
+This is a **pre-existing gap in `_NUMBER_RE`, not something this change
+introduced** -- the regex would have mis-parsed "omega-3" in any answer
+that happened to contain it before today, LLM-narrator or not. What
+this change did was make the model far more likely to *actually write*
+"omega-3" (real, relevant reference content about fish now sits in its
+prompt), turning a latent, rarely-triggered parsing gap into a
+measurable, repeated fallback for one specific, entirely safe class of
+answer. The *safety* outcome is correct either way -- fallback is what
+this net is supposed to do when it can't confirm groundedness, and
+`safe=True` held on every single run, fallback or not -- the cost is
+purely a quality/UX one: a real, harmless, useful answer gets discarded
+for the plainer template answer more often than it should.
+
+**Deliberately not fixed as part of this change**: the user was explicit
+that the safety architecture itself should stay untouched while doing
+this work, so `_NUMBER_RE` was left exactly as it was rather than
+patched unilaterally -- even though a narrow fix (excluding a digit
+immediately after a hyphen that's itself preceded by a letter, i.e. a
+compound term like "omega-3"/"top-10"/"covid-19" rather than a genuine
+negative number) looks like a real, scoped, *precision* improvement to
+the existing check's own stated intent (catch standalone ungrounded
+numbers) rather than a loosening of what counts as safe. Recorded here
+as a concrete, evidence-backed follow-up candidate rather than an
+unexamined assumption that "the safety net just handles it" -- it does,
+correctly, but at a real, now-measured cost.
+
+---
+
 ## 2026-09-07 — Local vector retrieval (Chroma), Stage A of a two-stage learning exercise
 
 **Context**: A deliberate, explicitly-optional Phase 5 item (see
