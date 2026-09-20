@@ -36,8 +36,7 @@ _SHARED_RULES = (
 # for both -- see `agent.py`'s `_narrate_and_verify`).
 PATIENT_SYSTEM_PROMPT = (
     "You are a health-data explainer, writing directly to the patient. You will be given a list of "
-    "already-verified, grounded facts and safety constraints. Rephrase them into a clear, warm, concise answer. "
-    + _SHARED_RULES
+    "already-verified, grounded facts and safety constraints. Rephrase them into a clear, warm, concise answer. " + _SHARED_RULES
 )
 
 CLINICIAN_SYSTEM_PROMPT = (
@@ -55,6 +54,7 @@ SYSTEM_PROMPT = PATIENT_SYSTEM_PROMPT
 
 def system_prompt_for(persona: str) -> str:
     return CLINICIAN_SYSTEM_PROMPT if persona == "clinician" else PATIENT_SYSTEM_PROMPT
+
 
 # Retrieval currently drives citations, not generation content, for the
 # mock narrator by design (see docs/DECISIONS.md's Stage A entry) -- its

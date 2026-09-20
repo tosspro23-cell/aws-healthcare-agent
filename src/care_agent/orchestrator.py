@@ -67,16 +67,12 @@ TOOL_SPECS: list[dict] = [
             "Get whether a specific biomarker is trending up, down, or flat across the user's panels. "
             "Use for any question comparing a marker over time."
         ),
-        "parameters": {
-            "concept_id": {"type": "string", "enum": list(SUPPORTED_CONCEPT_IDS), "description": "The biomarker's concept_id."}
-        },
+        "parameters": {"concept_id": {"type": "string", "enum": list(SUPPORTED_CONCEPT_IDS), "description": "The biomarker's concept_id."}},
     },
     {
         "name": "get_marker_snapshot",
         "description": "Get a specific biomarker's latest value, unit, and classification (e.g. 'high', 'normal').",
-        "parameters": {
-            "concept_id": {"type": "string", "enum": list(SUPPORTED_CONCEPT_IDS), "description": "The biomarker's concept_id."}
-        },
+        "parameters": {"concept_id": {"type": "string", "enum": list(SUPPORTED_CONCEPT_IDS), "description": "The biomarker's concept_id."}},
     },
     {
         "name": "get_focus_markers",
@@ -105,8 +101,7 @@ TOOL_SPECS: list[dict] = [
     {
         "name": "search_knowledge",
         "description": (
-            "Search the vetted knowledge base for general educational background on a topic "
-            "(not a source of patient-specific facts)."
+            "Search the vetted knowledge base for general educational background on a topic (not a source of patient-specific facts)."
         ),
         "parameters": {"query": {"type": "string", "description": "Search query."}},
     },

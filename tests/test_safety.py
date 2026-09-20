@@ -345,6 +345,7 @@ def test_run_safety_checks_flags_empty_answer():
 
 # -- severity classification -------------------------------------------
 
+
 def test_hard_checks_are_tagged_hard_severity():
     """non_empty, no_diagnosis, and no_dosing are all unambiguous policy
     violations -- never the check's own fault -- and must stay tagged
@@ -420,7 +421,14 @@ def test_grounding_survives_two_decimal_values_for_the_same_marker_in_one_senten
     incorrectly excluding "HbA1c" (named earlier in the same sentence) from
     the second value's check window."""
     facts = [
-        GroundedFact(claim="hba1c trend", source_type="bloodwork", source_ref="trend:hba1c_percent", numeric_values=(6.1, 5.8), unit="%", display_name="HbA1c")
+        GroundedFact(
+            claim="hba1c trend",
+            source_type="bloodwork",
+            source_ref="trend:hba1c_percent",
+            numeric_values=(6.1, 5.8),
+            unit="%",
+            display_name="HbA1c",
+        )
     ]
     check = verify_numeric_grounding("- HbA1c trend: 5.8 % on 2025-12-08 -> 6.1 % on 2026-05-06 (up)", facts, {"2025-12-08", "2026-05-06"})
     assert check.passed is True

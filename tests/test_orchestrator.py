@@ -186,9 +186,7 @@ def test_run_compound_reasoning_gives_up_honestly_when_repair_also_fails():
 
 def test_ask_compound_answers_safely_end_to_end():
     agent = HealthAgent()
-    planner = _ScriptedPlanner(
-        [ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))]
-    )
+    planner = _ScriptedPlanner([ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))])
     response = agent.ask_compound(user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner)
     assert response.safe is True
     assert "162" in response.answer and "148" in response.answer
@@ -265,12 +263,8 @@ def test_ask_compound_shows_every_gathered_fact_category_not_just_one():
 
 def test_ask_compound_clinician_persona_changes_disclaimer_not_facts():
     agent = HealthAgent()
-    planner = _ScriptedPlanner(
-        [ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))]
-    )
-    response = agent.ask_compound(
-        user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner, persona="clinician"
-    )
+    planner = _ScriptedPlanner([ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))])
+    response = agent.ask_compound(user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner, persona="clinician")
     assert response.safe is True
     assert "162" in response.answer and "148" in response.answer  # facts unchanged
     assert "decision-support" in response.answer.lower()
@@ -283,13 +277,9 @@ def test_ask_compound_on_stage_reports_real_progress_in_order():
     coarse-grained stage messages fire in the real order work happens,
     not all at once at the end."""
     agent = HealthAgent()
-    planner = _ScriptedPlanner(
-        [ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))]
-    )
+    planner = _ScriptedPlanner([ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))])
     stages: list[str] = []
-    response = agent.ask_compound(
-        user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner, on_stage=stages.append
-    )
+    response = agent.ask_compound(user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner, on_stage=stages.append)
     assert response.safe is True
     assert stages == [
         "Checking for emergency phrasing...",
@@ -305,9 +295,7 @@ def test_ask_compound_on_stage_is_optional():
     """Every existing/future caller that doesn't pass `on_stage` is
     unaffected -- it defaults to doing nothing, not a required wiring."""
     agent = HealthAgent()
-    planner = _ScriptedPlanner(
-        [ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))]
-    )
+    planner = _ScriptedPlanner([ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))])
     response = agent.ask_compound(user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner)
     assert response.safe is True
 
@@ -338,9 +326,7 @@ def test_ask_compound_shares_the_same_safety_gate_as_ask():
     replaced here exactly like `test_unsafe_llm_output_triggers_fallback_to_mock`
     already proves for `ask()`."""
     agent = HealthAgent(narrator=_UnsafeFakeNarratorForV2())
-    planner = _ScriptedPlanner(
-        [ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))]
-    )
+    planner = _ScriptedPlanner([ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))])
     response = agent.ask_compound(user_id="user_demo_001", question_text="How is my LDL trending?", planner=planner)
     assert response.safe is True
     assert "you definitely have diabetes" not in response.answer.lower()
