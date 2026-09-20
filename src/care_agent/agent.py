@@ -18,11 +18,12 @@ Pipeline (also see ``docs/ARCHITECTURE.md``):
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from care_agent.catalog import DEFAULT_CATALOG_PATH, BiomarkerCatalog
 from care_agent.data_store import DEFAULT_DATA_DIR, DataStore
-from care_agent.intent import PRIORITY_FOCUS, RED_FLAG, SUPPLEMENT_SAFETY, TREND_CHECK, classify
+from care_agent.intent import COMPOUND_REASONING, PRIORITY_FOCUS, RED_FLAG, SUPPLEMENT_SAFETY, TREND_CHECK, classify
 from care_agent.models import (
     AgentResponse,
     AgentTrace,
@@ -32,6 +33,8 @@ from care_agent.models import (
 )
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.nlp import find_concept_mentions
+from care_agent.orchestrator import ToolExecutionContext, ToolPlanner, run_compound_reasoning
+from care_agent.plausibility import assess_plausibility
 from care_agent.reasoning import (
     CONCEPT_TOPIC_TAGS,
     INTENT_TOPIC_TAGS,
@@ -40,6 +43,7 @@ from care_agent.reasoning import (
     build_questionnaire_modifiers,
     build_supplement_cautions,
     detect_metabolic_priority_pattern,
+    implausible_value_limitations,
     rank_focus_markers,
     staleness_limitation,
 )
@@ -103,7 +107,7 @@ class HealthAgent:
         self.narrator = narrator or _select_narrator()
         self._mock_narrator = MockNarrator()
 
-    def ask(self, user_id: str, question_text: str, question_id: str | None = None) -> AgentResponse:
+    def ask(self, user_id: str, question_text: str, question_id: str | None = None, persona: str = "patient") -> AgentResponse:
         trace = AgentTrace(
             question_id=question_id,
             user_id=user_id,
@@ -149,6 +153,7 @@ class HealthAgent:
 
         brief = Brief(intent=intent_result.intent, mentioned_concepts=mentioned_concepts)
         brief.red_flag = intent_result.intent == RED_FLAG
+        brief.persona = persona
 
         allowed_dates: set[str] = set()
         for panel in bloodwork.all_panels_newest_first():
@@ -171,6 +176,48 @@ class HealthAgent:
 
             latest_panel = bloodwork.latest_panel
             if latest_panel is not None:
+                # Source-data plausibility check: independent of
+                # `Biomarker.classification`, so a value the dataset
+                # happens to classify as "normal" still gets checked.
+                # Runs before `rank_focus_markers` deliberately -- it
+                # only *flags* (via `brief.limitations`), never excludes
+                # a marker from ranking/pattern-detection in this first
+                # pass (see `implausible_value_limitations`'s own
+                # docstring).
+                implausible_limitations = implausible_value_limitations(latest_panel)
+                if implausible_limitations:
+                    trace.tool_calls.append(
+                        ToolCall(
+                            name="implausible_value_limitations",
+                            args={"panel_id": latest_panel.panel_id},
+                            result_summary=f"{len(implausible_limitations)} marker(s) outside plausibility bounds",
+                        )
+                    )
+                    brief.limitations.extend(implausible_limitations)
+                    for marker in latest_panel.biomarkers:
+                        result = assess_plausibility(marker)
+                        if result.is_plausible or result.bounds is None:
+                            continue
+                        # Grounds the flagged value itself -- without this,
+                        # the Limitation text above (which quotes
+                        # `marker.value`) would fail its own numeric
+                        # grounding check purely because this new check
+                        # introduced a number nothing else grounds yet.
+                        brief.grounded_facts.append(
+                            GroundedFact(
+                                claim=(
+                                    f"{marker.display_name} = {marker.value} {marker.unit} "
+                                    f"(flagged implausible) on {latest_panel.measurement_date}"
+                                ),
+                                source_type="bloodwork",
+                                source_ref=f"{latest_panel.panel_id}:{marker.concept_id}",
+                                numeric_values=(float(marker.value),),
+                                unit=marker.unit,
+                                display_name=marker.display_name,
+                                display_name_aliases=self.catalog.aliases_for(marker.concept_id),
+                            )
+                        )
+
                 trace.tool_calls.append(
                     ToolCall(
                         name="rank_focus_markers",
@@ -191,6 +238,7 @@ class HealthAgent:
                             numeric_values=(float(item.marker.value),),
                             unit=item.marker.unit,
                             display_name=item.marker.display_name,
+                            display_name_aliases=self.catalog.aliases_for(item.marker.concept_id),
                         )
                     )
 
@@ -215,6 +263,7 @@ class HealthAgent:
                                     numeric_values=(float(marker.value),),
                                     unit=marker.unit,
                                     display_name=marker.display_name,
+                                    display_name_aliases=self.catalog.aliases_for(concept_id),
                                 )
                             )
 
@@ -261,6 +310,7 @@ class HealthAgent:
                 # in any real prose and would just make every trend answer
                 # fail the safety check.
                 trend_display_name = brief.mentioned_markers[concept_id].display_name if concept_id in brief.mentioned_markers else None
+                trend_display_aliases = self.catalog.aliases_for(concept_id) if trend_display_name else ()
                 if trend.latest_value is not None:
                     brief.grounded_facts.append(
                         GroundedFact(
@@ -270,6 +320,7 @@ class HealthAgent:
                             numeric_values=(float(trend.latest_value),),
                             unit=trend.unit,
                             display_name=trend_display_name,
+                            display_name_aliases=trend_display_aliases,
                         )
                     )
                 if trend.previous_value is not None:
@@ -281,6 +332,7 @@ class HealthAgent:
                             numeric_values=(float(trend.previous_value),),
                             unit=trend.unit,
                             display_name=trend_display_name,
+                            display_name_aliases=trend_display_aliases,
                         )
                     )
                 if not trend.available and not mentioned_concepts:
@@ -316,11 +368,38 @@ class HealthAgent:
         trace.grounded_facts = brief.grounded_facts
         trace.limitations = brief.limitations
 
-        # -- narrate + verify --------------------------------------------------
+        return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates)
+
+    def _narrate_and_verify(
+        self,
+        brief: Brief,
+        question_text: str,
+        profile,
+        trace: AgentTrace,
+        allowed_dates: set[str],
+    ) -> AgentResponse:
+        """Narrate a fully-built `Brief`, verify it, and fall back to the
+        mock narrator on any check failure -- the one safety gate every
+        answer this agent produces goes through, regardless of which
+        pipeline built the `Brief`.
+
+        Extracted unchanged from `ask()`'s own tail (see `docs/DECISIONS.md`,
+        2026-09-20 entry) so `ask_compound()` -- a second, additive way to
+        *build* a `Brief` via tool-calling instead of the fixed intent
+        classifier -- reuses the exact same narrate+verify+fallback code,
+        not a reimplementation of it. `ask()`'s own behavior is unchanged
+        by this extraction: verified by the full existing test suite
+        passing identically before and after.
+        """
         answer_text = self.narrator.compose(brief, question_text, profile)
         report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
 
         used_fallback = False
+        # Set from `report` (the *rejected* draft's report) below, before
+        # `report` is reassigned to the mock narrator's own report -- this
+        # must reflect why the fallback happened, not whether the mock
+        # narrator's replacement text happens to pass every check too.
+        disposition: str = "answered"
         if not report.passed and self.narrator.backend_name != "mock":
             # An LLM (or any non-mock) narrator failed a safety/grounding check.
             # Fall back to the deterministic narrator rather than return
@@ -328,6 +407,12 @@ class HealthAgent:
             # reasons -- requested after testing the Workbench, where a
             # fallback was visible but opaque (no way to see what the
             # draft said or specifically why it was rejected).
+            #
+            # The hard/soft split below is purely an observability signal
+            # (see `AgentTrace.disposition`'s own docstring) -- it never
+            # changes this fallback itself, which still fires on *any*
+            # failed check exactly as before.
+            disposition = "answered_after_hard_fallback" if report.has_hard_failure else "answered_after_soft_fallback"
             rejected_draft = answer_text
             rejected_report = report
             answer_text = self._mock_narrator.compose(brief, question_text, profile)
@@ -345,6 +430,7 @@ class HealthAgent:
             trace.rejected_draft = rejected_draft
 
         trace.safety_checks = list(report.checks)
+        trace.disposition = disposition
         if used_fallback:
             failure_reasons = "; ".join(f"{c.name} ({c.detail})" if c.detail else c.name for c in rejected_report.failed_checks)
             trace.safety_checks.append(
@@ -359,3 +445,101 @@ class HealthAgent:
             )
 
         return AgentResponse(answer=answer_text, trace=trace, safe=report.passed)
+
+    def ask_compound(
+        self,
+        user_id: str,
+        question_text: str,
+        planner: ToolPlanner,
+        question_id: str | None = None,
+        persona: str = "patient",
+        on_stage: Callable[[str], None] | None = None,
+    ) -> AgentResponse:
+        """V2: answer a compound, multi-hop question via tool-calling
+        (`orchestrator.run_compound_reasoning`) instead of `ask()`'s fixed
+        5-intent classifier. Additive, not a replacement -- `ask()` is
+        untouched by this method's existence (see `docs/DECISIONS.md`,
+        2026-09-20 entry).
+
+        `planner` is required, not defaulted: unlike `narrator`/`retriever`,
+        there is no safe deterministic default that can plan an open-ended
+        tool combination the way `MockNarrator` can safely template a fixed
+        intent -- pass `tool_planner.BedrockToolPlanner()` for real use, or
+        a scripted fake in tests.
+
+        Red-flag detection runs first and is identical to `ask()`'s -- an
+        emergency-phrasing question never reaches the tool-calling planner
+        at all, the same unconditional, deterministic gate either pipeline
+        goes through (see this project's own standing principle: emergency
+        detection is never something an LLM's judgment call decides).
+        """
+        trace = AgentTrace(
+            question_id=question_id,
+            user_id=user_id,
+            intent=COMPOUND_REASONING,
+            narrator_backend=self.narrator.backend_name,
+            retriever_backend=self.retriever.backend_name,
+        )
+
+        def stage(message: str) -> None:
+            if on_stage is not None:
+                on_stage(message)
+
+        stage("Checking for emergency phrasing...")
+        intent_result = classify(question_text)
+        trace.tool_calls.append(
+            ToolCall(name="classify_intent", args={"question_text": question_text}, result_summary=intent_result.intent)
+        )
+
+        stage("Loading patient data...")
+        profile = self.data_store.get_user_profile(user_id)
+        bloodwork = self.data_store.get_bloodwork(user_id)
+        questionnaire = self.data_store.get_questionnaire_context(user_id)
+        trace.tool_calls.append(
+            ToolCall(name="get_user_profile", args={"user_id": user_id}, result_summary=f"display_name={profile.display_name!r}")
+        )
+        trace.tool_calls.append(
+            ToolCall(
+                name="get_bloodwork",
+                args={"user_id": user_id},
+                result_summary=f"latest_panel={'present' if bloodwork.latest_panel else 'missing'}",
+            )
+        )
+
+        allowed_dates: set[str] = {panel.measurement_date for panel in bloodwork.all_panels_newest_first()}
+
+        if intent_result.intent == RED_FLAG:
+            brief = Brief(intent=RED_FLAG)
+            brief.red_flag = True
+            brief.persona = persona
+            trace.intent = RED_FLAG
+            trace.grounded_facts = brief.grounded_facts
+            trace.limitations = brief.limitations
+            trace.retrieved_chunks = brief.retrieved_chunks
+            stage("Emergency phrasing detected -- skipping tool planning.")
+            return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates)
+
+        ctx = ToolExecutionContext(
+            profile=profile, bloodwork=bloodwork, questionnaire=questionnaire, catalog=self.catalog, retriever=self.retriever
+        )
+        brief, orchestrator_calls = run_compound_reasoning(question_text, ctx, planner, on_stage=on_stage)
+        brief.persona = persona
+        trace.tool_calls.extend(orchestrator_calls)
+        trace.grounded_facts = brief.grounded_facts
+        trace.limitations = brief.limitations
+        # Found live testing this exact path: `search_knowledge` correctly
+        # retrieved real chunks (confirmed via the tool call's own
+        # `result_summary`), but nothing copied `brief.retrieved_chunks`
+        # onto `trace` the way `ask()` does -- so a real V2 retrieval
+        # never reached the Workbench's evidence panel at all, even when
+        # the tool worked correctly. See docs/DECISIONS.md, 2026-09-20.
+        trace.retrieved_chunks = brief.retrieved_chunks
+
+        # "Composing the answer..." covers both narration and the
+        # independent safety verification that follows it inside
+        # `_narrate_and_verify` -- there's no further real work after this
+        # call returns, so no stage message belongs after it (one would
+        # only ever fire simultaneously with the final result, not while
+        # anything is actually still in progress).
+        stage("Composing the answer...")
+        return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates)

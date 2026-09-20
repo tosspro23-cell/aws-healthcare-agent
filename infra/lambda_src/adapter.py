@@ -30,6 +30,7 @@ from typing import Any
 import auth_context
 import boto3
 from agent_runtime import agent as _agent
+from agent_runtime import tool_planner as _tool_planner
 from botocore.exceptions import ClientError
 from run_id_validation import is_valid_run_id
 
@@ -88,6 +89,18 @@ def handler(event: dict, context: object) -> dict:
         # ours, so it belongs in this 400 branch instead.
         return _json_response(400, {"error": "Both 'user_id' and 'question' are required and must be non-empty strings."})
 
+    # `engine`/`persona` are new, optional fields -- omitting either
+    # reproduces today's exact `ask()` behavior unchanged (default "v1",
+    # default "patient"), matching this project's standing invariant that
+    # V2 is additive, never a behavior change to V1 (see docs/DECISIONS.md,
+    # 2026-09-20 entries).
+    engine = body.get("engine", "v1")
+    if engine not in ("v1", "v2"):
+        return _json_response(400, {"error": "'engine', if supplied, must be 'v1' or 'v2'."})
+    persona = body.get("persona", "patient")
+    if persona not in ("patient", "clinician"):
+        return _json_response(400, {"error": "'persona', if supplied, must be 'patient' or 'clinician'."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -114,6 +127,7 @@ def handler(event: dict, context: object) -> dict:
                     "status": "RUNNING",
                     "owner_sub": owner_sub,
                     "execution_type": "SYNC",
+                    "engine": engine,
                     "user_id": user_id,
                     "question": question,
                     "started_at": datetime.now(timezone.utc).isoformat(),
@@ -126,7 +140,12 @@ def handler(event: dict, context: object) -> dict:
             return _json_response(409, {"error": f"run_id={run_id!r} is already in use by another run."})
 
     try:
-        response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)
+        if engine == "v2":
+            response = _agent.ask_compound(
+                user_id=user_id, question_text=question, planner=_tool_planner, question_id=run_id, persona=persona
+            )
+        else:
+            response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
     except UnknownUserError:
         if table is not None:
             table.update_item(

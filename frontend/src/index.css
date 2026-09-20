@@ -40,7 +40,8 @@ main {
 }
 
 .ask-form input,
-.ask-form textarea {
+.ask-form textarea,
+.ask-form select {
   font: inherit;
   font-size: 16px; /* prevents iOS Safari's auto-zoom-on-focus below 16px */
   padding: 10px;
@@ -94,6 +95,87 @@ button:disabled {
 .safe-badge.unsafe {
   background: #fee2e2;
   color: #991b1b;
+}
+
+/* Top-level V1/V2 switch -- selecting one replaces the whole view below
+   (AskForm vs. CompoundDemo), rather than showing both stacked. */
+.engine-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 20px;
+}
+
+.engine-tab {
+  align-self: auto;
+  background: #eef0f4;
+  color: #444;
+  font-size: 0.85em;
+  font-weight: 500;
+  padding: 10px 14px;
+  min-height: 44px;
+  border-radius: 6px;
+}
+
+.engine-tab.active {
+  background: #1e293b;
+  color: white;
+}
+
+.compound-demo .meta {
+  font-size: 0.85em;
+  color: #666;
+  margin-top: -4px;
+}
+
+.example-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.example-question {
+  align-self: stretch;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 0.85em;
+  text-align: left;
+  padding: 8px 10px;
+  min-height: unset;
+}
+
+.example-question:hover:not(:disabled) {
+  background: #e0e7ff;
+}
+
+/* Live tool-calling progress -- see CompoundDemo.tsx: one line appears
+   per `on_stage` server-sent event as it actually happens, not all at
+   once at the end. */
+.stage-log {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stage-log li {
+  font-size: 0.9em;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.stage-log li.current {
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.stage-log li.current::after {
+  content: " …";
 }
 
 .markdown {
@@ -193,6 +275,46 @@ button:disabled {
 
 .check-detail {
   color: #888;
+}
+
+.disposition {
+  display: inline-block;
+  font-size: 0.8em;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  margin-bottom: 10px;
+}
+
+.disposition-answered {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.disposition-answered_after_soft_fallback {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.disposition-answered_after_hard_fallback {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.severity {
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #f1f1f1;
+  color: #666;
+}
+
+.severity-soft {
+  background: #fef9c3;
+  color: #854d0e;
 }
 
 .facts {

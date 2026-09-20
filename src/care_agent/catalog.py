@@ -71,6 +71,23 @@ class BiomarkerCatalog:
             adequate_range_max=row["adequate_range_max"],
         )
 
+    def aliases_for(self, concept_id: str) -> tuple[str, ...]:
+        """The reverse of `search_by_alias`: every free-text alias this
+        project already curates for `concept_id` (e.g. "LDL cholesterol",
+        "LDL C" for `ldl_c_mg_dl`) -- used by `safety.verify_numeric_
+        grounding`'s marker-name-proximity check so it recognizes a real,
+        already-vetted paraphrase of a marker's name (an LLM narrator
+        naturally writing "LDL cholesterol" instead of the exact catalog
+        `display_name` "LDL-C"), not just the literal display_name string.
+        Found live: a real Bedrock narrator draft was rejected purely for
+        this reason -- see docs/DECISIONS.md, 2026-09-20 entry."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT normalized_alias FROM marker_alias WHERE biomarker_name = ?",
+                (concept_id,),
+            ).fetchall()
+        return tuple(row["normalized_alias"] for row in rows)
+
     def search_by_alias(self, text: str) -> CatalogEntry | None:
         """Resolve a free-text marker name (e.g. 'A1C', 'LDL') to a catalog entry."""
         normalized = text.strip().lower()

@@ -39,3 +39,19 @@ def test_alias_search_unknown_returns_none(catalog):
 def test_catalog_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         BiomarkerCatalog(tmp_path / "nope.sqlite")
+
+
+def test_aliases_for_returns_the_reverse_of_search_by_alias(catalog):
+    """`aliases_for` and `search_by_alias` must stay consistent -- every
+    alias `aliases_for` returns for a concept_id must resolve back to
+    that same concept_id via `search_by_alias`."""
+    aliases = catalog.aliases_for("ldl_c_mg_dl")
+    assert "ldl cholesterol" in aliases
+    for alias in aliases:
+        entry = catalog.search_by_alias(alias)
+        assert entry is not None
+        assert entry.biomarker_name == "ldl_c_mg_dl"
+
+
+def test_aliases_for_unknown_concept_returns_empty_tuple(catalog):
+    assert catalog.aliases_for("not_a_real_marker") == ()

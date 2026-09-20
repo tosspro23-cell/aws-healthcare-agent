@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
+from care_agent.narrator._prompt import build_user_message, system_prompt_for
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -63,7 +63,7 @@ class GoogleNarrator:
                 model=self._model,
                 contents=user_content,
                 config=self._genai.types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=system_prompt_for(brief.persona),
                     max_output_tokens=500,
                 ),
             )

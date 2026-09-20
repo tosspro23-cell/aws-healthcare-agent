@@ -5,6 +5,10 @@ export interface SafetyCheck {
   name: string;
   passed: boolean;
   detail: string;
+  /** "hard" = unambiguous policy violation; "soft" = numeric_grounding,
+   * the one check with a documented history of false positives. Doesn't
+   * change what was returned -- see AgentTrace.disposition for that. */
+  severity: "hard" | "soft";
 }
 
 export interface GroundedFact {
@@ -44,6 +48,11 @@ export interface AgentTrace {
   safety_checks: SafetyCheck[];
   rejected_draft: string | null;
   narrator_backend: string;
+  /** "answered": no fallback. "answered_after_hard_fallback": a policy
+   * violation (diagnosis/dosing/empty) was caught and replaced.
+   * "answered_after_soft_fallback": only numeric_grounding failed --
+   * worth reviewing whether the check itself needs another fix. */
+  disposition: "answered" | "answered_after_hard_fallback" | "answered_after_soft_fallback";
 }
 
 export interface AskResponse {
@@ -113,8 +122,19 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<unknow
   return body;
 }
 
-export async function askQuestion(userId: string, question: string): Promise<AskResponse> {
-  return (await authedFetch("/ask", { method: "POST", body: JSON.stringify({ user_id: userId, question }) })) as AskResponse;
+export type Engine = "v1" | "v2";
+export type Persona = "patient" | "clinician";
+
+/** `engine`/`persona` are optional -- omitting either reproduces the
+ * exact request shape from before they existed. `engine: "v2"` hits the
+ * *real*, deployed `ask_compound` path (see `adapter.py`), not the local
+ * dev server `CompoundDemo.tsx` talks to -- this is the production
+ * verification path for V2. */
+export async function askQuestion(userId: string, question: string, engine?: Engine, persona?: Persona): Promise<AskResponse> {
+  return (await authedFetch("/ask", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, question, ...(engine ? { engine } : {}), ...(persona ? { persona } : {}) }),
+  })) as AskResponse;
 }
 
 /** Starts the Step Functions-orchestrated async path. Returns immediately

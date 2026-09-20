@@ -170,6 +170,75 @@ def test_extreme_value_is_reported_verbatim_not_altered(dataset_builder):
     assert "you have" not in response.answer.lower()
 
 
+# -- 4b. Implausible source value is flagged, not silently trusted ----------
+def test_implausible_value_is_flagged_as_a_limitation(dataset_builder):
+    bloodwork = {
+        "user_id": "user_demo_001",
+        "dataset_version": "v1",
+        "latest_panel": {
+            "panel_id": "panel_implausible",
+            "measurement_date": "2026-05-06",
+            "overall_flags": [],
+            "biomarkers": [
+                {
+                    # A value no living human could have -- almost certainly a
+                    # data entry or unit error, distinct from "severe but real".
+                    "concept_id": "ldl_c_mg_dl",
+                    "display_name": "LDL-C",
+                    "value": 50000,
+                    "unit": "mg/dL",
+                    "classification": "high",
+                    "action_fields": ["MEDICAL"],
+                }
+            ],
+        },
+        "previous_panels": [],
+    }
+    path = dataset_builder(bloodwork=bloodwork)
+    agent = _agent_for(path)
+    response = agent.ask(user_id="user_demo_001", question_text="What should I focus on first?")
+    # The flag itself must not break the existing safety guarantees --
+    # this is a disclosure added on top of a still-safe answer.
+    assert response.safe is True
+    limitation_kinds = {lim.kind for lim in response.trace.limitations}
+    assert "implausible_value" in limitation_kinds
+    assert "50000" in response.answer
+    assert "data entry" in response.answer.lower()
+
+
+def test_severe_but_real_value_is_not_flagged_as_implausible(dataset_builder):
+    """The companion case to the test above: a severe, real, documented
+    value must not trip the plausibility flag just for being abnormal --
+    that would defeat the point of distinguishing "concerning" from
+    "physiologically impossible"."""
+    bloodwork = {
+        "user_id": "user_demo_001",
+        "dataset_version": "v1",
+        "latest_panel": {
+            "panel_id": "panel_severe_real",
+            "measurement_date": "2026-05-06",
+            "overall_flags": [],
+            "biomarkers": [
+                {
+                    "concept_id": "triglycerides_mg_dl",
+                    "display_name": "Triglycerides",
+                    "value": 3500,
+                    "unit": "mg/dL",
+                    "classification": "high",
+                    "action_fields": ["MEDICAL"],
+                }
+            ],
+        },
+        "previous_panels": [],
+    }
+    path = dataset_builder(bloodwork=bloodwork)
+    agent = _agent_for(path)
+    response = agent.ask(user_id="user_demo_001", question_text="What should I focus on first?")
+    assert response.safe is True
+    limitation_kinds = {lim.kind for lim in response.trace.limitations}
+    assert "implausible_value" not in limitation_kinds
+
+
 # -- 5. Empty questionnaire --------------------------------------------------
 def test_empty_questionnaire_still_answers(dataset_builder):
     questionnaire = {
@@ -327,6 +396,9 @@ def test_unsafe_llm_output_triggers_fallback_to_mock(data_dir):
     fallback_checks = [c for c in response.trace.safety_checks if c.name == "narrator_fallback"]
     assert len(fallback_checks) == 1
     assert fallback_checks[0].passed is True
+    # Diagnosis + dosing language are hard-severity violations -- this
+    # must classify as a hard fallback, never a soft one.
+    assert response.trace.disposition == "answered_after_hard_fallback"
 
 
 class _UngroundedFakeNarrator:
@@ -346,3 +418,21 @@ def test_ungrounded_number_from_llm_triggers_fallback(data_dir):
     response = agent.ask(user_id="user_demo_001", question_text="What should I focus on first?")
     assert response.safe is True
     assert "9999" not in response.answer
+    # A fabricated number with no diagnosis/dosing language is a soft-only
+    # failure -- this is the case operators should review separately (is
+    # the check itself too strict?), not lump in with hard violations.
+    assert response.trace.disposition == "answered_after_soft_fallback"
+
+
+def test_safe_llm_output_has_answered_disposition_with_no_fallback(data_dir):
+    """The baseline case: every check passes on the first draft, so
+    `disposition` stays "answered" and no fallback fires at all."""
+    agent = HealthAgent(
+        data_dir=data_dir,
+        catalog_path=data_dir / "mock_biomarker_catalog.sqlite",
+        kb_path=data_dir / "knowledge_base.jsonl",
+    )
+    response = agent.ask(user_id="user_demo_001", question_text="What should I focus on first?")
+    assert response.safe is True
+    assert response.trace.disposition == "answered"
+    assert not [c for c in response.trace.safety_checks if c.name == "narrator_fallback"]

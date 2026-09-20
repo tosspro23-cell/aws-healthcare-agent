@@ -341,3 +341,96 @@ def test_run_safety_checks_flags_empty_answer():
     assert report.passed is False
     names = {c.name for c in report.failed_checks}
     assert "non_empty" in names
+
+
+# -- severity classification -------------------------------------------
+
+def test_hard_checks_are_tagged_hard_severity():
+    """non_empty, no_diagnosis, and no_dosing are all unambiguous policy
+    violations -- never the check's own fault -- and must stay tagged
+    "hard" so `AgentTrace.disposition` classifies a fallback correctly."""
+    assert check_non_empty("").severity == "hard"
+    assert check_no_diagnosis("You have diabetes.").severity == "hard"
+    assert check_no_dosing("Take 500 mg daily.").severity == "hard"
+
+
+def test_numeric_grounding_is_tagged_soft_severity():
+    """numeric_grounding is the one check with a documented history of
+    real false positives (see this file's own module docstring) -- it
+    must stay tagged "soft" regardless of pass/fail, so a fallback caused
+    only by this check is distinguishable from a hard policy violation."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    assert verify_numeric_grounding("Your LDL-C is 162 mg/dL.", facts).severity == "soft"
+    assert verify_numeric_grounding("Your LDL-C is 999 mg/dL.", facts).severity == "soft"
+
+
+def test_numeric_grounding_accepts_a_curated_alias_of_the_marker_name():
+    """Regression test: found live testing the browser demo's real Bedrock
+    narrator, not by inspection. A real draft wrote "LDL cholesterol" --
+    a genuine, already-curated alias of "LDL-C" in this project's own
+    `marker_alias` catalog table, not a fabrication -- and was rejected
+    only because the check required the literal catalog display_name."""
+    facts = [
+        GroundedFact(
+            claim="ldl",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0, 148.0),
+            unit="mg/dL",
+            display_name="LDL-C",
+            display_name_aliases=("ldl cholesterol", "ldl c", "low density lipoprotein cholesterol"),
+        )
+    ]
+    text = "LDL cholesterol went up from 148 mg/dL to 162 mg/dL."
+    assert verify_numeric_grounding(text, facts).passed is True
+
+
+def test_numeric_grounding_still_rejects_a_name_not_in_the_curated_alias_list():
+    """The other half of the same regression test: widening the check to
+    curated aliases must not widen it to *anything* -- an unrelated made-up
+    name still fails, same as before this fix."""
+    facts = [
+        GroundedFact(
+            claim="ldl",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0,),
+            unit="mg/dL",
+            display_name="LDL-C",
+            display_name_aliases=("ldl cholesterol",),
+        )
+    ]
+    text = "Your cholesterol widget score is 162 mg/dL."
+    assert verify_numeric_grounding(text, facts).passed is False
+
+
+def test_report_has_hard_failure_true_when_a_hard_check_fails():
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    report = run_safety_checks("You have diabetes. Your LDL-C is 162 mg/dL.", facts)
+    assert report.passed is False
+    assert report.has_hard_failure is True
+
+
+def test_grounding_survives_two_decimal_values_for_the_same_marker_in_one_sentence():
+    """Regression test: found live via `orchestrator.py`'s V2 path, not by
+    inspection. A trend fact rendered as one line/sentence naming two
+    decimal values for the same marker ("HbA1c trend: 5.8 % ... 6.1 % ...")
+    had its *second* value's marker-name-proximity window truncated by the
+    *first* value's own decimal point, misread as a sentence boundary --
+    incorrectly excluding "HbA1c" (named earlier in the same sentence) from
+    the second value's check window."""
+    facts = [
+        GroundedFact(claim="hba1c trend", source_type="bloodwork", source_ref="trend:hba1c_percent", numeric_values=(6.1, 5.8), unit="%", display_name="HbA1c")
+    ]
+    check = verify_numeric_grounding("- HbA1c trend: 5.8 % on 2025-12-08 -> 6.1 % on 2026-05-06 (up)", facts, {"2025-12-08", "2026-05-06"})
+    assert check.passed is True
+
+
+def test_report_has_hard_failure_false_when_only_grounding_fails():
+    """The soft-only case: every hard check passes, only numeric_grounding
+    fails. This is the scenario `agent.py` classifies as
+    "answered_after_soft_fallback" rather than "..._hard_fallback"."""
+    facts = [GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(162.0,), unit="mg/dL")]
+    report = run_safety_checks("Your LDL-C is 999 mg/dL.", facts)
+    assert report.passed is False
+    assert report.has_hard_failure is False

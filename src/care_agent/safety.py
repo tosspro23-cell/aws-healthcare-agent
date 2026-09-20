@@ -1,6 +1,13 @@
 """Safety guardrails applied to every composed answer before it is returned.
 
-Four independent checks, run in order:
+Four independent checks, run in order. Each carries a ``severity`` (see
+``SafetyCheck.severity``): checks 1-3 are ``"hard"`` (unambiguous policy
+violations -- never the check's own fault), check 4 is ``"soft"`` (this
+file's own documented history of real false positives in this specific
+check makes it worth reviewing separately). This classification is for
+`AgentTrace.disposition`, set in `agent.py` -- it does not change the
+fallback behavior below, which still triggers on *any* failed check,
+hard or soft alike.
 
 1. ``check_non_empty`` -- the answer must actually contain text. An empty
    or whitespace-only answer trivially "passes" every other check (no
@@ -185,6 +192,26 @@ _SENTENCE_BOUNDARY_CHARS = ".!?\n"
 _CONTEXT_MAX_CHARS = 200
 
 
+def _is_sentence_boundary(text: str, i: int) -> bool:
+    """`text[i] in _SENTENCE_BOUNDARY_CHARS`, except a "." flanked by
+    digits on both sides (a decimal point, e.g. the "." in "5.8") never
+    counts -- found live, not by inspection: `orchestrator.py`'s V2 path
+    can render two decimal-valued facts for the same marker in one
+    sentence/line (a trend fact: "5.8 % on ... -> 6.1 % on ..."), and the
+    *first* number's own decimal point was being read as a sentence
+    boundary, truncating the *second* number's marker-name-proximity
+    window (`verify_numeric_grounding`'s cross-marker check) before it
+    ever reached the marker name earlier in the same sentence -- a false
+    "no matching marker name nearby" grounding failure on a genuinely
+    grounded value. See docs/DECISIONS.md, 2026-09-20 entry."""
+    ch = text[i]
+    if ch not in _SENTENCE_BOUNDARY_CHARS:
+        return False
+    if ch == "." and i > 0 and text[i - 1].isdigit() and i + 1 < len(text) and text[i + 1].isdigit():
+        return False
+    return True
+
+
 def _sentence_context(text: str, start: int, end: int) -> str:
     """The current sentence/line around `text[start:end]`: expands outward
     to the nearest preceding and following sentence-ending punctuation or
@@ -192,14 +219,14 @@ def _sentence_context(text: str, start: int, end: int) -> str:
     left_cap = max(0, start - _CONTEXT_MAX_CHARS)
     left = left_cap
     for i in range(start - 1, left_cap - 1, -1):
-        if text[i] in _SENTENCE_BOUNDARY_CHARS:
+        if _is_sentence_boundary(text, i):
             left = i + 1
             break
 
     right_cap = min(len(text), end + _CONTEXT_MAX_CHARS)
     right = right_cap
     for i in range(end, right_cap):
-        if text[i] in _SENTENCE_BOUNDARY_CHARS:
+        if _is_sentence_boundary(text, i):
             right = i
             break
 
@@ -218,27 +245,33 @@ class SafetyReport:
     def failed_checks(self) -> tuple[SafetyCheck, ...]:
         return tuple(c for c in self.checks if not c.passed)
 
+    @property
+    def has_hard_failure(self) -> bool:
+        """Any failed check with severity "hard" -- an unambiguous policy
+        violation, never the check's own fault. See `SafetyCheck.severity`."""
+        return any(c.severity == "hard" for c in self.failed_checks)
+
 
 def check_non_empty(text: str) -> SafetyCheck:
     if not text or not text.strip():
-        return SafetyCheck(name="non_empty", passed=False, detail="Answer text is empty or whitespace-only.")
-    return SafetyCheck(name="non_empty", passed=True)
+        return SafetyCheck(name="non_empty", passed=False, detail="Answer text is empty or whitespace-only.", severity="hard")
+    return SafetyCheck(name="non_empty", passed=True, severity="hard")
 
 
 def check_no_diagnosis(text: str) -> SafetyCheck:
     lowered = text.lower()
     for pattern in _DIAGNOSIS_PATTERNS:
         if re.search(pattern, lowered):
-            return SafetyCheck(name="no_diagnosis", passed=False, detail=f"Matched forbidden pattern: {pattern!r}")
-    return SafetyCheck(name="no_diagnosis", passed=True)
+            return SafetyCheck(name="no_diagnosis", passed=False, detail=f"Matched forbidden pattern: {pattern!r}", severity="hard")
+    return SafetyCheck(name="no_diagnosis", passed=True, severity="hard")
 
 
 def check_no_dosing(text: str) -> SafetyCheck:
     lowered = text.lower()
     for pattern in _DOSING_PATTERNS:
         if re.search(pattern, lowered):
-            return SafetyCheck(name="no_dosing", passed=False, detail=f"Matched forbidden pattern: {pattern!r}")
-    return SafetyCheck(name="no_dosing", passed=True)
+            return SafetyCheck(name="no_dosing", passed=False, detail=f"Matched forbidden pattern: {pattern!r}", severity="hard")
+    return SafetyCheck(name="no_dosing", passed=True, severity="hard")
 
 
 def verify_numeric_grounding(
@@ -353,7 +386,17 @@ def verify_numeric_grounding(
             ungrounded.append(f"{raw_value}{raw_unit}")
             continue
 
+        # Any of the marker's *curated* names -- the exact catalog
+        # display_name, or a real, already-vetted alias of it (e.g. "LDL
+        # cholesterol" for "LDL-C") -- counts. Widening this to arbitrary
+        # fuzzy matching would reopen the exact "real number, wrong
+        # marker" bypass this check exists to close; widening it to a
+        # *curated* alias list this project already maintains for the
+        # same marker (see `GroundedFact.display_name_aliases`'s own
+        # docstring) does not, since every accepted name still resolves
+        # to this one specific concept_id and no other.
         marker_names = {c.display_name for c in candidates if c.display_name}
+        marker_names |= {alias for c in candidates for alias in c.display_name_aliases}
         if marker_names:
             window = _sentence_context(text_without_dates, match.start(), match.end())
             if not any(re.search(rf"\b{re.escape(name)}\b", window, re.IGNORECASE) for name in marker_names):
@@ -378,8 +421,8 @@ def verify_numeric_grounding(
         problems.append(f"ungrounded dates: {sorted(ungrounded_dates)}")
 
     if problems:
-        return SafetyCheck(name="numeric_grounding", passed=False, detail="; ".join(problems))
-    return SafetyCheck(name="numeric_grounding", passed=True)
+        return SafetyCheck(name="numeric_grounding", passed=False, detail="; ".join(problems), severity="soft")
+    return SafetyCheck(name="numeric_grounding", passed=True, severity="soft")
 
 
 def run_safety_checks(

@@ -2990,6 +2990,496 @@ gap to hide.
 
 ---
 
+## 2026-09-19 — Safety checks now carry a severity; `AgentTrace` records why a fallback happened
+
+**Context**: An architecture discussion comparing this project's narrator/
+safety split against two sibling reference implementations (Azure
+`ClinicalReasoner`, and a separate Construction Intelligence agent)
+concluded that expanding this kernel's reasoning capability (a future
+tool-orchestration planner, replacing the current 5-intent classifier)
+would have its payoff capped by how coarse `run_safety_checks`'
+pass/fail judgment is today: any failed check, regardless of kind,
+triggers the same full fallback to the deterministic mock narrator, with
+no way to tell — short of reading every `rejected_draft` by hand — a
+narrator that tried to diagnose someone apart from one that tripped
+`numeric_grounding` on an edge case this project has already found and
+fixed several of (hyphenated compounds, unrecognized units, list
+markers; see `safety.py`'s own module docstring).
+
+**Decision**: Give every `SafetyCheck` a `severity`: `"hard"` for
+`non_empty`/`no_diagnosis`/`no_dosing` (unambiguous policy violations,
+never the check's own fault), `"soft"` for `numeric_grounding` (the one
+check with a real, documented false-positive history). `SafetyReport`
+gains `has_hard_failure`. `AgentTrace` gains `disposition`
+(`"answered"` / `"answered_after_hard_fallback"` /
+`"answered_after_soft_fallback"`), set once in `agent.py` right after
+the existing fallback decision. The Workbench's `TraceView` now shows
+this as a colored pill plus a per-check severity tag.
+
+**This is deliberately an observability-only change**: the fallback
+behavior itself — any failed check, hard or soft, replaces the draft
+with the mock narrator's output — is byte-for-byte unchanged. Nothing
+about what reaches the patient got looser. What changed is that an
+operator reviewing traces across many requests can now tell, without
+reading prose, whether a fallback was a genuine safety catch or a
+grounding-check false positive worth investigating — the same
+"claim verification chain" pattern this project's own market research
+found converging on in bank model-risk guidance (SR 26-2) and FDA CDS
+review.
+
+**Alternatives considered**: Loosening the fallback trigger itself for
+soft-only failures (e.g. serving the LLM draft with a "needs review"
+flag instead of the mock replacement) — rejected for now. That would be
+a real weakening of the patient-facing guarantee with no queue or
+reviewer to route it to yet; the value here is purely in making the
+*existing* fallback's cause legible, not in changing what fires it.
+
+**Consequence**: `SafetyCheck.severity` and `AgentTrace.disposition` are
+new required-with-default fields — existing callers/tests are
+unaffected (verified: full suite + ruff + frontend tsc/vitest/eslint all
+pass unchanged). A future tool-orchestration layer's partial/uncertain
+results have a real field to report against later, instead of nothing.
+
+---
+
+## 2026-09-19 — Source-data plausibility bounds, independent of the dataset's own classification
+
+**Context**: Item 2 of the "探亲窗口" engineering list from the same
+architecture discussion as the previous entry. Every existing safety
+check verifies that a number in the narrated answer traces back to a
+`GroundedFact` — but a `GroundedFact` built from a data-entry error (a
+decimal point dropped, a unit confused) is still, mechanically,
+"grounded." Nothing in this project previously questioned whether a raw
+source value was physiologically possible at all, only whether the
+narrator's prose matched it.
+
+**Decision**: New module `plausibility.py` — a per-`concept_id` table of
+outer physiological bounds (wide: severe-but-real documented cases must
+pass; only true implausibility — a sign error, a value no living patient
+has ever had — should fail), and `assess_plausibility()`. Wired into
+`agent.py` via `reasoning.implausible_value_limitations()`, which runs
+over *every* biomarker in the latest panel (not just `rank_focus_markers`'
+output, which only considers markers the dataset already classifies as
+abnormal) and appends a `Limitation` for anything outside bounds.
+
+**Caught before shipping, not found live**: the first draft stated the
+numeric bounds themselves in the limitation text (e.g. "outside 0-1000
+mg/dL"). Every narrator template renders `Limitation.detail` into the
+final answer text, which `verify_numeric_grounding` then scans for
+*every* number — so those bounds, being this project's own constants
+rather than a patient fact, would have failed the very safety check this
+whole exercise is about, on the deterministic mock narrator's own output,
+every time this new check fired. Fixed by dropping the bounds from the
+rendered text and instead grounding only the flagged value itself (a new
+`GroundedFact` with `source_type="bloodwork"`).
+
+**Deliberately does not exclude a flagged marker from
+`rank_focus_markers`/`detect_metabolic_priority_pattern`** — this is a
+disclosure added on top of the existing pipeline, not a change to
+ranking or pattern-detection logic, to keep this change narrowly scoped.
+Excluding a flagged value from those (so an implausible number can't
+itself drive a "see a clinician" recommendation) is a reasonable next
+step, not done here.
+
+**Not a `kb_*` policy rule**: unlike this project's other numbered
+checks, these bounds don't trace to a `Nuaura mock policy` entry in
+`knowledge_base.jsonl` — see `plausibility.py`'s own docstring for the
+explicit "not clinically validated, a real deployment needs a clinician
+to own this table" caveat, consistent with this project's standing
+non-clinical/synthetic-reference-implementation framing.
+
+**Consequence**: New `Limitation(kind="implausible_value", ...)` entries
+can now appear in `brief.limitations`/`trace.limitations`; existing
+callers are unaffected (verified: full suite + ruff + mypy on the
+touched files all pass, no existing test's fixture data crosses any of
+the new bounds).
+
+---
+
+## 2026-09-19 — Narrator/model-provider changes are already gated by the eval suite; this makes that a stated policy, not just an accident of CI order
+
+**Context**: Item 3 of the same "探亲窗口" list. Enterprise model-risk
+guidance this project's market research turned up (SR 26-2's extension of
+bank model-risk management to generative/agentic AI) flags a specific
+concern: "the core model is usually a third-party system that can change
+without notice." This project already has a real answer to that —
+swappable narrator backends behind one interface (`_select_narrator()`),
+and a capability regression suite (`care_agent.eval`) — but nothing
+stated that the second thing is *supposed* to gate the first.
+
+**Decision**: State it as policy, not just document a coincidence: any
+change to a narrator backend, its prompt, or its underlying model version
+must pass `python -m care_agent eval-capabilities` before merge. No new
+CI wiring was needed — `.github/workflows/ci.yml`'s `test` job already
+runs `eval-capabilities` unconditionally on every push to `main` and
+every PR (line ~82), so this has been mechanically true since that job
+was added; this entry is the missing sentence that says so on purpose.
+
+**Consequence**: A reviewer asking "what stops a narrator/model swap from
+silently regressing behavior" now has a one-line, already-enforced
+answer, not just an inference from reading the CI config.
+
+---
+
+## 2026-09-20 — V2: a bounded tool-calling compound-reasoning engine, additive to the fixed 5-intent classifier
+
+**Context**: Item 4 of the "探亲窗口" list, and the largest one. The fixed
+5-intent classifier (`intent.py`) can only trigger one intent per
+question, so it structurally cannot answer a compound, multi-hop
+question ("compare my LDL and A1C trends against my reported diet
+change") — not a bug, a deliberate original scope boundary, but a real
+coverage ceiling. An architecture discussion the same day (see this
+project's own AWS-vs-Azure-vs-Construction-Intelligence comparison
+history) established the right shape for closing it without weakening
+anything: give an LLM real autonomy over *which* deterministic tools to
+call and in what combination, never over what a tool computes or
+whether its output is safe — the same "epistemic authority" boundary
+this project holds everywhere else.
+
+**Why hand-written, not Bedrock Agents / AgentCore / Bedrock Managed
+Agents**: live-researched the same day (three genuinely different AWS
+offerings as of 2026-09, not one). Bedrock Agents and Bedrock Managed
+Agents both hand the tool-calling loop itself to a managed service —
+this project's independent, hard-gated `safety.run_safety_checks`
+(never bypassable, never delegated) is easiest to keep airtight when
+this project's own code owns the whole loop, not a managed runtime.
+AgentCore is a different kind of thing entirely — secure session
+isolation, long-running (up to 8h) execution, MCP-based dynamic tool
+discovery, managed memory — infrastructure for *running* arbitrary agent
+code securely at scale, not an orchestration framework that replaces
+hand-written planning logic. None of AgentCore's actual capabilities are
+needed here: this project's tools are pure, side-effect-free reads
+against synthetic data (nothing to sandbox), a turn is bounded to a
+handful of tool calls (no long-running-execution need), and dynamic
+runtime tool discovery is specifically the kind of *expanded* autonomy
+this project's whole design deliberately withholds from the model (a
+dynamically-discovered tool has no guarantee it respects this project's
+grounding contract). Session's own precedent, independently verified,
+not just asserted: the Construction Intelligence sibling project's SPEC-M16
+V2 made the identical choice on Azure — a hand-written tool-calling loop
+against Azure OpenAI's native Chat Completions `tools=` parameter, not a
+higher-level "Azure AI Agent Service."
+
+**What was explicitly *not* adopted from that same SPEC-M16 precedent**:
+its D-062 decision downgraded a numeric-narrative-consistency check from
+a hard block to a disclosed-caveat-and-ship-anyway, based on a measured
+finding that the check's real-usage false-positive rate exceeded its
+true-positive rate, combined with that project's own "decision support,
+user shares responsibility" positioning. This project's `verify_numeric_
+grounding` catches a categorically different class of error (an invented
+fact, not an imprecisely-phrased real one) for an audience (a healthcare
+worker under real time pressure, per this project's own positioning
+discussion) whose realistic ability to independently re-verify every
+number is exactly what FDA's 2026 CDS guidance says can't be assumed for
+a tool whose whole value is *reducing* chart-review time. This project's
+hard fallback-on-any-failure stays completely unchanged for V2 — see
+"one safety gate, not two" below.
+
+**Decision — architecture**:
+- `orchestrator.py` (new): `TOOL_SPECS` (seven tools, each a thin wrapper
+  over existing deterministic functions this project already had --
+  `trend.compute_trend`, `reasoning.rank_focus_markers`, `reasoning.
+  build_supplement_cautions`, `QuestionnaireContext.fact`, catalog
+  lookups, the existing retriever -- no new computation logic anywhere),
+  `capability_gate` (rejects an unknown tool name or an out-of-vocabulary
+  `concept_id` before execution), `run_compound_reasoning` (plan ->
+  gate -> execute -> build a `Brief`, bounded to `MAX_ITERATIONS=2`: one
+  initial plan plus one bounded repair attempt if every call in it was
+  rejected -- never an unbounded loop, and an honest `unsupported_
+  request` `Limitation` if the repair also fails, never a guess).
+- `tool_planner.py` (new): `BedrockToolPlanner`, using the Converse API's
+  `toolConfig` (tool use) against the same Claude Haiku 4.5 model
+  `narrator/bedrock_narrator.py` already defaults to for narration --
+  live-confirmed to support tool use (2026-09 AWS docs). Off by default;
+  `ask_compound()` requires an explicit `planner` argument rather than
+  defaulting the way `narrator`/`retriever` do, because there is no safe
+  deterministic default that can plan an open-ended tool combination the
+  way `MockNarrator` can safely template a fixed intent.
+- `agent.py`: `ask()`'s narrate-verify-fallback tail extracted unchanged
+  into `_narrate_and_verify()` (a pure, behavior-preserving refactor,
+  verified by the full existing suite passing identically before and
+  after) so the new `ask_compound()` reuses the *exact same* method, not
+  a reimplementation. `ask_compound()` runs the same deterministic
+  `classify()` red-flag check *before* any tool-calling planning --
+  identical, unconditional gate to `ask()`'s, proven by a test asserting
+  the planner is never even invoked for an emergency-phrased question.
+
+**One safety gate, not two**: `run_compound_reasoning` returns the same
+`Brief` type `ask()`'s fixed pipeline produces, which is why
+`_narrate_and_verify` needs no V2-specific branch at all -- a V2-built
+Brief goes through identical hard-fallback-on-any-failure behavior,
+verified directly by a test reusing this project's existing
+`_UnsafeFakeNarrator` pattern against the compound-reasoning path.
+
+**Two real bugs found live, not by inspection or code review** (both
+regression-tested):
+1. `safety._sentence_context` treated *any* `.` as a sentence boundary,
+   including a decimal point. A trend fact rendered as one sentence
+   naming two decimal values for the same marker ("HbA1c trend: 5.8 % on
+   ... -> 6.1 % on ...") had its *second* value's marker-name-proximity
+   window truncated by the *first* value's own decimal point, excluding
+   "HbA1c" (named earlier in the same sentence) and producing a false
+   "no matching marker name nearby" grounding failure on a genuinely
+   grounded value. No V1 code path had ever produced two decimals for
+   one marker in one sentence before this. Fixed: a "." only counts as a
+   boundary when it isn't flanked by digits on both sides.
+2. `mock_narrator._compose_general`'s `mentioned_markers`/`focus_items`/
+   `grounded_facts` branches are mutually exclusive (`if`/`elif`/`elif`)
+   -- a compound question gathering facts from multiple tool categories
+   (e.g. allergies + a marker snapshot) rendered only whichever category
+   populated the first-checked field, silently dropping the rest from
+   the narrated answer even though they were correctly grounded and
+   present in the trace. Fixed with a dedicated `_compose_compound`
+   template (dispatched on `brief.intent == COMPOUND_REASONING`, a new
+   intent constant added to `intent.py`, not `orchestrator.py`, to keep
+   this project's one-way dependency direction intact -- `narrator`
+   never imports `orchestrator`) that always renders every gathered fact,
+   never picks one shape.
+
+**Consequence**: Three real compound-question classes verified live end
+to end (multi-marker-trend + questionnaire cross-reference; cross-marker
+priority beyond the one hardcoded metabolic pattern; supplement safety +
+allergy + marker snapshot) plus the honest-refusal path for an
+out-of-vocabulary question. `ask()` is provably unchanged (full suite
+passes identically). Deferred, not built here (see this session's own
+scoping discussion): multi-turn conversational memory, streaming, and
+the `patient`/`clinician` narrator persona toggle -- the last of these
+is the planned immediate next step, not abandoned.
+
+---
+
+## 2026-09-20 — Persona (`patient`/`clinician`) changes narration framing only, never facts or the safety gate
+
+**Context**: The planned immediate follow-up to V2 (previous entry). Two
+personas, one engine: the earlier architecture discussion concluded a
+clinician audience changes *what disclaimer framing is appropriate*
+("please see a doctor" vs. "this supports, doesn't replace, your
+judgment"), never what counts as a grounded fact or what triggers a
+safety fallback -- that boundary is identical for both personas and
+this change doesn't touch it anywhere.
+
+**Decision**: `Brief.persona: str = "patient"` (new field, defaults to
+today's only behavior). `narrator/_prompt.py` gains `PATIENT_SYSTEM_
+PROMPT`/`CLINICIAN_SYSTEM_PROMPT` (sharing `_SHARED_RULES` -- the actual
+grounding/no-diagnosis/no-dosing rules, identical for both) and
+`system_prompt_for(persona)`; all five LLM narrators (Bedrock/Anthropic/
+OpenAI/Google/Ollama) now call it instead of importing a bare constant --
+`SYSTEM_PROMPT` kept as a backward-compatible alias, not removed.
+`mock_narrator.py` gains `_not_a_diagnosis_line`/`_general_disclaimer_
+line`, used at the three spots that previously hardcoded patient-only
+disclaimer text (`_compose_priority_focus`, `_compose_general`,
+`_compose_compound`). `ask()` and `ask_compound()` both gain a
+`persona: str = "patient"` parameter, set once on the `Brief` right after
+it's constructed.
+
+**Deliberately narrow scope, stated up front, not discovered as a
+limitation later**: this pass changes disclaimer text and LLM system-prompt
+framing only -- it does not rewrite every template's pronouns ("Your
+latest X" stays as-is for both personas) or loosen `check_no_diagnosis`'s
+patterns toward differential-style clinical language. That second change
+was explicitly discussed and deferred (see previous architecture
+discussion): it's a real, separate design question about how much
+diagnostic-adjacent latitude a clinician audience should get, not
+something to fold into a disclaimer-wording pass.
+
+**Consequence**: `ask()` and `ask_compound()` with no `persona` argument
+are byte-identical to before this feature existed (regression-tested).
+`AgentTrace`/API response shapes are unchanged -- persona is a caller-
+supplied input, not a new output field.
+
+---
+
+## 2026-09-20 — Browser demo for V2: a local-only dev server + SSE, not a real AWS deployment
+
+**Context**: Wanted to see V2 (compound reasoning) working in the real
+Workbench UI, specifically with live tool-calling *progress* visible --
+not a long silent wait followed by a sudden result. The production
+frontend (`frontend/src/api.ts`) only ever talks to the real, deployed,
+Cognito-authenticated `CareAgentApiStack`. Wiring V2 into that path for
+real would mean a new Lambda handler, an API Gateway route, IAM changes,
+and an actual `cdk deploy` -- real AWS cost and deployment risk, and this
+project's own established pattern (Stage B's "real spend starts here"
+markers) reserves that kind of step for a later, explicit decision, not
+something to fold into a demo/verification pass.
+
+**Decision**: `scripts/dev_server.py` -- a local, unauthenticated FastAPI
+server (new `devserver` extra: `fastapi`/`uvicorn`, kept out of `dev` so
+the core test/lint loop never needs it), never deployed, with no relation
+to the real Lambda/API Gateway path. `POST /ask` (V1, synchronous) and
+`GET /ask_compound/stream` (V2, Server-Sent Events) both call the exact
+same `HealthAgent` methods this project's tests already exercise --
+real Bedrock calls (`BedrockToolPlanner` + `BedrockNarrator`), not a
+scripted fake, so the demo shows this project's real behavior, including
+real latency and real safety-fallback behavior.
+
+**No token streaming, and this is a considered choice, not a shortcut**:
+`run_compound_reasoning` and `ask_compound` gained an optional `on_stage`
+callback (backward-compatible, defaults to a no-op) fired at each real
+checkpoint -- planning, tool calls, narration. `dev_server.py` bridges
+this synchronous callback to an async SSE stream with a background
+thread + a `queue.Queue`. This project's own process is short and
+coarse-grained (one planner round-trip in the common case, then fast
+in-process tool calls, then one narration round-trip -- confirmed by a
+live timing run: ~1.5s to the planning result, ~2.9s more to the final
+answer) -- a small, fixed number of stage updates is the right amount of
+infrastructure for that shape, not per-token streaming (which SPEC-M16's
+own V2 needed and explicitly called "genuinely new infrastructure" --
+this project's shape doesn't require it).
+
+**Frontend**: `CompoundDemo.tsx` (new, standalone -- not folded into the
+existing, already-tested `AskForm.tsx` and its polling/generation-counter
+logic) uses the browser's native `EventSource` against
+`http://localhost:8000` (the dev server), independent of
+`config.apiBaseUrl`/Cognito. Renders each `stage` event as it arrives (a
+live-updating list, most recent highlighted) and the final `done` event
+through the existing `TraceView`/`Markdown` components unchanged --
+proving those components need no V2-specific handling, the same "one
+trace shape, not two" property `ask_compound` was built around.
+
+**Verified live, in a real browser, not just unit-tested**: three stage
+updates rendered progressively before the final answer (screenshotted at
+each step); the final render correctly showed the disposition badge,
+per-check severity tags, grounded facts, and an honest `missing_data`
+limitation (a guessed questionnaire field name that wasn't real) -- the
+same `TraceView` built for V1's item-1 work, unmodified, rendering a
+V2 result correctly. (Browser testing required temporarily bypassing
+`App.tsx`'s Cognito gate -- no interactive login credentials were
+available in this environment; the bypass was reverted immediately
+after verification, confirmed via `git diff` showing only the real,
+permanent `CompoundDemo` mount remaining.)
+
+**Consequence**: `care_agent[devserver]` is a new, clearly-scoped local
+tool, not a production surface -- deploying V2 for real (new Lambda,
+API Gateway route, real `cdk deploy`) remains a separate, later,
+explicitly-costed decision, exactly as this project's standing pattern
+requires.
+
+---
+
+## 2026-09-20 — Two more found live testing the browser demo: a real trace gap, and a UX restructure
+
+**Context**: The owner tested the browser demo directly and asked whether
+V2's answers were ever grounded in retrieved knowledge-base chunks --
+the evidence panel showed none. Investigated live rather than assumed.
+
+**Bug found**: `search_knowledge` was working correctly (confirmed via
+the tool call's own `result_summary`, and via calling the retriever
+directly with the same query -- both returned real, relevant chunks),
+but `ask_compound()` never copied `brief.retrieved_chunks` onto `trace`
+the way `ask()` does (`trace.retrieved_chunks = retrieved`). A real,
+successful retrieval never reached the Workbench's evidence panel at
+all. Fixed (`agent.py`, both the red-flag branch and the main path);
+regression-tested, and confirmed the test actually catches the bug (it
+fails against the pre-fix code, not just passes trivially).
+
+**Separately confirmed, not a bug**: the planner only calls
+`search_knowledge` when a question's own phrasing calls for general
+background (verified live: a lifestyle-advice question triggered it, a
+pure trend-comparison question correctly did not). When it isn't
+called, the narrator's *explanatory* prose (e.g. what LDL-C means)
+still draws on the model's own general medical knowledge -- this is not
+new to V2; V1's LLM narrators have always worked this way. Only
+*numeric* claims are hard-gated against `grounded_facts` for either
+engine; unstructured explanatory framing was never gated by the
+knowledge base, retrieved or not.
+
+**UX restructure**: `AskForm`/`CompoundDemo` were shown stacked
+(V1 always on top, V2 always below) -- the owner asked for a single
+top-level switch instead, mirroring SPEC-M16's own "Engine: V1/V2"
+toggle pattern. `App.tsx` gained an `engine: "v1" | "v2"` selector that
+swaps the entire view rather than showing both; verified live in the
+browser (same temporary-auth-bypass-then-revert method as the previous
+entry, confirmed via `git diff` afterward).
+
+**Deferred, explicitly, not started**: giving V2 the same Step
+Functions / Queue async execution modes V1 has. This is a materially
+larger, different task than everything in this entry or the previous
+one -- both of those stayed entirely local (dev server, browser-only
+verification). Step Functions/Queue execution is real, deployed AWS
+infrastructure (a new Lambda handler running `ask_compound`, CDK
+changes to `infra/stacks/orchestration_stack.py`/`queue_stack.py` or
+new equivalents, IAM for that Lambda to call Bedrock's tool-use
+Converse API, an actual `cdk deploy`) -- exactly the kind of real-cost,
+real-deployment step this project's standing pattern (Stage B, the
+previous dev-server entry) reserves for its own separate, explicit
+decision, not something to fold into today's local-only work.
+
+---
+
+## 2026-09-20 — V2's real production deployment path: extend `/ask`, not a new route
+
+**Context**: The owner asked to build V2's real, deployed path (not just
+the local dev server), then deploy and test it live in production --
+explicitly Option B of three offered. Every deployed Lambda entrypoint
+(`adapter.py`, `agent_task.py`, `process_job.py`) was confirmed (by
+grep, not assumption) to call only `HealthAgent.ask()` -- `ask_compound`
+had no production route at all before this entry.
+
+**Decision**: Extend the existing synchronous `/ask` route and
+`adapter.py` handler with an optional `engine: "v1" | "v2"` field
+(default `"v1"`, reproducing today's exact behavior when omitted) and an
+optional `persona: "patient" | "clinician"` field (default `"patient"`)
+-- not a new route, new Lambda, or new CDK integration. This reuses
+`adapter.py`'s entire existing run-tracking/evidence-write/error-handling
+logic unchanged rather than duplicating it, and mirrors the pattern this
+project's own Construction Intelligence sibling used for the identical
+problem (`ChatRequest.engine`, SPEC-M16). `agent_runtime.py` gains a
+`tool_planner = BedrockToolPlanner()` constructed alongside `agent`,
+using the same lazy-boto3-client pattern (no network call or credential
+check at construction, only at an actual `.propose_plan()` call) --
+`infra/tests/test_adapter.py`'s new `engine="v2"` tests monkeypatch this
+with a scripted fake, never making a real Bedrock call in CI, the same
+convention `tests/test_orchestrator.py` already established for the
+`care_agent` package's own tests. Deliberately scoped to the synchronous
+`/ask` path only -- `/runs` (Step Functions) and `/jobs` (SQS) giving
+`engine="v2"` support is explicitly still deferred (see the previous
+"browser demo" entry's own deferred-scope note); this entry doesn't
+change that.
+
+**No new IAM grant needed**: `BedrockToolPlanner` calls the same
+Converse API (`self._client.converse(...)`) as `BedrockNarrator`, which
+`grant_bedrock_invoke` already scopes `bedrock:InvokeModel` for on the
+exact model ARN both use -- confirmed by `BedrockNarrator`'s own Converse
+calls already working in production under this exact grant, not assumed
+from documentation. Tool-use (`toolConfig`) is an additional request
+parameter on the same API call, not a different IAM action.
+
+**Verification before deploy, not after**: `cdk synth --quiet` succeeded
+for every stack (confirms the Lambda asset bundling -- a plain file copy
+of `src/care_agent/`, see `build_lambda_asset.py` -- picks up the new
+`orchestrator.py`/`plausibility.py`/`tool_planner.py` modules with no
+build-step changes, and that `boto3` alone, already in the Lambda
+runtime image, covers `BedrockToolPlanner`'s only dependency, same as
+`BedrockNarrator`'s). The full infra suite (165 tests, cdk-nag included)
+and the full `care_agent` suite (248 tests) both pass. A new live smoke
+test (`test_live_engine_v2_compound_reasoning_returns_a_real_safe_
+grounded_answer`, `infra/tests/test_live_endpoint_smoke.py`) is added
+but not yet run -- it requires a real deployed endpoint, and is the
+actual production verification step for this work, to be run once
+`cdk deploy` completes.
+
+**Frontend -- added after the owner asked for a real, working browser
+test, not just an API-level one**: `CompoundDemo.tsx` (the "V2" tab)
+still targets only the local dev server and says so in its own UI text
+-- left as-is, since making it target the real deployed endpoint would
+mean losing its live SSE progress display for no gain the "V1" tab
+doesn't already give more simply (see below). Instead, `AskForm.tsx`'s
+existing "Ask" (sync) mode -- which already correctly authenticates
+against the real deployed API via `authedFetch`/Cognito, unlike
+`CompoundDemo` -- gained `Engine` (`v1`/`v2`) and `Persona` selectors.
+This is the real, production-authenticated way to exercise `engine="v2"`
+from the actual Workbench UI: no new component, no new auth path, just
+two `<select>`s and `askQuestion()` gaining two optional parameters
+(`api.ts`). Verified locally (`tsc`/`eslint`/`vitest` clean, and the
+dropdown itself screenshotted live in a browser) before commit.
+
+**Consequence**: `cdk deploy` is the one remaining step to make any of
+this real in production -- explicitly not run as part of this entry,
+per this project's standing "real deployment is its own deliberate
+decision" pattern (Stage B, the dev-server entry).
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

@@ -19,6 +19,13 @@ TREND_CHECK: Intent = "trend_check"
 SUPPLEMENT_SAFETY: Intent = "supplement_safety"
 GENERAL: Intent = "general_bloodwork_question"
 RED_FLAG: Intent = "red_flag_emergency"
+# Never produced by `classify()` -- set directly by `orchestrator.py`'s
+# tool-calling engine (V2). Lives here, not in `orchestrator.py`, so
+# `narrator/mock_narrator.py` can dispatch on it without creating a
+# narrator -> orchestrator dependency (this project's architecture keeps
+# dependencies one-way: reasoning/narrator never import a higher layer,
+# see docs/ARCHITECTURE.md).
+COMPOUND_REASONING: Intent = "compound_reasoning"
 
 _RED_FLAG_PATTERNS = [
     r"\bchest pain\b",

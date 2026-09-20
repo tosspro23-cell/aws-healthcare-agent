@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
+from care_agent.narrator._prompt import build_user_message, system_prompt_for
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -60,7 +60,7 @@ class AnthropicNarrator:
         message = self._client.messages.create(
             model=self._model,
             max_tokens=500,
-            system=SYSTEM_PROMPT,
+            system=system_prompt_for(brief.persona),
             messages=[{"role": "user", "content": user_message}],
         )
         # message.content can include non-text blocks (tool use, thinking, ...);

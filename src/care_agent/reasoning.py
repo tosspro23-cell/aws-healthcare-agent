@@ -28,6 +28,7 @@ from care_agent.models import (
     RetrievedChunk,
     UserProfile,
 )
+from care_agent.plausibility import assess_plausibility
 from care_agent.staleness import StalenessResult, assess_staleness
 from care_agent.trend import TrendResult
 
@@ -417,6 +418,54 @@ def staleness_limitation(latest_panel: Panel | None) -> tuple[Limitation | None,
     )
 
 
+def implausible_value_limitations(panel: Panel | None) -> list[Limitation]:
+    """Flag any biomarker in `panel` whose raw value falls outside
+    `plausibility.assess_plausibility`'s outer physiological bounds --
+    independent of `Biomarker.classification` (a value can be flagged
+    here regardless of whether the source data calls it "normal").
+
+    Runs over *every* biomarker in the panel, not just `rank_focus_markers`'
+    output -- that function only considers markers the dataset already
+    classifies as abnormal (`severity_weight(classification) > 0`), so an
+    implausible-but-mislabeled-"normal" value would otherwise never be
+    checked at all.
+
+    Deliberately does not remove the marker from `rank_focus_markers` or
+    `detect_metabolic_priority_pattern`'s input -- this is a disclosure,
+    not an exclusion, in this first pass. Excluding a flagged value from
+    downstream ranking/pattern-detection is a reasonable next step, not
+    done here to keep this change narrowly scoped and easy to review.
+    """
+    if panel is None:
+        return []
+    limitations: list[Limitation] = []
+    for marker in panel.biomarkers:
+        result = assess_plausibility(marker)
+        if result.is_plausible or result.bounds is None:
+            continue
+        # Deliberately does not quote the numeric bounds here (e.g.
+        # "0-1000 mg/dL") -- those are this project's own internal
+        # constants, not a fact about the patient, so nothing in
+        # `grounded_facts` would ever ground them, and `verify_numeric_
+        # grounding` scans *every* number in the final answer text,
+        # including rendered Limitation text (see every narrator
+        # template's "Limitation: {lim.detail}" line). Stating the
+        # bounds here would make this limitation fail its own safety
+        # check purely because of numbers this check added, not the
+        # narrator -- caught before it shipped, not found live.
+        limitations.append(
+            Limitation(
+                kind="implausible_value",
+                detail=(
+                    f"{marker.display_name} was reported as {marker.value} {marker.unit}, which is outside the "
+                    "range of values this system can plausibly verify -- this may be a data entry or unit error "
+                    "rather than a real result; verify with the source lab before acting on it."
+                ),
+            )
+        )
+    return limitations
+
+
 @dataclass
 class Brief:
     """Structured, fully-grounded output of the reasoning pipeline."""
@@ -436,3 +485,10 @@ class Brief:
     mentioned_markers: dict[str, Biomarker] = field(default_factory=dict)
     previous_panel_dates: list[str] = field(default_factory=list)
     red_flag: bool = False
+    # Who this answer is for -- "patient" (direct-to-consumer framing:
+    # "please see a doctor") or "clinician" (decision-support framing:
+    # "supports, doesn't replace, your judgment"). Affects narration
+    # voice/disclaimer only (see `mock_narrator._disclaimer_for` and
+    # `narrator._prompt.system_prompt_for`) -- never the safety gate,
+    # which is identical for both (see docs/DECISIONS.md, 2026-09-20).
+    persona: str = "patient"

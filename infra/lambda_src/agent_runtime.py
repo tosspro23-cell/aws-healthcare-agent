@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 from care_agent.agent import HealthAgent
+from care_agent.tool_planner import BedrockToolPlanner
 
 _DATA_DIR = Path(os.environ.get("CARE_AGENT_DATA_DIR", str(Path(__file__).resolve().parent / "data")))
 
@@ -27,3 +28,13 @@ agent = HealthAgent(
     catalog_path=_DATA_DIR / "mock_biomarker_catalog.sqlite",
     kb_path=_DATA_DIR / "knowledge_base.jsonl",
 )
+
+# V2 (`ask_compound`, `engine="v2"` requests -- see `adapter.py`). Same
+# lazy-boto3-client pattern as `HealthAgent`'s own narrator construction:
+# building this never makes a network call or needs real credentials, only
+# an actual `.propose_plan()` call does -- constructing it unconditionally
+# here is exactly as safe as `agent` above, and `infra/tests/test_adapter.py`
+# monkeypatches this with a scripted fake for its `engine="v2"` tests, the
+# same way `tests/test_orchestrator.py` does for the `care_agent` package's
+# own tests, rather than making a real Bedrock call in CI.
+tool_planner = BedrockToolPlanner()

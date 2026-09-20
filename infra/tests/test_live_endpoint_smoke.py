@@ -143,3 +143,30 @@ def test_live_supplement_question_gives_no_dose():
     assert payload["safe"] is True
     lowered = payload["answer"].lower()
     assert "mg" not in lowered or "162 mg/dl" in lowered  # the LDL value itself is fine; a dose isn't
+
+
+@requires_token
+def test_live_engine_v2_compound_reasoning_returns_a_real_safe_grounded_answer():
+    """The first real, deployed test of `engine="v2"` (`ask_compound` --
+    see docs/DECISIONS.md, 2026-09-20 entries) -- a genuine compound
+    question the fixed 5-intent classifier (engine="v1") cannot answer at
+    all (it can only trigger one intent, on one marker, per question).
+    Uses the real, deployed `BedrockToolPlanner` (a real Bedrock Converse
+    tool-use call), not a scripted fake -- this is the actual production
+    behavior, not a simulation of it."""
+    status, payload = _post_ask(
+        {
+            "user_id": "user_demo_001",
+            "question": "Compare my LDL and A1C trends and tell me if my reported diet change is helping.",
+            "engine": "v2",
+            "persona": "clinician",
+        }
+    )
+    assert status == 200
+    assert payload["safe"] is True
+    assert payload["trace"]["intent"] == "compound_reasoning"
+    # Both trend values must be present -- this is exactly what engine="v1"
+    # cannot do in one question (only one intent/marker per question).
+    assert "148" in payload["answer"] and "162" in payload["answer"]
+    assert "5.8" in payload["answer"] and "6.1" in payload["answer"]
+    assert any(c["name"] == "get_marker_trend" for c in payload["trace"]["tool_calls"])

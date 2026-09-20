@@ -1,10 +1,24 @@
 import type { AgentTrace } from "../api";
 
+const DISPOSITION_LABEL: Record<AgentTrace["disposition"], string> = {
+  answered: "Answered -- no fallback",
+  answered_after_hard_fallback: "Answered -- hard fallback (policy violation caught)",
+  answered_after_soft_fallback: "Answered -- soft fallback (grounding check only)",
+};
+
 export function TraceView({ trace }: { trace: AgentTrace }) {
   const fallback = trace.safety_checks.find((c) => c.name === "narrator_fallback");
 
   return (
     <div className="trace">
+      <section>
+        {/* Disposition is set once the fallback decision is final (see
+            AgentTrace.disposition's own docstring) -- it never changes
+            what was returned, it just makes the *why* reviewable at a
+            glance instead of re-deriving it from safety_checks. */}
+        <span className={`disposition disposition-${trace.disposition}`}>{DISPOSITION_LABEL[trace.disposition]}</span>
+      </section>
+
       <section>
         <h3>Safety checks</h3>
         <ul className="checks">
@@ -12,6 +26,12 @@ export function TraceView({ trace }: { trace: AgentTrace }) {
             <li key={check.name} className={check.passed ? "pass" : "fail"}>
               <span className="badge">{check.passed ? "PASS" : "FAIL"}</span>
               <span className="check-name">{check.name}</span>
+              {/* narrator_fallback is a synthetic informational entry, not
+                  one of the four real checks -- it has no meaningful
+                  severity of its own, so skip the tag for it. */}
+              {check.name !== "narrator_fallback" && (
+                <span className={`severity severity-${check.severity}`}>{check.severity}</span>
+              )}
               {check.detail && <span className="check-detail">{check.detail}</span>}
             </li>
           ))}

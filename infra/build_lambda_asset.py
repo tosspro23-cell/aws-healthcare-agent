@@ -19,9 +19,13 @@ call, several entry points into it. Handler modules that don't need
 touch Step Functions / DynamoDB) still get it bundled; the package is tiny
 enough that this costs nothing meaningful and keeps this build step simple.
 
-If a non-mock narrator backend is ever wired into the deployed Lambda (it
-isn't yet -- these paths only exercise the mock path), whichever optional
-SDK that needs would have to be added to a real bundling step at that point.
+The deployed AskHandler's Bedrock narrator (`CARE_AGENT_NARRATOR_BACKEND=
+bedrock`, see `api_stack.py`) and V2's `BedrockToolPlanner` (`engine="v2"`,
+see `agent_runtime.py`) both only need `boto3` -- already in the Lambda
+runtime image, so this stays a plain file copy for them too. A *different*
+optional narrator/planner backend (Anthropic/OpenAI/Google's own SDKs)
+would need a real bundling step (`pip install` or Docker) added here first;
+none of those are wired into any deployed Lambda as of this writing.
 """
 
 from __future__ import annotations

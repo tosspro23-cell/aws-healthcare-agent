@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
+from care_agent.narrator._prompt import build_user_message, system_prompt_for
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -57,7 +57,7 @@ class OllamaNarrator:
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt_for(brief.persona)},
                 {"role": "user", "content": user_message},
             ],
             "stream": False,

@@ -11,11 +11,35 @@ has to choose good phrasing, never new facts.
 
 from __future__ import annotations
 
-from care_agent.intent import PRIORITY_FOCUS, RED_FLAG, SUPPLEMENT_SAFETY, TREND_CHECK
+from care_agent.intent import COMPOUND_REASONING, PRIORITY_FOCUS, RED_FLAG, SUPPLEMENT_SAFETY, TREND_CHECK
 from care_agent.models import UserProfile
 from care_agent.reasoning import Brief, FocusItem
 
 _TOP_N_FOCUS = 3
+
+# Persona-scoped narration voice: this project's positioning discussion
+# (see docs/DECISIONS.md, 2026-09-20) concluded persona should change
+# *disclaimer framing*, never the fact-verification boundary
+# (`safety.verify_numeric_grounding` is identical either way) -- and,
+# within narration, only the small set of lines that explicitly name who
+# the answer is/isn't for. Most template content (marker values, trend
+# direction, limitations) reads naturally for either audience unchanged.
+_PATIENT_NOT_A_DIAGNOSIS = "This is not a diagnosis, and it doesn't replace a clinician's interpretation of your full history."
+_CLINICIAN_NOT_A_DIAGNOSIS = (
+    "This is a decision-support summary, not an automated diagnosis -- it supports, and does not replace, your clinical judgment."
+)
+_PATIENT_GENERAL_DISCLAIMER = "This is general, educational information based on your data — not a diagnosis or treatment plan."
+_CLINICIAN_GENERAL_DISCLAIMER = (
+    "This is a decision-support summary of the patient's data, intended to support -- not replace -- your clinical judgment."
+)
+
+
+def _not_a_diagnosis_line(persona: str) -> str:
+    return _CLINICIAN_NOT_A_DIAGNOSIS if persona == "clinician" else _PATIENT_NOT_A_DIAGNOSIS
+
+
+def _general_disclaimer_line(persona: str) -> str:
+    return _CLINICIAN_GENERAL_DISCLAIMER if persona == "clinician" else _PATIENT_GENERAL_DISCLAIMER
 
 
 def _fmt_marker(item: FocusItem) -> str:
@@ -172,8 +196,7 @@ def _compose_priority_focus(brief: Brief, question_text: str, profile: UserProfi
             lines.append(f"Also flagged for review, lower priority right now: {extra}.")
 
         lines.append(
-            "These values sit in ranges commonly associated with higher cardiometabolic risk. "
-            "This is not a diagnosis, and it doesn't replace a clinician's interpretation of your full history."
+            f"These values sit in ranges commonly associated with higher cardiometabolic risk. {_not_a_diagnosis_line(brief.persona)}"
         )
 
     steps = _next_steps(brief)
@@ -286,10 +309,55 @@ def _compose_general(brief: Brief, question_text: str, profile: UserProfile) -> 
         lines.append("Here's what's flagged in your latest panel:")
         for item in top:
             lines.append(f"- {_fmt_marker(item)}")
+    elif brief.grounded_facts:
+        # Neither of the two shapes above -- e.g. `orchestrator.py`'s V2
+        # tool-calling path, whose facts can come from a marker *trend*
+        # (two dated values, not a single current one) or a questionnaire
+        # lookup rather than `mentioned_markers`/`focus_items`. Render the
+        # facts themselves rather than falsely claiming there's nothing to
+        # show -- caught live by `test_ask_compound_answers_safely_end_to_end`,
+        # which found this branch missing entirely (see docs/DECISIONS.md,
+        # 2026-09-20 entry).
+        lines.append("Here's what I found:")
+        for fact in brief.grounded_facts:
+            lines.append(f"- {fact.claim}")
     else:
         lines.append("I don't have enough grounded data to answer that specifically yet.")
 
-    lines.append("This is general, educational information based on your data — not a diagnosis or treatment plan.")
+    lines.append(_general_disclaimer_line(brief.persona))
+
+    for lim in brief.limitations:
+        lines.append(f"Limitation: {lim.detail}")
+
+    src = _sources_line(brief)
+    if src:
+        lines.append(src)
+
+    return "\n".join(lines)
+
+
+def _compose_compound(brief: Brief, question_text: str, profile: UserProfile) -> str:
+    """V2's (`orchestrator.py`) narration template. Unlike every other
+    `_compose_*` function here, this one never special-cases which `Brief`
+    field is populated -- a compound answer can carry marker snapshots,
+    trends, questionnaire facts, and allergy/supplement info all at once,
+    and picking just one shape the way `_compose_general`'s
+    `mentioned_markers`/`focus_items` branches do would silently drop
+    whichever categories aren't the first one checked. Found live, not by
+    inspection: a supplement-safety question (allergies + supplement
+    cautions + a marker snapshot) rendered only the marker snapshot,
+    dropping a correctly-grounded allergy fact entirely even though it was
+    present in the trace (see docs/DECISIONS.md, 2026-09-20 entry). Always
+    show everything gathered, in the order it was gathered."""
+    lines: list[str] = []
+    if brief.grounded_facts:
+        lines.append("Here's what I found:")
+        for fact in brief.grounded_facts:
+            lines.append(f"- {fact.claim}")
+    else:
+        lines.append("I don't have enough grounded data to answer that specifically yet.")
+
+    lines.append(_general_disclaimer_line(brief.persona))
 
     for lim in brief.limitations:
         lines.append(f"Limitation: {lim.detail}")
@@ -309,6 +377,8 @@ class MockNarrator:
     def compose(self, brief: Brief, question_text: str, profile: UserProfile) -> str:
         if brief.red_flag:
             return _compose_red_flag(brief, question_text, profile)
+        if brief.intent == COMPOUND_REASONING:
+            return _compose_compound(brief, question_text, profile)
         if brief.intent == PRIORITY_FOCUS:
             return _compose_priority_focus(brief, question_text, profile)
         if brief.intent == TREND_CHECK:

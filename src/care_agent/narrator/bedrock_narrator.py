@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 
 from care_agent.models import UserProfile
-from care_agent.narrator._prompt import SYSTEM_PROMPT, build_user_message
+from care_agent.narrator._prompt import build_user_message, system_prompt_for
 from care_agent.narrator.mock_narrator import MockNarrator
 from care_agent.reasoning import Brief
 
@@ -74,7 +74,7 @@ class BedrockNarrator:
         response = self._client.converse(
             modelId=self._model_id,
             messages=[{"role": "user", "content": [{"text": user_message}]}],
-            system=[{"text": SYSTEM_PROMPT}],
+            system=[{"text": system_prompt_for(brief.persona)}],
             inferenceConfig={"maxTokens": 500},
         )
 

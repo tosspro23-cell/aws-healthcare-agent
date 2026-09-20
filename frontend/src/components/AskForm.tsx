@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { config } from "../config";
-import { askQuestion, startRun, enqueueJob, getRun, cancelRun, ApiError, type AskResponse, type RunRecord } from "../api";
+import {
+  askQuestion,
+  startRun,
+  enqueueJob,
+  getRun,
+  cancelRun,
+  ApiError,
+  type AskResponse,
+  type RunRecord,
+  type Engine,
+  type Persona,
+} from "../api";
 import { TraceView } from "./TraceView";
 import { Markdown } from "./Markdown";
 import { RunResultView, isTerminal } from "./RunResultView";
@@ -21,6 +32,12 @@ export function AskForm() {
   const [mode, setMode] = useState<Mode>("sync");
   const [userId, setUserId] = useState(config.demoUserId);
   const [question, setQuestion] = useState("What should I focus on first in my results?");
+  // "Ask" (sync) mode only -- `/runs`/`/jobs` don't support `engine="v2"`
+  // yet (see docs/DECISIONS.md, 2026-09-20 entry). This is the *real*,
+  // deployed `ask_compound` path -- unlike CompoundDemo.tsx (local dev
+  // server), this goes through the actual production API.
+  const [engine, setEngine] = useState<Engine>("v1");
+  const [persona, setPersona] = useState<Persona>("patient");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<AskResponse | null>(null);
@@ -113,7 +130,7 @@ export function AskForm() {
 
     try {
       if (mode === "sync") {
-        const result = await askQuestion(userId, question);
+        const result = await askQuestion(userId, question, engine, persona);
         setSyncResult(result);
         addHistoryEntry({ run_id: result.run_id, question, execution_type: "SYNC", submitted_at: new Date().toISOString() });
       } else {
@@ -219,6 +236,22 @@ export function AskForm() {
         <label>
           User ID
           <input value={userId} onChange={(e) => setUserId(e.target.value)} />
+        </label>
+        {mode === "sync" && (
+          <label>
+            Engine
+            <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={loading || pending}>
+              <option value="v1">V1 -- heuristic + semantic planner</option>
+              <option value="v2">V2 -- tool-calling agent (real deployed path)</option>
+            </select>
+          </label>
+        )}
+        <label>
+          Persona
+          <select value={persona} onChange={(e) => setPersona(e.target.value as Persona)} disabled={loading || pending}>
+            <option value="patient">Patient</option>
+            <option value="clinician">Clinician</option>
+          </select>
         </label>
         <label>
           Question

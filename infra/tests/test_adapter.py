@@ -302,3 +302,80 @@ def test_response_never_diagnoses_or_doses(aws_resources):
     lowered = payload["answer"].lower()
     assert "you have diabetes" not in lowered
     assert "500 mg" not in lowered
+
+
+# -- engine="v2" (compound reasoning) -----------------------------------
+#
+# No real Bedrock call here -- `agent_runtime.tool_planner` is patched
+# with a scripted fake, the same convention `tests/test_orchestrator.py`
+# uses for the `care_agent` package's own tests, rather than making a
+# real network call in CI. This exercises the Lambda *routing/plumbing*
+# (does `engine="v2"` reach `ask_compound`, get written to DynamoDB/S3,
+# return correctly) -- planning quality itself is covered by
+# `tests/test_orchestrator.py`'s live-verified suite, not duplicated here.
+
+
+class _FakeToolPlanner:
+    backend_name = "fake"
+
+    def propose_plan(self, question_text, repair_reason=None):
+        from care_agent.orchestrator import PlannedToolCall, ToolPlan
+
+        return ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))
+
+
+def test_engine_v2_returns_200_with_compound_reasoning_intent(aws_resources):
+    from unittest.mock import patch
+
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "How is my LDL trending?", "engine": "v2"})
+    with patch.object(adapter, "_tool_planner", _FakeToolPlanner()):
+        result = adapter.handler(event, None)
+
+    assert result["statusCode"] == 200
+    payload = json.loads(result["body"])
+    assert payload["safe"] is True
+    assert payload["trace"]["intent"] == "compound_reasoning"
+    assert "148" in payload["answer"] and "162" in payload["answer"]
+
+
+def test_engine_v2_writes_engine_field_to_dynamodb(aws_resources):
+    from unittest.mock import patch
+
+    event = _api_gateway_event(
+        {"user_id": "user_demo_001", "question": "How is my LDL trending?", "engine": "v2", "run_id": "v2-run-1"}
+    )
+    with patch.object(adapter, "_tool_planner", _FakeToolPlanner()):
+        adapter.handler(event, None)
+
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(os.environ["RUNS_TABLE_NAME"])
+    item = table.get_item(Key={"run_id": "v2-run-1"})["Item"]
+    assert item["engine"] == "v2"
+    assert item["status"] == "SUCCEEDED"
+
+
+def test_engine_omitted_defaults_to_v1_unchanged(aws_resources):
+    """The core backward-compatibility invariant: every existing caller
+    that never sends `engine` gets today's exact `ask()` behavior."""
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "What should I focus on first?"})
+    result = adapter.handler(event, None)
+    payload = json.loads(result["body"])
+    assert payload["trace"]["intent"] == "priority_focus"
+
+
+def test_invalid_engine_returns_400(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "engine": "v3"})
+    result = adapter.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+def test_invalid_persona_returns_400(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "persona": "not_a_real_persona"})
+    result = adapter.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+def test_clinician_persona_changes_v1_disclaimer(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "What should I focus on first?", "persona": "clinician"})
+    result = adapter.handler(event, None)
+    payload = json.loads(result["body"])
+    assert "decision-support" in payload["answer"].lower()

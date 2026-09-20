@@ -226,6 +226,17 @@ class GroundedFact(DictMixin):
     Optional and `None` for facts with no real biomarker name to check
     against (a panel-age fact, a questionnaire claim) -- those keep the
     older, name-independent check.
+
+    ``display_name_aliases`` widens that same check to also accept a
+    real, already-curated free-text alias of ``display_name`` (from
+    `BiomarkerCatalog.aliases_for` -- the same `marker_alias` table
+    `catalog.search_by_alias` already uses in the other direction), not
+    just the exact catalog string. Found live: a real narrator wrote
+    "LDL cholesterol" -- a genuine, already-vetted alias for "LDL-C", not
+    a fabrication -- and was rejected only because the check required the
+    literal display_name. Empty by default; populated at construction
+    time wherever a fact's marker is known (see `agent.py`/
+    `orchestrator.py`), never guessed inside `safety.py` itself.
     """
 
     claim: str
@@ -234,6 +245,7 @@ class GroundedFact(DictMixin):
     numeric_values: tuple[float, ...] = field(default_factory=tuple)
     unit: str | None = None
     display_name: str | None = None
+    display_name_aliases: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -244,9 +256,30 @@ class Limitation(DictMixin):
 
 @dataclass(frozen=True)
 class SafetyCheck(DictMixin):
+    """One independent guardrail result (see ``care_agent.safety``).
+
+    ``severity`` distinguishes two structurally different kinds of
+    failure, for operators reviewing ``AgentTrace.safety_checks`` later --
+    it does **not** change what reaches the patient: any failed check,
+    hard or soft, still triggers the existing fallback-to-mock behavior
+    in ``agent.py`` unchanged.
+
+    - ``"hard"`` -- an unambiguous policy violation (diagnosis language,
+      dosing instructions, an empty answer). There is no legitimate
+      reading of a hard-check failure; it is always the narrator's fault.
+    - ``"soft"`` -- ``numeric_grounding`` only. This file's own docstring
+      documents a real, measured history of this specific check producing
+      false positives (hyphenated compounds, unrecognized units, list
+      markers) that were found and fixed one at a time. A soft failure is
+      still rejected today, but it is the class of failure worth
+      reviewing separately to see whether the check itself needs another
+      fix, versus a hard failure, which never needs that kind of review.
+    """
+
     name: str
     passed: bool
     detail: str = ""
+    severity: Literal["hard", "soft"] = "hard"
 
 
 @dataclass
@@ -270,6 +303,23 @@ class AgentTrace(DictMixin):
     # LLM draft had said or why it was discarded), not shown to an end
     # user as advice.
     rejected_draft: str | None = None
+    # Three-way classification of *why* this response looks the way it
+    # does, set once in `agent.py` after the safety/fallback decision is
+    # final -- an operator reviewing traces across many requests can
+    # filter on this instead of re-deriving it from `safety_checks` every
+    # time. This does **not** change what was returned to the patient;
+    # the fallback behavior it records already happened before this field
+    # is set.
+    #
+    # - "answered": every check passed on the first draft; no fallback.
+    # - "answered_after_soft_fallback": the rejected draft failed only
+    #   `numeric_grounding` (severity "soft") -- worth reviewing whether
+    #   the check itself has another false-positive gap, same as the
+    #   real ones this project has found and fixed before.
+    # - "answered_after_hard_fallback": the rejected draft failed at
+    #   least one "hard" check (diagnosis, dosing, empty answer) -- an
+    #   unambiguous narrator failure, never the check's fault.
+    disposition: Literal["answered", "answered_after_soft_fallback", "answered_after_hard_fallback"] = "answered"
 
 
 @dataclass

@@ -14,9 +14,7 @@ from __future__ import annotations
 
 from care_agent.models import RetrievedChunk
 
-SYSTEM_PROMPT = (
-    "You are a health-data explainer. You will be given a list of already-verified, "
-    "grounded facts and safety constraints. Rephrase them into a clear, warm, concise answer. "
+_SHARED_RULES = (
     "Rules: do not add any number, marker, or claim that is not in the provided facts. "
     "When you mention a marker that has a specific value and unit in the source facts "
     "(e.g. 'LDL-C 162 mg/dL'), state that exact value and unit rather than only a vague "
@@ -30,6 +28,33 @@ SYSTEM_PROMPT = (
     "answer more specific and useful, but never state a specific number, dose, or value from that "
     "reference material as true for this user unless it already appears in the grounded facts above."
 )
+
+# Patient-facing (default) and clinician-facing system prompts -- see
+# docs/DECISIONS.md (2026-09-20 entry) for why persona changes only this
+# framing layer, never `_SHARED_RULES` (identical for both) or the
+# independent safety check applied to whatever comes back (also identical
+# for both -- see `agent.py`'s `_narrate_and_verify`).
+PATIENT_SYSTEM_PROMPT = (
+    "You are a health-data explainer, writing directly to the patient. You will be given a list of "
+    "already-verified, grounded facts and safety constraints. Rephrase them into a clear, warm, concise answer. "
+    + _SHARED_RULES
+)
+
+CLINICIAN_SYSTEM_PROMPT = (
+    "You are a clinical decision-support assistant, writing to the treating clinician (not the patient). You "
+    "will be given a list of already-verified, grounded facts about the patient's data and safety constraints. "
+    "Rephrase them into a clear, concise, clinically-toned summary that supports -- and never replaces -- the "
+    "clinician's own judgment. Refer to 'the patient', not 'you'. " + _SHARED_RULES
+)
+
+# Backward-compatible alias -- every existing narrator file and test that
+# imports the bare `SYSTEM_PROMPT` keeps working unchanged; new callers
+# should use `system_prompt_for(persona)` instead.
+SYSTEM_PROMPT = PATIENT_SYSTEM_PROMPT
+
+
+def system_prompt_for(persona: str) -> str:
+    return CLINICIAN_SYSTEM_PROMPT if persona == "clinician" else PATIENT_SYSTEM_PROMPT
 
 # Retrieval currently drives citations, not generation content, for the
 # mock narrator by design (see docs/DECISIONS.md's Stage A entry) -- its
