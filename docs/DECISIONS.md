@@ -3480,6 +3480,65 @@ decision" pattern (Stage B, the dev-server entry).
 
 ---
 
+## 2026-09-20 — Real mypy errors found by CI, masked locally by an unrelated venv difference
+
+**Context**: CI's `test` job failed `mypy src` on all three Python
+versions after the first push of this session's V2 work. Every local
+`mypy` invocation *this entire session* had instead hit a pre-existing,
+unrelated failure -- `numpy/__init__.pyi:737: error: Type statement is
+only supported in Python 3.12 and greater` -- and each time, that was
+treated as "pre-existing, unrelated to my changes" and mypy verification
+was skipped rather than actually completed. That reasoning was correct
+about the *cause* (this venv's numpy, pulled in by earlier
+Stage-A/vector-retrieval work, really is incompatible with this venv's
+Python 3.14 when mypy targets `python_version = "3.10"`) but wrong about
+the *conclusion*: "mypy never got far enough to check my new code" is not
+the same as "my new code is mypy-clean," and every check this session
+silently treated the former as proof of the latter.
+
+**What CI's clean venv exposed, once mypy actually ran to completion**:
+`pip install -e ".[dev]"` (CI's exact install, and this project's own
+"core tests need no LLM SDK" design) never installs numpy at all, so
+CI's mypy hit no stub conflict and found 5 real type errors in this
+session's new code:
+
+- Two `Panel | None`/`float | None` narrowing gaps in `orchestrator.py`
+  (accessing `.measurement_date`/`.panel_id` after checking `marker`,
+  not `latest_panel`, for `None`; calling `float()` on `TrendResult`
+  fields mypy can't infer are set from `available=True` alone) -- fixed
+  with an explicit `latest_panel is None` check and an `assert` matching
+  the exact pattern `mock_narrator.py`'s own `_compose_trend` already
+  uses for the identical guarantee.
+- A variable-name collision in `agent.py`: a new loop introduced earlier
+  in `ask()` reused the name `marker` for a non-Optional `Biomarker`,
+  and mypy's whole-function flow analysis then rejected a *later*,
+  pre-existing reassignment of the same name to a `Biomarker | None`.
+  Renamed the new loop's variable to `panel_marker`.
+- A local `disposition: str` variable assigned into `AgentTrace.
+  disposition`'s narrower `Literal[...]` field -- `str` isn't assignable
+  to a `Literal` even though this code only ever sets one of the three
+  literal values at runtime. Fixed with a shared `_Disposition` type
+  alias matching `models.py`'s field type exactly, imported once, not
+  duplicated.
+
+**Fixed the verification gap itself, not just the errors**: built a
+throwaway venv (`python3 -m venv`, then `pip install -e ".[dev]"` only,
+no `bedrock`/`llm`/`chroma` extras) to reproduce CI's exact dependency
+set locally before pushing again -- confirmed it has no numpy, and that
+`mypy src`, `pytest`, `ruff check`, and `ruff format --check` all pass
+identically to what CI actually runs, not what this session's own
+polluted venv happened to allow through.
+
+**Consequence**: the standing lesson, not just this one fix -- a check
+that fails to *run* is not evidence of a check that *passed*, and this
+project's own venv accumulating optional extras across many phases
+(chroma, bedrock, llm) had quietly made local mypy verification
+meaningless for an unknown number of prior changes, not just this one.
+A clean, dev-extra-only venv is now the standard for verifying anything
+before pushing, not this session's main working venv.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

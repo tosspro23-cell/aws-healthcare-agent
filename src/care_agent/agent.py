@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 from care_agent.catalog import DEFAULT_CATALOG_PATH, BiomarkerCatalog
 from care_agent.data_store import DEFAULT_DATA_DIR, DataStore
@@ -50,6 +51,10 @@ from care_agent.reasoning import (
 from care_agent.retrieval import DEFAULT_KB_PATH, KnowledgeRetriever
 from care_agent.safety import run_safety_checks
 from care_agent.trend import compute_trend
+
+# Matches `AgentTrace.disposition`'s own type exactly (models.py) -- kept
+# as one alias, not duplicated, so the two can't silently drift apart.
+_Disposition = Literal["answered", "answered_after_soft_fallback", "answered_after_hard_fallback"]
 
 
 def _select_narrator():
@@ -194,8 +199,22 @@ class HealthAgent:
                         )
                     )
                     brief.limitations.extend(implausible_limitations)
-                    for marker in latest_panel.biomarkers:
-                        result = assess_plausibility(marker)
+                    # Named `panel_marker`, not `marker` -- this function
+                    # reassigns `marker` later (line ~254, pre-existing
+                    # code) to a *different*, `Biomarker | None`-typed
+                    # value; reusing the name here made mypy infer this
+                    # loop's non-Optional narrowing as that later
+                    # variable's type too, across the whole function
+                    # scope, and reject the later reassignment. Found by
+                    # `mypy src` -- CI's clean venv has no numpy installed
+                    # (this project's `dev` extra never pulls it in), so
+                    # mypy actually completed there; every local run this
+                    # session was silently blocked before reaching this
+                    # file by a numpy stub incompatible with this venv's
+                    # Python 3.14, and "blocked" was wrongly treated as
+                    # "clean." See docs/DECISIONS.md, 2026-09-20 entry.
+                    for panel_marker in latest_panel.biomarkers:
+                        result = assess_plausibility(panel_marker)
                         if result.is_plausible or result.bounds is None:
                             continue
                         # Grounds the flagged value itself -- without this,
@@ -206,15 +225,15 @@ class HealthAgent:
                         brief.grounded_facts.append(
                             GroundedFact(
                                 claim=(
-                                    f"{marker.display_name} = {marker.value} {marker.unit} "
+                                    f"{panel_marker.display_name} = {panel_marker.value} {panel_marker.unit} "
                                     f"(flagged implausible) on {latest_panel.measurement_date}"
                                 ),
                                 source_type="bloodwork",
-                                source_ref=f"{latest_panel.panel_id}:{marker.concept_id}",
-                                numeric_values=(float(marker.value),),
-                                unit=marker.unit,
-                                display_name=marker.display_name,
-                                display_name_aliases=self.catalog.aliases_for(marker.concept_id),
+                                source_ref=f"{latest_panel.panel_id}:{panel_marker.concept_id}",
+                                numeric_values=(float(panel_marker.value),),
+                                unit=panel_marker.unit,
+                                display_name=panel_marker.display_name,
+                                display_name_aliases=self.catalog.aliases_for(panel_marker.concept_id),
                             )
                         )
 
@@ -399,7 +418,7 @@ class HealthAgent:
         # `report` is reassigned to the mock narrator's own report -- this
         # must reflect why the fallback happened, not whether the mock
         # narrator's replacement text happens to pass every check too.
-        disposition: str = "answered"
+        disposition: _Disposition = "answered"
         if not report.passed and self.narrator.backend_name != "mock":
             # An LLM (or any non-mock) narrator failed a safety/grounding check.
             # Fall back to the deterministic narrator rather than return

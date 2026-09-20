@@ -169,6 +169,7 @@ def _execute_get_marker_trend(ctx: ToolExecutionContext, concept_id: str) -> Too
             result_summary=trend.reason_unavailable or "trend unavailable",
             limitations=[Limitation(kind="trend_unavailable", detail=f"{display_name}: {trend.reason_unavailable}")],
         )
+    assert trend.latest_value is not None and trend.previous_value is not None  # guaranteed by TrendResult when available=True
     fact = GroundedFact(
         claim=(
             f"{display_name} trend: {trend.previous_value} {trend.unit} on {trend.previous_date} -> "
@@ -192,8 +193,8 @@ def _execute_get_marker_trend(ctx: ToolExecutionContext, concept_id: str) -> Too
 def _execute_get_marker_snapshot(ctx: ToolExecutionContext, concept_id: str) -> ToolExecutionResult:
     display_name = _marker_display_name(ctx, concept_id)
     latest_panel = ctx.bloodwork.latest_panel
-    marker = latest_panel.get(concept_id) if latest_panel else None
-    if marker is None:
+    marker = latest_panel.get(concept_id) if latest_panel is not None else None
+    if latest_panel is None or marker is None:
         return ToolExecutionResult(
             call=PlannedToolCall("get_marker_snapshot", {"concept_id": concept_id}),
             ok=True,
