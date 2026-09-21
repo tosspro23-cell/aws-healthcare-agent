@@ -3539,6 +3539,56 @@ before pushing, not this session's main working venv.
 
 ---
 
+## 2026-09-21 — Gate the local-only V2 streaming demo behind an actual localhost check; redesign the Workbench UI
+
+**Context**: The user tested the real deployed CloudFront Workbench
+themselves, clicked the top-level "V2 -- tool-calling agent (local demo)"
+tab, and hit a real, user-facing error: "Could not reach the local dev
+server at http://localhost:8000." This was `CompoundDemo.tsx` working
+exactly as documented (it deliberately only ever talks to
+`scripts/dev_server.py` on `localhost:8000`) -- but presenting it as an
+equal top-level tab on the production site meant a real user could click
+into a dead end with no way to know it was never meant to work there.
+The user also separately asked whether the whole UI should look more
+professional, "像工作台" (like a real workbench).
+
+**Decision**: Two changes, made together since both concern the same
+surface. (1) `App.tsx` now computes `IS_LOCAL_DEV` from
+`window.location.hostname` and only renders the "Local streaming demo
+(dev only)" tab when true -- on the real deployed site it simply cannot
+appear, rather than appearing and failing. The real, working way to
+exercise V2 against the actual production API stays exactly where it
+already was: `AskForm.tsx`'s "Ask" mode Engine selector (added in the
+previous entry), which is what was actually used for the production
+smoke tests. (2) A real visual pass on `index.css` and the page shell:
+a dark sticky top bar with a wordmark (replacing a plain `<h1>` at the
+top of a narrow column), a deliberate slate/blue palette via CSS custom
+properties, card surfaces with borders + soft shadows, a monospace font
+stack for IDs/code/run_ids, segmented-control-style tabs, and a mobile
+layout fix (the tab row now uses `grid-template-columns:
+repeat(auto-fit, minmax(...))` under 480px instead of an uneven
+flex-wrap). No component logic changed beyond the `App.tsx` gating --
+this was a CSS/layout pass, verified visually in the browser pane at
+both desktop and mobile widths, plus `tsc -b`, `eslint`, `vitest`, and
+`vite build` all passing.
+
+**Alternatives considered**: Pointing `CompoundDemo.tsx` itself at the
+real deployed, authenticated API (losing the local dev server's simple
+unauthenticated `EventSource`, and duplicating what `AskForm.tsx`'s
+Engine selector already does against the real Lambda, which does not
+stream SSE progress). Rejected as unnecessary duplication -- the
+project doesn't need two different production-facing ways to run V2,
+and the live-progress SSE demo's actual value (showing tool-calling
+stages as they happen) is a local-development/demo aid, not something
+the deployed synchronous Lambda path currently supports anyway.
+
+**Consequence**: The production Workbench no longer offers a tab that
+is guaranteed to fail for every real visitor. Local development keeps
+the exact same live-streaming demo capability, unchanged, just no
+longer surfaced where it can't work.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title
