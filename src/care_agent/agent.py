@@ -28,6 +28,7 @@ from care_agent.intent import COMPOUND_REASONING, PRIORITY_FOCUS, RED_FLAG, SUPP
 from care_agent.models import (
     AgentResponse,
     AgentTrace,
+    Bloodwork,
     GroundedFact,
     Limitation,
     ToolCall,
@@ -112,6 +113,85 @@ class HealthAgent:
         self.narrator = narrator or _select_narrator()
         self._mock_narrator = MockNarrator()
 
+    def _apply_source_data_checks(self, brief: Brief, trace: AgentTrace, bloodwork: Bloodwork) -> None:
+        """Source-data staleness + plausibility checks -- shared by `ask()`
+        (V1) and `ask_compound()` (V2) so both pipelines flag the same
+        likely data-entry errors and out-of-date panels, independent of
+        which tools or intent classifier built the rest of the `Brief`.
+
+        Extracted from `ask()`'s own inline logic: an independent review
+        found `ask_compound()` never called either check at all -- a V2
+        answer built entirely from `get_marker_snapshot` would happily
+        report a value flagged implausible (e.g. an LDL-C of 5000 mg/dL)
+        or years out of date with no limitation attached, while the exact
+        same question through `ask()` correctly surfaced both. This
+        method is now the single place either check runs, so there is no
+        way to add a third pipeline that forgets it the way V2 did. See
+        docs/DECISIONS.md, 2026-09-21 entry.
+        """
+        stale_limitation, staleness_result = staleness_limitation(bloodwork.latest_panel)
+        brief.staleness = staleness_result
+        if stale_limitation:
+            brief.limitations.append(stale_limitation)
+            if stale_limitation.kind == "stale_data" and staleness_result is not None:
+                brief.grounded_facts.append(
+                    GroundedFact(
+                        claim="panel age in days",
+                        source_type="bloodwork",
+                        source_ref=bloodwork.latest_panel.panel_id if bloodwork.latest_panel else "none",
+                        numeric_values=(float(staleness_result.age_days),),
+                    )
+                )
+
+        latest_panel = bloodwork.latest_panel
+        if latest_panel is None:
+            return
+
+        # Independent of `Biomarker.classification`, so a value the
+        # dataset happens to classify as "normal" still gets checked.
+        # Only *flags* (via `brief.limitations`), never excludes a
+        # marker from a caller's own ranking/pattern-detection -- see
+        # `implausible_value_limitations`'s own docstring.
+        implausible_limitations = implausible_value_limitations(latest_panel)
+        if not implausible_limitations:
+            return
+
+        trace.tool_calls.append(
+            ToolCall(
+                name="implausible_value_limitations",
+                args={"panel_id": latest_panel.panel_id},
+                result_summary=f"{len(implausible_limitations)} marker(s) outside plausibility bounds",
+            )
+        )
+        brief.limitations.extend(implausible_limitations)
+        # Named `panel_marker`, not `marker` -- `ask()` (below) also binds
+        # `marker` to a different, `Biomarker | None`-typed value in its
+        # own scope; a shared name here previously made mypy infer this
+        # loop's non-Optional narrowing across the whole method, rejecting
+        # that later reassignment. See docs/DECISIONS.md, 2026-09-20 entry.
+        for panel_marker in latest_panel.biomarkers:
+            result = assess_plausibility(panel_marker)
+            if result.is_plausible or result.bounds is None:
+                continue
+            # Grounds the flagged value itself -- without this, the
+            # Limitation text above (which quotes `marker.value`) would
+            # fail its own numeric grounding check purely because this
+            # check introduced a number nothing else grounds yet.
+            brief.grounded_facts.append(
+                GroundedFact(
+                    claim=(
+                        f"{panel_marker.display_name} = {panel_marker.value} {panel_marker.unit} "
+                        f"(flagged implausible) on {latest_panel.measurement_date}"
+                    ),
+                    source_type="bloodwork",
+                    source_ref=f"{latest_panel.panel_id}:{panel_marker.concept_id}",
+                    numeric_values=(float(panel_marker.value),),
+                    unit=panel_marker.unit,
+                    display_name=panel_marker.display_name,
+                    display_name_aliases=self.catalog.aliases_for(panel_marker.concept_id),
+                )
+            )
+
     def ask(self, user_id: str, question_text: str, question_id: str | None = None, persona: str = "patient") -> AgentResponse:
         trace = AgentTrace(
             question_id=question_id,
@@ -165,78 +245,10 @@ class HealthAgent:
             allowed_dates.add(panel.measurement_date)
 
         if not brief.red_flag:
-            stale_limitation, staleness_result = staleness_limitation(bloodwork.latest_panel)
-            brief.staleness = staleness_result
-            if stale_limitation:
-                brief.limitations.append(stale_limitation)
-                if stale_limitation.kind == "stale_data" and staleness_result is not None:
-                    brief.grounded_facts.append(
-                        GroundedFact(
-                            claim="panel age in days",
-                            source_type="bloodwork",
-                            source_ref=bloodwork.latest_panel.panel_id if bloodwork.latest_panel else "none",
-                            numeric_values=(float(staleness_result.age_days),),
-                        )
-                    )
+            self._apply_source_data_checks(brief, trace, bloodwork)
 
             latest_panel = bloodwork.latest_panel
             if latest_panel is not None:
-                # Source-data plausibility check: independent of
-                # `Biomarker.classification`, so a value the dataset
-                # happens to classify as "normal" still gets checked.
-                # Runs before `rank_focus_markers` deliberately -- it
-                # only *flags* (via `brief.limitations`), never excludes
-                # a marker from ranking/pattern-detection in this first
-                # pass (see `implausible_value_limitations`'s own
-                # docstring).
-                implausible_limitations = implausible_value_limitations(latest_panel)
-                if implausible_limitations:
-                    trace.tool_calls.append(
-                        ToolCall(
-                            name="implausible_value_limitations",
-                            args={"panel_id": latest_panel.panel_id},
-                            result_summary=f"{len(implausible_limitations)} marker(s) outside plausibility bounds",
-                        )
-                    )
-                    brief.limitations.extend(implausible_limitations)
-                    # Named `panel_marker`, not `marker` -- this function
-                    # reassigns `marker` later (line ~254, pre-existing
-                    # code) to a *different*, `Biomarker | None`-typed
-                    # value; reusing the name here made mypy infer this
-                    # loop's non-Optional narrowing as that later
-                    # variable's type too, across the whole function
-                    # scope, and reject the later reassignment. Found by
-                    # `mypy src` -- CI's clean venv has no numpy installed
-                    # (this project's `dev` extra never pulls it in), so
-                    # mypy actually completed there; every local run this
-                    # session was silently blocked before reaching this
-                    # file by a numpy stub incompatible with this venv's
-                    # Python 3.14, and "blocked" was wrongly treated as
-                    # "clean." See docs/DECISIONS.md, 2026-09-20 entry.
-                    for panel_marker in latest_panel.biomarkers:
-                        result = assess_plausibility(panel_marker)
-                        if result.is_plausible or result.bounds is None:
-                            continue
-                        # Grounds the flagged value itself -- without this,
-                        # the Limitation text above (which quotes
-                        # `marker.value`) would fail its own numeric
-                        # grounding check purely because this new check
-                        # introduced a number nothing else grounds yet.
-                        brief.grounded_facts.append(
-                            GroundedFact(
-                                claim=(
-                                    f"{panel_marker.display_name} = {panel_marker.value} {panel_marker.unit} "
-                                    f"(flagged implausible) on {latest_panel.measurement_date}"
-                                ),
-                                source_type="bloodwork",
-                                source_ref=f"{latest_panel.panel_id}:{panel_marker.concept_id}",
-                                numeric_values=(float(panel_marker.value),),
-                                unit=panel_marker.unit,
-                                display_name=panel_marker.display_name,
-                                display_name_aliases=self.catalog.aliases_for(panel_marker.concept_id),
-                            )
-                        )
-
                 trace.tool_calls.append(
                     ToolCall(
                         name="rank_focus_markers",
@@ -544,6 +556,13 @@ class HealthAgent:
         brief, orchestrator_calls = run_compound_reasoning(question_text, ctx, planner, on_stage=on_stage)
         brief.persona = persona
         trace.tool_calls.extend(orchestrator_calls)
+        # Independent review found this call missing entirely: a
+        # tool-built Brief skipped both the staleness and source-value
+        # plausibility checks `ask()` always runs, so a V2 answer could
+        # report a stale or implausible value (e.g. LDL-C 5000 mg/dL)
+        # with no limitation attached at all. See docs/DECISIONS.md,
+        # 2026-09-21 entry.
+        self._apply_source_data_checks(brief, trace, bloodwork)
         trace.grounded_facts = brief.grounded_facts
         trace.limitations = brief.limitations
         # Found live testing this exact path: `search_knowledge` correctly

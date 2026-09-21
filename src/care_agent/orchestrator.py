@@ -108,20 +108,37 @@ TOOL_SPECS: list[dict] = [
 ]
 
 _TOOL_NAMES = {spec["name"] for spec in TOOL_SPECS}
+# Every declared parameter name per tool, derived from `TOOL_SPECS` rather
+# than hand-listed a second time -- see `capability_gate`'s own docstring
+# for why this matters.
+_TOOL_PARAMS: dict[str, tuple[str, ...]] = {spec["name"]: tuple(spec["parameters"]) for spec in TOOL_SPECS}
 
 
 def capability_gate(call: PlannedToolCall) -> tuple[bool, str | None]:
     """Reject a planned call before it ever executes. Every rejection
     reason is concrete enough to feed back into a repair prompt (see
-    `run_compound_reasoning`)."""
+    `run_compound_reasoning`).
+
+    Every parameter `TOOL_SPECS` declares for a tool is required here to
+    be present and a non-empty string -- generic over `TOOL_SPECS`, not
+    one hand-picked check per tool. An independent review found
+    `get_questionnaire_fact({})` (missing its required `field` argument)
+    passed this gate cleanly and then crashed `execute_tool_call` with a
+    bare `KeyError`, entirely bypassing the planner's own repair path --
+    the two bespoke checks that existed before (`concept_id`, `query`)
+    happened to cover every *other* tool's single required argument, so
+    this exact gap was invisible until a tool without one of those two
+    specific names was tried. See docs/DECISIONS.md, 2026-09-21 entry."""
     if call.tool_name not in _TOOL_NAMES:
         return False, f"Unknown tool {call.tool_name!r}. Supported tools: {sorted(_TOOL_NAMES)}."
+    for param_name in _TOOL_PARAMS[call.tool_name]:
+        value = call.args.get(param_name)
+        if not isinstance(value, str) or not value:
+            return False, f"{call.tool_name!r} requires a non-empty string argument {param_name!r}, got {value!r}."
     if call.tool_name in {"get_marker_trend", "get_marker_snapshot"}:
-        concept_id = call.args.get("concept_id")
+        concept_id = call.args["concept_id"]
         if concept_id not in SUPPORTED_CONCEPT_IDS:
             return False, f"Unsupported concept_id {concept_id!r} for {call.tool_name!r}. Supported: {sorted(SUPPORTED_CONCEPT_IDS)}."
-    if call.tool_name == "search_knowledge" and not call.args.get("query"):
-        return False, "search_knowledge requires a non-empty 'query' argument."
     return True, None
 
 
@@ -391,6 +408,15 @@ def run_compound_reasoning(
     trace_calls: list[ToolCall] = []
     repair_reason: str | None = None
     accepted: list[PlannedToolCall] = []
+    # Rejections from the round that actually broke the loop -- i.e. the
+    # ones that never got a repair attempt because *other* calls in that
+    # same round were accepted (see the `if accepted or not rejections`
+    # break below). An independent review found these were previously
+    # discarded outright whenever `accepted` was non-empty: a plan mixing
+    # one legal and one illegal call silently returned only the legal
+    # part, with `brief.limitations` empty and the narrator never told
+    # anything was missing. See docs/DECISIONS.md, 2026-09-21 entry.
+    unresolved_rejections: list[str] = []
 
     for _iteration in range(MAX_ITERATIONS):
         stage("Planning which tools to call..." if repair_reason is None else "Repairing the tool plan...")
@@ -419,6 +445,7 @@ def run_compound_reasoning(
             else:
                 rejections.append(reason or "rejected")
         if accepted or not rejections:
+            unresolved_rejections = rejections
             break
         repair_reason = "; ".join(rejections)
     else:
@@ -433,6 +460,14 @@ def run_compound_reasoning(
             )
         )
         return brief, trace_calls
+
+    # Disclose, don't silently drop: at least one call succeeded, but any
+    # calls rejected alongside it in the same round never got a repair
+    # attempt (the loop above breaks as soon as anything is accepted) --
+    # the user should be told part of their question went unanswered,
+    # not shown an answer that quietly covers only the legal part.
+    for reason in unresolved_rejections:
+        brief.limitations.append(Limitation(kind="partial_tool_rejection", detail=reason))
 
     stage(f"Calling tools: {', '.join(c.tool_name for c in accepted)}...")
     for call in accepted:

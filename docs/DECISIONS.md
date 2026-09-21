@@ -3701,6 +3701,130 @@ missing it.
 
 ---
 
+## 2026-09-21 — Independent review of the V2/Workbench/persona work: 5 findings, all confirmed and fixed
+
+**Context**: An independent review (separate tool, same day, fixed at
+commit `a9ed156`) audited the last several entries' worth of work --
+V2 tool-calling, the Workbench redesign, and the persona fixes -- from
+scratch, against an isolated copy of the repo, with no source changes,
+deploys, or paid model calls of its own. It reported 5 findings (2 High,
+3 Medium), each with a concrete local reproduction. All 5 were verified
+independently against this repo's actual code before any fix, per this
+project's standing rule that a finding is acted on because it was
+reproduced, not because it was reported. All 5 reproduced exactly as
+described and were fixed the same session.
+
+**F1 (High, regression) -- clinician-persona phrasing bypassed the
+diagnosis/dosing safety checks.** The clinician system prompt
+(`narrator/_prompt.py`) explicitly instructs the model to write "the
+patient", never "you" -- but `_DIAGNOSIS_PATTERNS`/`_DOSING_PATTERNS` in
+`safety.py` were written entirely around second-person phrasing.
+"The patient has diabetes." and "Increase the patient's dose." both
+passed `check_no_diagnosis`/`check_no_dosing` outright where "You have
+diabetes."/"Increase your dose." correctly failed -- confirmed by
+calling the real check functions directly. This wasn't a new class of
+prompt-injection risk; it was this project's *own* newly-added persona
+feature producing exactly the third-person phrasing its own safety
+checks had never been taught to recognize. Fixed by rewriting every
+subject-specific pattern as an explicit `(?:you ...|the patient ...)`
+alternation rather than a second, separately-maintained pattern list,
+so a future third phrasing can't reopen the same gap by being forgotten
+in only one of two places. Regression tests added directly against
+`check_no_diagnosis`/`check_no_dosing` for every third-person case the
+review demonstrated.
+
+**F2 (High, new) -- V2 skipped V1's source-data staleness/plausibility
+checks entirely.** `ask()` (V1) always runs `staleness_limitation` and
+`implausible_value_limitations`/`assess_plausibility` before building
+its `Brief`; `ask_compound()` (V2) built its `Brief` purely from tool
+results and never ran either. Confirmed live: with a synthetic sample
+panel dated 2020-01-01 and an LDL-C of 5000 mg/dL, V1 correctly flagged
+both `stale_data` and `implausible_value` limitations; V2's
+`get_marker_snapshot` for the same marker returned the raw value with
+`limitations=[]` and `safe=True`. Fixed by extracting the shared logic
+into `HealthAgent._apply_source_data_checks(brief, trace, bloodwork)`
+and calling it from both `ask()` (unchanged behavior, byte-for-byte --
+confirmed by the existing full test suite still passing unmodified) and
+`ask_compound()` (new). There is now exactly one place either check
+runs, the same discipline this project already applies to the safety
+gate itself (`_narrate_and_verify`) -- a third pipeline literally cannot
+forget this check without calling something that doesn't exist.
+
+**F3 (Medium, regression) -- the previous entry's persona fix broke
+`stress_test.py`'s direct Step Functions entry points.** `InvokeAgent`'s
+payload mapping now requires `$.persona` to resolve (added in the
+previous entry) -- but `stress_test.py`'s `burst_async` and `race`
+commands call `start_execution` directly, bypassing `start_run.py` (the
+only place that normally defaults it), so their `input` never carried
+`persona` at all. Confirmed by inspecting both call sites directly (not
+by launching a real execution against the deployed stack). Fixed by
+adding `"persona": "patient"` to both. A full moto-simulated execution
+replaying the real synthesized state machine to reproduce the exact
+`States.Runtime` failure live was considered and not built -- MarkRunning
+(the state before InvokeAgent) would need to actually execute via a real
+moto-mocked Lambda invocation to reach the failure point, disproportionate
+engineering for what the code fix and the existing
+`test_persona_flows_through_invoke_agent_payload` regression test (from
+the previous entry) already make correct and provable by inspection.
+
+**F4 (Medium, new) -- `capability_gate` accepted a tool call missing its
+required argument, which then crashed instead of being rejected.**
+`PlannedToolCall("get_questionnaire_fact", {})` passed `capability_gate`
+cleanly (only `get_marker_trend`/`get_marker_snapshot`'s `concept_id` and
+`search_knowledge`'s `query` had bespoke presence checks), then
+`execute_tool_call` raised a bare `KeyError('field')` from
+`args["field"]` -- confirmed directly. This bypassed the planner's own
+bounded repair path entirely: a malformed call should produce a
+rejection reason the planner can act on, not a Python exception. Fixed
+by making `capability_gate` generic over `TOOL_SPECS`'s own declared
+parameter names (`_TOOL_PARAMS`, derived from `TOOL_SPECS`, not
+hand-listed a second time) -- every declared parameter must be present
+and a non-empty string before a call is accepted, for every tool, not
+just the two that happened to get individual checks before. A future
+tool with a required argument cannot reintroduce this gap by simply
+being new.
+
+**F5 (Medium, new) -- a partially-rejected tool plan silently dropped
+the rejected half with no disclosure.** When a plan mixed one accepted
+and one rejected call, `run_compound_reasoning`'s loop broke as soon as
+`accepted` was non-empty (`if accepted or not rejections: break`) --
+correct for moving on to execution, but the rejected call's reason was
+then simply discarded: `brief.limitations` only ever got populated in
+the *all-rejected* branch. Confirmed directly: a plan with one legal
+`get_marker_trend` call and one call for an unsupported marker produced
+a `Brief` with `limitations=[]`, indistinguishable from a plan that only
+ever asked about the legal marker. Fixed by capturing the rejections
+from the round that actually broke the loop (`unresolved_rejections`)
+and turning each into a `Limitation(kind="partial_tool_rejection", ...)`
+on the final `Brief` -- which every narrator already renders (the mock
+narrator's `_compose_compound` renders every `Limitation`, and every LLM
+narrator's prompt is built from the mock narrator's own rendered text,
+so this reaches the real Bedrock-narrated answer too, with no narrator
+changes needed).
+
+**What the review also confirmed was solid, not just what it found
+broken**: persona now reaches every path correctly (the thing it was
+checking); red-flag detection still runs before the planner, unconditionally;
+hard/soft severity classification still doesn't loosen the fallback
+trigger (any failed check still falls back, regardless of severity); V2
+retrieval content (not just citation names) does reach the narrator
+prompt; the Workbench's local-only demo tab is correctly hidden in
+production; prior fixes (history-clear-on-logout, Markdown image
+blocking, poll-generation guarding against out-of-order responses) are
+all still in place and weren't re-reported as new.
+
+**Consequence**: All 5 fixes verified against a from-scratch clean venv
+matching CI's exact dependency sets for both the core package (`ruff
+check/format src tests`, `mypy src`, `pytest -q --cov=care_agent
+--cov-fail-under=85` -- 227 passed, 85.75% coverage) and infra (`ruff
+check . --line-length=140`, `mypy stacks app.py lambda_src
+build_lambda_asset.py scripts/get_dev_token.py scripts/stress_test.py
+--ignore-missing-imports`, `pytest tests/ -v`, `cdk synth --quiet` --
+173 passed), per the now-standing lesson from two entries ago. Not yet
+deployed at the time of this entry.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

@@ -26,6 +26,25 @@ def test_check_no_diagnosis_catches_condition_is_your_condition_phrasing():
     assert check.passed is False
 
 
+def test_check_no_diagnosis_catches_clinician_persona_third_person_phrasing():
+    """Regression test: an independent review found that the clinician
+    persona's own system prompt (narrator/_prompt.py) instructs the model
+    to write "the patient", never "you" -- but every diagnosis pattern
+    was written assuming second-person phrasing, so restating the exact
+    same forbidden claim in third person passed this check outright.
+    "The patient has diabetes." is the literal counterexample the review
+    demonstrated against a real HealthAgent.ask(persona="clinician")
+    call."""
+    assert check_no_diagnosis("The patient has diabetes.").passed is False
+    assert check_no_diagnosis("The patient is prediabetic.").passed is False
+    assert check_no_diagnosis("The patient is diagnosed with type 2 diabetes.").passed is False
+    assert check_no_diagnosis("The patient has been diagnosed with kidney disease.").passed is False
+    assert check_no_diagnosis("This confirms the patient has metabolic syndrome.").passed is False
+    assert check_no_diagnosis("The patient's diagnosis is diabetes.").passed is False
+    assert check_no_diagnosis("The patient's condition is heart disease.").passed is False
+    assert check_no_diagnosis("Diabetes is the patient's confirmed condition.").passed is False
+
+
 def test_check_no_dosing_catches_explicit_dose():
     check = check_no_dosing("Take 500 mg daily of this supplement.")
     assert check.passed is False
@@ -47,6 +66,17 @@ def test_check_no_dosing_catches_word_form_dosing_instruction():
     numeric dosing patterns apply) escaped detection entirely."""
     check = check_no_dosing("Swallow one vitamin D capsule every morning.")
     assert check.passed is False
+
+
+def test_check_no_dosing_catches_clinician_persona_third_person_phrasing():
+    """Regression test: the same third-person gap as
+    test_check_no_diagnosis_catches_clinician_persona_third_person_phrasing,
+    for dosing instructions. "Increase the patient's dose." is the
+    literal counterexample the independent review demonstrated."""
+    assert check_no_dosing("Increase the patient's dose.").passed is False
+    assert check_no_dosing("Decrease the patient's dose.").passed is False
+    assert check_no_dosing("Switch the patient's medication.").passed is False
+    assert check_no_dosing("Change the patient's dosage.").passed is False
 
 
 def test_check_non_empty_flags_empty_string():

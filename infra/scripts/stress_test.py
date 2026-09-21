@@ -290,7 +290,22 @@ def _start_and_poll_execution(
         sfn_client.start_execution(
             stateMachineArn=state_machine_arn,
             name=run_id,
-            input=json.dumps({"run_id": run_id, "user_id": _DEMO_USER, "question": question, "owner_sub": _STRESS_TEST_OWNER_SUB}),
+            # `persona` is required in InvokeAgent's payload mapping (see
+            # orchestration_stack.py) -- an independent review found this
+            # direct start_execution call (bypassing start_run.py, which
+            # is the only place that normally defaults it) omitted it
+            # entirely, which would fail every burst-async run with a
+            # States.Runtime error the instant this ran against the real
+            # deployed state machine. See docs/DECISIONS.md, 2026-09-21.
+            input=json.dumps(
+                {
+                    "run_id": run_id,
+                    "user_id": _DEMO_USER,
+                    "question": question,
+                    "owner_sub": _STRESS_TEST_OWNER_SUB,
+                    "persona": "patient",
+                }
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         return CallResult(run_id, False, type(exc).__name__, time.monotonic() - start, detail=str(exc)[:300])
@@ -445,12 +460,14 @@ def cmd_race(args: argparse.Namespace) -> Report:
         sfn_client.start_execution(
             stateMachineArn=state_machine_arn,
             name=run_id,
+            # See burst_async's identical comment above -- same fix.
             input=json.dumps(
                 {
                     "run_id": run_id,
                     "user_id": _DEMO_USER,
                     "question": "What should I focus on first?",
                     "owner_sub": _STRESS_TEST_OWNER_SUB,
+                    "persona": "patient",
                 }
             ),
         )

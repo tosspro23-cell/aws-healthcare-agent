@@ -65,6 +65,24 @@ def test_capability_gate_rejects_empty_search_query():
     assert allowed is False
 
 
+def test_capability_gate_rejects_questionnaire_fact_missing_its_required_field_argument():
+    """Regression test: an independent review found `get_questionnaire_fact({})`
+    (missing its required `field` argument) passed this gate cleanly and
+    then crashed `execute_tool_call` with a bare `KeyError('field')`,
+    entirely bypassing the planner's own repair path -- the gate had
+    bespoke checks for `concept_id` and `query` but nothing generic, so
+    any other tool's required argument went unchecked."""
+    allowed, reason = capability_gate(PlannedToolCall("get_questionnaire_fact", {}))
+    assert allowed is False
+    assert "field" in reason
+
+
+def test_capability_gate_accepts_zero_argument_tools_with_no_args():
+    for tool_name in ("get_focus_markers", "get_supplement_cautions", "get_allergies"):
+        allowed, reason = capability_gate(PlannedToolCall(tool_name, {}))
+        assert allowed is True, f"{tool_name}: {reason}"
+
+
 # -- individual tool executors, against real sample data ---------------------
 
 
@@ -148,6 +166,32 @@ def test_run_compound_reasoning_answers_a_real_compound_question():
     assert not brief.limitations  # nothing here should be missing for this user
 
 
+def test_run_compound_reasoning_discloses_a_partially_rejected_plan():
+    """Regression test: an independent review found that when a plan
+    mixes one legal call and one illegal call, the legal call's success
+    made the loop break immediately (see the `if accepted or not
+    rejections` check) -- so the illegal call's rejection was used for
+    nothing, never became a repair attempt and never became a
+    `Limitation` either. The final Brief looked identical to one where
+    the user had only ever asked about the legal marker, with no sign
+    anything was left out. The rejected half must now show up as a
+    disclosed limitation."""
+    planner = _ScriptedPlanner(
+        [
+            ToolPlan(
+                calls=(
+                    PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),
+                    PlannedToolCall("get_marker_trend", {"concept_id": "made_up_marker"}),
+                )
+            )
+        ]
+    )
+    brief, _ = run_compound_reasoning("What's my LDL trend, and what about this other marker?", _real_ctx(), planner)
+    assert brief.grounded_facts  # the legal half still answered
+    assert len(planner.calls) == 1  # never got a repair attempt -- it was accepted-and-done in one round
+    assert any(lim.kind == "partial_tool_rejection" and "made_up_marker" in lim.detail for lim in brief.limitations)
+
+
 def test_run_compound_reasoning_repairs_after_a_rejected_call():
     """The bounded-repair path: a first plan referencing an unsupported
     concept_id is rejected by the capability gate, and the planner gets
@@ -163,6 +207,27 @@ def test_run_compound_reasoning_repairs_after_a_rejected_call():
     assert len(planner.calls) == 2
     assert planner.calls[0] is None  # first attempt: no repair reason yet
     assert planner.calls[1] is not None and "made_up_marker" in planner.calls[1]  # second attempt: told exactly why
+
+
+def test_run_compound_reasoning_repairs_after_a_call_missing_its_required_argument():
+    """Regression test: before capability_gate validated required
+    arguments generically, a planned `get_questionnaire_fact` call with
+    no `field` argument at all was accepted by the gate and then crashed
+    `execute_tool_call` with a bare `KeyError` -- an independent review
+    found this bypassed the repair path entirely instead of producing a
+    rejection the planner could act on. This must now behave exactly
+    like any other rejected call: a bounded repair attempt, not a
+    crash."""
+    planner = _ScriptedPlanner(
+        [
+            ToolPlan(calls=(PlannedToolCall("get_questionnaire_fact", {}),)),
+            ToolPlan(calls=(PlannedToolCall("get_questionnaire_fact", {"field": "nutrition.sugary_foods"}),)),
+        ]
+    )
+    brief, _ = run_compound_reasoning("What did I report about sugary foods?", _real_ctx(), planner)
+    assert brief.grounded_facts  # the repaired plan's call succeeded
+    assert len(planner.calls) == 2
+    assert planner.calls[1] is not None and "field" in planner.calls[1]
 
 
 def test_run_compound_reasoning_gives_up_honestly_when_repair_also_fails():

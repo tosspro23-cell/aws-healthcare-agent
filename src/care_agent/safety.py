@@ -74,16 +74,27 @@ _CONDITIONS = (
     r"(?:kidney|renal) disease|(?:liver|hepatic) disease|insulin resistance|metabolic syndrome)"
 )
 
+
+# The clinician persona's own system prompt (see narrator/_prompt.py)
+# explicitly instructs the model to write "the patient", never "you" --
+# an independent review found every pattern below was written assuming
+# second-person phrasing, so a clinician-persona answer restating the
+# exact same forbidden claim in third person ("The patient has
+# diabetes.") passed every check outright. Every subject-specific
+# pattern now matches both forms via an explicit alternation, not just
+# "you"/"your" -- these are not two independently-maintained pattern
+# lists, since a future third phrasing (e.g. a different persona) would
+# reopen the same gap otherwise. See docs/DECISIONS.md, 2026-09-21 entry.
 _DIAGNOSIS_PATTERNS = [
-    rf"\byou (have|are) (a |an )?{_CONDITIONS}\b",
-    r"\byou are (pre)?diabetic\b",
-    r"\byou('re| are) diagnosed with\b",
-    r"\byou('ve| have) been diagnosed with\b",
-    r"\bthis (means|confirms) you have\b",
-    r"\byour diagnosis is\b",
-    r"\byour condition is\b",
-    rf"\b{_CONDITIONS} is your (confirmed |diagnosed )?condition\b",
-    rf"\byour (confirmed |diagnosed )?condition is {_CONDITIONS}\b",
+    rf"\b(?:you (?:have|are)|the patient (?:has|is)) (a |an )?{_CONDITIONS}\b",
+    r"\b(?:you are|the patient is) (pre)?diabetic\b",
+    r"\b(?:you(?:'re| are)|the patient is) diagnosed with\b",
+    r"\b(?:you(?:'ve| have)|the patient has) been diagnosed with\b",
+    r"\bthis (means|confirms) (?:you have|the patient has)\b",
+    r"\b(?:your|the patient's) diagnosis is\b",
+    r"\b(?:your|the patient's) condition is\b",
+    rf"\b{_CONDITIONS} is (?:your|the patient's) (confirmed |diagnosed )?condition\b",
+    rf"\b(?:your|the patient's) (confirmed |diagnosed )?condition is {_CONDITIONS}\b",
 ]
 
 _DOSAGE_FORMS = r"(?:capsule|tablet|pill|softgel|gummy|dose)"
@@ -94,10 +105,13 @@ _DOSING_PATTERNS = [
     r"\b\d+\s?(mg|mcg|iu|g|ml)\s?(per day|daily|/day|a day|twice|once)\b",
     r"\bstart taking\b",
     r"\bstop taking\b",
-    r"\bincrease your dose\b",
-    r"\bdecrease your dose\b",
-    r"\bswitch (your )?medication\b",
-    r"\bchange your (dose|dosage|medication)\b",
+    # See _DIAGNOSIS_PATTERNS's comment above -- same third-person gap,
+    # same fix: "the patient's dose"/"the patient's medication" instead
+    # of only "your dose"/"your medication".
+    r"\bincrease (?:your|the patient's) dose\b",
+    r"\bdecrease (?:your|the patient's) dose\b",
+    r"\bswitch (?:your |the patient's )?medication\b",
+    r"\bchange (?:your|the patient's) (dose|dosage|medication)\b",
     rf"\b(swallow|take) (one|two|three|a|an) {_DOSAGE_FORMS}\b",
     rf"\b{_DOSAGE_FORMS}\b.{{0,40}}\b{_FREQUENCY_WORDS}\b",
     rf"\b{_FREQUENCY_WORDS}\b.{{0,40}}\b{_DOSAGE_FORMS}\b",
