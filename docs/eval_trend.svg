@@ -6,22 +6,23 @@
 <text x="42" y="111.0" text-anchor="end" font-size="11" fill="#666">50%</text>
 <line x1="50" y1="24.0" x2="620" y2="24.0" stroke="#dcdcdc" stroke-width="1"/>
 <text x="42" y="28.0" text-anchor="end" font-size="11" fill="#666">100%</text>
-<polyline points="50.0,24.0 90.7,24.0 131.4,24.0 172.1,24.0 212.9,24.0 253.6,24.0 294.3,24.0 335.0,24.0 375.7,24.0 416.4,24.0 457.1,24.0 497.9,24.0 538.6,24.0 579.3,24.0 620.0,24.0" fill="none" stroke="#94a3b8" stroke-width="2"/>
+<polyline points="50.0,24.0 88.0,24.0 126.0,24.0 164.0,24.0 202.0,24.0 240.0,24.0 278.0,24.0 316.0,24.0 354.0,24.0 392.0,24.0 430.0,24.0 468.0,24.0 506.0,24.0 544.0,24.0 582.0,24.0 620.0,24.0" fill="none" stroke="#94a3b8" stroke-width="2"/>
 <circle cx="50.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 5bb7a29 (mock): 100%</title></circle>
-<circle cx="90.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d82c92b (mock): 100%</title></circle>
-<circle cx="131.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 43b851a (mock): 100%</title></circle>
-<circle cx="172.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d29c8d7 (mock): 100%</title></circle>
-<circle cx="212.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 bb9aabc (mock): 100%</title></circle>
-<circle cx="253.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 00ae367 (mock): 100%</title></circle>
-<circle cx="294.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 d0ed6ff (mock): 100%</title></circle>
-<circle cx="335.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 0ecab72 (mock): 100%</title></circle>
-<circle cx="375.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 dee5bd9 (mock): 100%</title></circle>
-<circle cx="416.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 40123ec (mock): 100%</title></circle>
-<circle cx="457.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-20 a71fa08 (mock): 100%</title></circle>
-<circle cx="497.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 eb91611 (mock): 100%</title></circle>
-<circle cx="538.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 fcb99c0 (mock): 100%</title></circle>
-<circle cx="579.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 e5d1efe (mock): 100%</title></circle>
-<circle cx="620.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 9b89131 (mock): 100%</title></circle>
+<circle cx="88.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d82c92b (mock): 100%</title></circle>
+<circle cx="126.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 43b851a (mock): 100%</title></circle>
+<circle cx="164.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d29c8d7 (mock): 100%</title></circle>
+<circle cx="202.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 bb9aabc (mock): 100%</title></circle>
+<circle cx="240.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 00ae367 (mock): 100%</title></circle>
+<circle cx="278.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 d0ed6ff (mock): 100%</title></circle>
+<circle cx="316.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 0ecab72 (mock): 100%</title></circle>
+<circle cx="354.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 dee5bd9 (mock): 100%</title></circle>
+<circle cx="392.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 40123ec (mock): 100%</title></circle>
+<circle cx="430.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-20 a71fa08 (mock): 100%</title></circle>
+<circle cx="468.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 eb91611 (mock): 100%</title></circle>
+<circle cx="506.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 fcb99c0 (mock): 100%</title></circle>
+<circle cx="544.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 e5d1efe (mock): 100%</title></circle>
+<circle cx="582.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 9b89131 (mock): 100%</title></circle>
+<circle cx="620.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 3283570 (mock): 100%</title></circle>
 <text x="50" y="212" font-size="11" fill="#666">2026-09-06 · 5bb7a29</text>
-<text x="620" y="212" text-anchor="end" font-size="11" fill="#666">2026-09-21 · 9b89131 · 100%</text>
+<text x="620" y="212" text-anchor="end" font-size="11" fill="#666">2026-09-21 · 3283570 · 100%</text>
 </svg>
