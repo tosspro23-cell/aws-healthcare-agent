@@ -76,6 +76,16 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(user_id, str) or not user_id or not isinstance(question, str) or not question:
         return _json_response(400, {"error": "Both 'user_id' and 'question' are required and must be non-empty strings."})
 
+    # Optional, mirrors adapter.py's exact validation -- omitting it
+    # reproduces today's default ("patient") unchanged. This was
+    # previously accepted by the frontend's Persona selector for this
+    # mode but silently had no effect (see docs/DECISIONS.md, 2026-09-21
+    # entry): the state machine input never carried it, so agent_task.py
+    # always ran as "patient" regardless of what was selected.
+    persona = body.get("persona", "patient")
+    if persona not in ("patient", "clinician"):
+        return _json_response(400, {"error": "'persona', if supplied, must be 'patient' or 'clinician'."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         # `start_execution`'s `name` param must be a string; an
@@ -87,7 +97,7 @@ def handler(event: dict, context: object) -> dict:
         return _json_response(400, {"error": "'run_id', if supplied, must be 1-80 characters with no whitespace or special characters."})
 
     owner_sub = auth_context.owner_sub_from_event(event)
-    submitted_input = {"run_id": run_id, "user_id": user_id, "question": question, "owner_sub": owner_sub}
+    submitted_input = {"run_id": run_id, "user_id": user_id, "question": question, "owner_sub": owner_sub, "persona": persona}
 
     try:
         _sfn().start_execution(

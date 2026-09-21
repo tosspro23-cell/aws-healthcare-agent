@@ -84,16 +84,23 @@ export function TraceView({ trace }: { trace: AgentTrace }) {
         </section>
       )}
 
-      <details>
-        <summary>Tool calls ({trace.tool_calls.length})</summary>
-        <ul className="tool-calls">
-          {trace.tool_calls.map((call, i) => (
-            <li key={i}>
-              <code>{call.name}</code>: {call.result_summary}
-            </li>
-          ))}
-        </ul>
-      </details>
+      {trace.tool_calls.length > 0 && (
+        // Open by default: this is the step-by-step record of what the
+        // agent actually did (which tools, in what order, with what
+        // result) -- collapsed-by-default made it easy to miss entirely,
+        // which is exactly the part a V2 (tool-calling) answer's reader
+        // most wants to see. See docs/DECISIONS.md, 2026-09-21 entry.
+        <details open>
+          <summary>Tool calls ({trace.tool_calls.length})</summary>
+          <ul className="tool-calls">
+            {trace.tool_calls.map((call, i) => (
+              <li key={i}>
+                <code>{call.name}</code>: {call.result_summary}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       {trace.retrieved_chunks.length > 0 && (
         <details>

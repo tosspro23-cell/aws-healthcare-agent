@@ -136,7 +136,7 @@ export function AskForm() {
       } else {
         const executionType = mode === "step_functions" ? "STEP_FUNCTIONS" : "SQS";
         const starter = mode === "step_functions" ? startRun : enqueueJob;
-        const started = await starter(userId, question);
+        const started = await starter(userId, question, undefined, persona);
         addHistoryEntry({ run_id: started.run_id, question, execution_type: executionType, submitted_at: new Date().toISOString() });
         // Show an optimistic pending state immediately rather than
         // blocking on a `getRun` call here -- the Step Functions path's

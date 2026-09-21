@@ -139,22 +139,38 @@ export async function askQuestion(userId: string, question: string, engine?: Eng
 
 /** Starts the Step Functions-orchestrated async path. Returns immediately
  * with `status: "RUNNING"` (or the real current status, if `runId` was
- * already submitted before) -- poll with `getRun` to see it finish. */
-export async function startRun(userId: string, question: string, runId?: string): Promise<{ run_id: string; status: string }> {
+ * already submitted before) -- poll with `getRun` to see it finish.
+ * `persona` is optional (defaults server-side to "patient") -- previously
+ * missing here entirely, so the frontend's Persona selector had no effect
+ * on this path even though it was shown; see docs/DECISIONS.md,
+ * 2026-09-21 entry. `engine` isn't accepted here -- V2 support for this
+ * path is a separate, not-yet-built piece of work. */
+export async function startRun(
+  userId: string,
+  question: string,
+  runId?: string,
+  persona?: Persona,
+): Promise<{ run_id: string; status: string }> {
   return (await authedFetch("/runs", {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, question, ...(runId ? { run_id: runId } : {}) }),
+    body: JSON.stringify({ user_id: userId, question, ...(runId ? { run_id: runId } : {}), ...(persona ? { persona } : {}) }),
   })) as { run_id: string; status: string };
 }
 
 /** Starts the SQS-buffered async path (the direct comparison to `startRun`
  * above -- see docs/STRESS_TEST.md for the load-tested trade-off between
  * the two: this one trades latency under load for higher measured success
- * capacity). Returns immediately with `status: "QUEUED"`. */
-export async function enqueueJob(userId: string, question: string, runId?: string): Promise<{ run_id: string; status: string }> {
+ * capacity). Returns immediately with `status: "QUEUED"`. See `startRun`'s
+ * docstring for the same `persona` note. */
+export async function enqueueJob(
+  userId: string,
+  question: string,
+  runId?: string,
+  persona?: Persona,
+): Promise<{ run_id: string; status: string }> {
   return (await authedFetch("/jobs", {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, question, ...(runId ? { run_id: runId } : {}) }),
+    body: JSON.stringify({ user_id: userId, question, ...(runId ? { run_id: runId } : {}), ...(persona ? { persona } : {}) }),
   })) as { run_id: string; status: string };
 }
 

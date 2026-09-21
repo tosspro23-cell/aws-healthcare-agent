@@ -129,6 +129,26 @@ def test_agent_task_persists_full_trace_to_s3(evidence_bucket):
     assert len(trace["safety_checks"]) == 4
 
 
+def test_agent_task_defaults_to_patient_persona_when_absent(evidence_bucket):
+    """The state machine input previously never carried `persona` at all
+    -- this executions predating that field default the same way an
+    omitted `persona` in the /ask body does."""
+    result = agent_task.handler({"run_id": "r-no-persona", "user_id": "user_demo_001", "question": "What should I focus on first?"}, None)
+    assert "decision-support" not in result["answer"].lower()
+
+
+def test_agent_task_uses_clinician_persona_from_event(evidence_bucket):
+    """Regression test: start_run.py's execution input previously never
+    included `persona` at all, so this Lambda always ran as "patient"
+    regardless of what the frontend's Persona selector showed for the
+    Step Functions mode. See docs/DECISIONS.md, 2026-09-21 entry."""
+    result = agent_task.handler(
+        {"run_id": "r-clinician", "user_id": "user_demo_001", "question": "What should I focus on first?", "persona": "clinician"},
+        None,
+    )
+    assert "decision-support" in result["answer"].lower()
+
+
 def test_agent_task_propagates_exceptions_for_unknown_user():
     """Deliberately does NOT catch this -- Step Functions' Catch block is
     supposed to see it (see agent_task.py's module docstring)."""
@@ -203,6 +223,33 @@ def test_start_run_threads_owner_sub_into_the_execution_input(state_machine_arn)
     assert execution_input["owner_sub"] == _OTHER_CALLER_SUB
 
 
+def test_start_run_threads_persona_into_the_execution_input(state_machine_arn):
+    """Regression test: `persona` used to be silently dropped here even
+    though AskForm's Persona selector was shown for this mode -- see
+    docs/DECISIONS.md, 2026-09-21 entry."""
+    import json
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(
+            body='{"user_id": "user_demo_001", "question": "hello", "run_id": "clinician-run", "persona": "clinician"}'
+        )
+        start_run.handler(event, None)
+
+    sfn = boto3.client("stepfunctions", region_name="us-east-1")
+    execution_arn = f"{state_machine_arn.replace(':stateMachine:', ':execution:')}:clinician-run"
+    execution_input = json.loads(sfn.describe_execution(executionArn=execution_arn)["input"])
+    assert execution_input["persona"] == "clinician"
+
+
+def test_start_run_invalid_persona_returns_400(state_machine_arn):
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "persona": "not_a_real_persona"}')
+        result = start_run.handler(event, None)
+    assert result["statusCode"] == 400
+
+
 def test_start_run_missing_fields_returns_400(state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
@@ -245,7 +292,13 @@ def test_start_run_handles_execution_already_exists_with_matching_input_as_idemp
     
 
     matching_input = json.dumps(
-        {"run_id": "dup-1", "user_id": "user_demo_001", "question": "hello", "owner_sub": _DEFAULT_CALLER_SUB}
+        {
+            "run_id": "dup-1",
+            "user_id": "user_demo_001",
+            "question": "hello",
+            "owner_sub": _DEFAULT_CALLER_SUB,
+            "persona": "patient",
+        }
     )
     fake_client = MagicMock()
     fake_client.exceptions.ExecutionAlreadyExists = ClientError

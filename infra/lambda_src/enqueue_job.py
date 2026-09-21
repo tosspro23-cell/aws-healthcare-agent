@@ -85,6 +85,13 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(user_id, str) or not user_id or not isinstance(question, str) or not question:
         return _json_response(400, {"error": "Both 'user_id' and 'question' are required and must be non-empty strings."})
 
+    # See start_run.py's identical validation for why this is needed here
+    # too -- both async paths previously accepted the frontend's Persona
+    # selection but never forwarded it to the agent call.
+    persona = body.get("persona", "patient")
+    if persona not in ("patient", "clinician"):
+        return _json_response(400, {"error": "'persona', if supplied, must be 'patient' or 'clinician'."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -115,7 +122,7 @@ def handler(event: dict, context: object) -> dict:
     try:
         _sqs().send_message(
             QueueUrl=_QUEUE_URL,
-            MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question}),
+            MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question, "persona": persona}),
         )
     except Exception as exc:  # noqa: BLE001 -- compensating write below, then report failure
         # The DynamoDB record above and this send are two separate calls,

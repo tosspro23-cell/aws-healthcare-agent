@@ -3589,6 +3589,64 @@ longer surfaced where it can't work.
 
 ---
 
+## 2026-09-21 — Persona was silently dropped on the Step Functions and Queue async paths
+
+**Context**: While testing the redesigned Workbench in production, the
+user noticed that `AskForm.tsx`'s Persona selector is shown for all
+three modes (Ask/sync, Start run/Step Functions, Enqueue job/Queue) but
+only actually changed the answer for "Ask". Tracing it: `startRun` and
+`enqueueJob` in `api.ts` never accepted a `persona` argument at all, so
+nothing was ever sent; `start_run.py` and `enqueue_job.py` never read
+`persona` from the request body; and `agent_task.py`/`process_job.py`
+(the Lambdas that actually call `HealthAgent.ask()` for these two paths)
+never passed a `persona` kwarg, so `ask()`'s own `persona: str =
+"patient"` default silently applied regardless of the UI selection. This
+was a real, silent gap, not a deliberate scope boundary -- unlike V2 on
+these same two paths, which *is* a deliberate, documented deferral (see
+several entries above).
+
+**Decision**: Threaded `persona` all the way through both async paths,
+mirroring `adapter.py`'s existing validation exactly (`persona` optional,
+defaults to `"patient"`, 400 if supplied and not one of
+`"patient"`/`"clinician"`). For Step Functions: `start_run.py` validates
+and adds it to the Step Functions execution input; `agent_task.py` reads
+`event.get("persona", "patient")` and passes it to `ask()`. For Queue:
+`enqueue_job.py` validates and adds it to the SQS message body;
+`process_job.py` reads `message.get("persona", "patient")` and passes it
+to `ask()`. Frontend: `startRun`/`enqueueJob` in `api.ts` gained an
+optional `persona` parameter; `AskForm.tsx`'s submit handler now passes
+its `persona` state through for the async modes, same as it already did
+for sync. Added regression tests for both paths (invalid-persona-400,
+and a real clinician-persona run producing the "decision-support"
+wording) mirroring `test_adapter.py`'s existing coverage for the same
+behavior on the sync path.
+
+Also, separately (same investigation session): the "Tool calls" section
+of `TraceView.tsx` was a collapsed `<details>` by default -- easy to
+miss entirely, which the user reported as "the tool-call steps I used to
+see are gone" after the previous redesign. It was never removed, just
+easy to overlook; changed to render only when `tool_calls` is non-empty,
+and to be open by default when it does. True live/streaming progress
+during a production V2 run (what `CompoundDemo.tsx`'s local SSE endpoint
+shows) is a separate, larger question -- the deployed synchronous `/ask`
+Lambda doesn't currently support streaming a response at all (would need
+Lambda response streaming via a Function URL, or a WebSocket API, neither
+of which exists yet) -- not something this fix attempts.
+
+**Consequence**: The Persona selector now does what it visibly claims to
+do on every mode, not just one. Verified with a from-scratch clean venv
+matching CI's exact infra job (`ruff check . --line-length=140`, `mypy
+stacks app.py lambda_src build_lambda_asset.py scripts/get_dev_token.py
+scripts/stress_test.py --ignore-missing-imports`, `pytest tests/ -v`
+-- 172 passed, `cdk synth --quiet`), per the standing lesson from the
+previous entry that a locally-skipped check is not the same as a passing
+one. Note infra's CI job runs `ruff check` only, not `ruff format
+--check` (that's specific to `src`/`tests`, per `.github/workflows/
+ci.yml`) -- worth remembering before assuming a `ruff format` diff on an
+infra file is something CI would actually catch.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

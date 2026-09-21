@@ -99,7 +99,24 @@ def test_enqueue_sends_a_message_to_sqs(aws_resources):
     messages = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get("Messages", [])
     assert len(messages) == 1
     body = json.loads(messages[0]["Body"])
-    assert body == {"run_id": "job-2", "user_id": "user_demo_001", "question": "hello"}
+    assert body == {"run_id": "job-2", "user_id": "user_demo_001", "question": "hello", "persona": "patient"}
+
+
+def test_enqueue_sends_the_supplied_persona_to_sqs(aws_resources):
+    queue_url = aws_resources
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": "job-clinician-msg", "persona": "clinician"})
+    enqueue_job.handler(event, None)
+
+    sqs = boto3.client("sqs", region_name="us-east-1")
+    messages = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get("Messages", [])
+    body = json.loads(messages[0]["Body"])
+    assert body["persona"] == "clinician"
+
+
+def test_enqueue_invalid_persona_returns_400(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "persona": "not_a_real_persona"})
+    result = enqueue_job.handler(event, None)
+    assert result["statusCode"] == 400
 
 
 def test_enqueue_generates_run_id_when_not_supplied(aws_resources):
@@ -189,8 +206,11 @@ def test_enqueue_invalid_json_body_returns_400(aws_resources):
 
 
 # -- process_job ------------------------------------------------------------
-def _sqs_event(run_id: str, user_id: str, question: str) -> dict:
-    return {"Records": [{"body": json.dumps({"run_id": run_id, "user_id": user_id, "question": question})}]}
+def _sqs_event(run_id: str, user_id: str, question: str, persona: str | None = None) -> dict:
+    message = {"run_id": run_id, "user_id": user_id, "question": question}
+    if persona is not None:
+        message["persona"] = persona
+    return {"Records": [{"body": json.dumps(message)}]}
 
 
 def test_process_job_writes_succeeded_result(aws_resources):
@@ -204,6 +224,20 @@ def test_process_job_writes_succeeded_result(aws_resources):
     assert item["safe"] is True
     assert item["narrator_backend"] == "mock"
     assert "162" in item["answer"]
+
+
+def test_process_job_uses_clinician_persona_from_the_sqs_message(aws_resources):
+    """Regression test: enqueue_job.py's SQS message previously never
+    carried `persona` at all, so this Lambda always ran as "patient"
+    regardless of what the frontend's Persona selector showed for the
+    Queue mode. See docs/DECISIONS.md, 2026-09-21 entry."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-clinician", "status": "QUEUED"})
+
+    process_job.handler(_sqs_event("job-clinician", "user_demo_001", "What should I focus on first?", persona="clinician"), None)
+
+    item = table.get_item(Key={"run_id": "job-clinician"})["Item"]
+    assert "decision-support" in item["answer"].lower()
 
 
 def test_process_job_persists_full_trace_to_s3(aws_resources):

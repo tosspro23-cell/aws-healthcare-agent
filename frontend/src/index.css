@@ -544,14 +544,34 @@ code {
 
 details summary {
   cursor: pointer;
-  font-size: 0.85em;
-  font-weight: 600;
-  color: var(--text-muted);
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
   margin: 10px 0;
 }
 
 .tool-calls {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
   font-size: 0.85em;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-calls li {
+  background: #f1f5f9;
+  color: #334155;
+  border-radius: 6px;
+  padding: 7px 11px;
+}
+
+.tool-calls code {
+  color: var(--accent-hover);
+  font-weight: 600;
 }
 
 .status-badge {

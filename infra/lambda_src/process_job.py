@@ -115,6 +115,10 @@ def handler(event: dict, context: object) -> None:
         run_id = message["run_id"]
         user_id = message["user_id"]
         question = message["question"]
+        # Defaults to "patient" for a message enqueued before this field
+        # existed -- see enqueue_job.py's validation, which guarantees
+        # any *new* message has it.
+        persona = message.get("persona", "patient")
 
         now = datetime.now(timezone.utc)
         entered_running = _claim_for_processing(
@@ -126,7 +130,7 @@ def handler(event: dict, context: object) -> None:
             continue
 
         try:
-            response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)
+            response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
         except UnknownUserError as exc:
             run_writes.conditional_status_write(
                 run_id,

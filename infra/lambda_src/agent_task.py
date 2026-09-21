@@ -48,8 +48,12 @@ def handler(event: dict, context: object) -> dict:
     run_id = event["run_id"]
     user_id = event["user_id"]
     question = event["question"]
+    # Defaults to "patient" for an execution started before this field
+    # existed -- see start_run.py's validation, which is what actually
+    # guarantees any *new* execution's input has it.
+    persona = event.get("persona", "patient")
 
-    response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id)
+    response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
     trace_dict = response.trace.as_dict()
 
     if _EVIDENCE_BUCKET_NAME:
