@@ -99,7 +99,7 @@ def test_enqueue_sends_a_message_to_sqs(aws_resources):
     messages = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get("Messages", [])
     assert len(messages) == 1
     body = json.loads(messages[0]["Body"])
-    assert body == {"run_id": "job-2", "user_id": "user_demo_001", "question": "hello", "persona": "patient"}
+    assert body == {"run_id": "job-2", "user_id": "user_demo_001", "question": "hello", "persona": "patient", "engine": "v1"}
 
 
 def test_enqueue_sends_the_supplied_persona_to_sqs(aws_resources):
@@ -115,6 +115,25 @@ def test_enqueue_sends_the_supplied_persona_to_sqs(aws_resources):
 
 def test_enqueue_invalid_persona_returns_400(aws_resources):
     event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "persona": "not_a_real_persona"})
+    result = enqueue_job.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+def test_enqueue_sends_the_supplied_engine_to_sqs(aws_resources):
+    """V2 now runs through this path too -- same shape as persona's
+    identical test above."""
+    queue_url = aws_resources
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "run_id": "job-v2-msg", "engine": "v2"})
+    enqueue_job.handler(event, None)
+
+    sqs = boto3.client("sqs", region_name="us-east-1")
+    messages = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get("Messages", [])
+    body = json.loads(messages[0]["Body"])
+    assert body["engine"] == "v2"
+
+
+def test_enqueue_invalid_engine_returns_400(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "engine": "v3"})
     result = enqueue_job.handler(event, None)
     assert result["statusCode"] == 400
 
@@ -206,10 +225,12 @@ def test_enqueue_invalid_json_body_returns_400(aws_resources):
 
 
 # -- process_job ------------------------------------------------------------
-def _sqs_event(run_id: str, user_id: str, question: str, persona: str | None = None) -> dict:
+def _sqs_event(run_id: str, user_id: str, question: str, persona: str | None = None, engine: str | None = None) -> dict:
     message = {"run_id": run_id, "user_id": user_id, "question": question}
     if persona is not None:
         message["persona"] = persona
+    if engine is not None:
+        message["engine"] = engine
     return {"Records": [{"body": json.dumps(message)}]}
 
 
@@ -224,6 +245,38 @@ def test_process_job_writes_succeeded_result(aws_resources):
     assert item["safe"] is True
     assert item["narrator_backend"] == "mock"
     assert "162" in item["answer"]
+
+
+class _FakeToolPlanner:
+    """Same shape as test_orchestration_lambdas.py's identical fake -- a
+    scripted fake so this exercises the Lambda's own routing (does
+    `engine="v2"` reach `ask_compound`, get its stage checkpoints written
+    to DynamoDB) without a real Bedrock call in CI."""
+
+    backend_name = "fake"
+
+    def propose_plan(self, question_text, repair_reason=None):
+        from care_agent.orchestrator import PlannedToolCall, ToolPlan
+
+        return ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))
+
+
+def test_process_job_v2_calls_ask_compound_and_writes_stage_checkpoints(aws_resources):
+    """`engine="v2"` now runs through this path too (previously only the
+    synchronous /ask route supported it -- see docs/DECISIONS.md,
+    2026-09-21 entry). While running, it writes a `current_stage`
+    checkpoint to the run's own DynamoDB record, so `GET /runs/{run_id}`
+    polling can show live tool-calling progress."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-v2", "status": "QUEUED"})
+
+    with patch.object(process_job, "_tool_planner", _FakeToolPlanner()):
+        process_job.handler(_sqs_event("job-v2", "user_demo_001", "How is my LDL trending?", engine="v2"), None)
+
+    item = table.get_item(Key={"run_id": "job-v2"})["Item"]
+    assert item["status"] == "SUCCEEDED"
+    assert item["safe"] is True
+    assert "current_stage" in item and item["current_stage"]
 
 
 def test_process_job_uses_clinician_persona_from_the_sqs_message(aws_resources):

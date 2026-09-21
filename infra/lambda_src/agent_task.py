@@ -1,8 +1,19 @@
 """Step Functions Task Lambda for the async orchestration path (Phase 3).
 
 Input shape (from the state machine): {"run_id": ..., "user_id": ...,
-"question": ...}. Returns {"answer": ..., "safe": ..., "trace": {...}} on
-success.
+"question": ..., "persona": ..., "engine": ...}. Returns {"answer": ...,
+"safe": ..., "trace": {...}} on success.
+
+`engine="v2"` runs `HealthAgent.ask_compound()` instead of `ask()`,
+mirroring `adapter.py`'s exact branch -- this is what actually gives V2
+a Step-Functions-orchestrated execution mode (see docs/DECISIONS.md).
+Its `on_stage` callback writes a `current_stage` checkpoint to the run's
+DynamoDB record (still `RUNNING` at that point) via `run_writes` -- the
+same record `GET /runs/{run_id}` already polls, so a caller watching a
+V2 run sees live tool-calling progress without any new transport, just
+this project's existing 1s poll loop reading one more field. V1 has no
+equivalent checkpointing: `ask()` is a single fast call with nothing
+worth surfacing mid-flight.
 
 Deliberately lets exceptions propagate rather than catching them into a
 JSON error response the way `adapter.py` does for its synchronous HTTP
@@ -30,7 +41,9 @@ import json
 import os
 
 import boto3
+import run_writes
 from agent_runtime import agent as _agent
+from agent_runtime import tool_planner as _tool_planner
 
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
 
@@ -44,16 +57,38 @@ def _s3():
     return _s3_client
 
 
+def _make_stage_callback(run_id: str):
+    def on_stage(message: str) -> None:
+        # Best-effort: a run that's already raced to a terminal state
+        # (e.g. cancelled) simply has this write no-op via the
+        # `if_status_in` condition -- never worth failing the actual
+        # answer over a progress-display checkpoint.
+        run_writes.conditional_status_write(run_id, if_status_in=("RUNNING",), current_stage=message)
+
+    return on_stage
+
+
 def handler(event: dict, context: object) -> dict:
     run_id = event["run_id"]
     user_id = event["user_id"]
     question = event["question"]
-    # Defaults to "patient" for an execution started before this field
-    # existed -- see start_run.py's validation, which is what actually
-    # guarantees any *new* execution's input has it.
+    # Both default for an execution started before these fields existed
+    # -- see start_run.py's validation, which is what actually guarantees
+    # any *new* execution's input has them.
     persona = event.get("persona", "patient")
+    engine = event.get("engine", "v1")
 
-    response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
+    if engine == "v2":
+        response = _agent.ask_compound(
+            user_id=user_id,
+            question_text=question,
+            planner=_tool_planner,
+            question_id=run_id,
+            persona=persona,
+            on_stage=_make_stage_callback(run_id),
+        )
+    else:
+        response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
     trace_dict = response.trace.as_dict()
 
     if _EVIDENCE_BUCKET_NAME:

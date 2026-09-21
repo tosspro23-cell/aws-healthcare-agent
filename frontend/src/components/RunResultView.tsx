@@ -19,6 +19,11 @@ export function RunResultView({ run }: { run: RunRecord }) {
   return (
     <div className="result">
       <div className={`status-badge ${pending ? "pending" : run.status.toLowerCase()}`}>{run.status}</div>
+      {pending && run.current_stage && (
+        <ul className="stage-log">
+          <li className="current">{run.current_stage}</li>
+        </ul>
+      )}
       {typeof run.safe === "boolean" && (
         <div className={`safe-badge ${run.safe ? "safe" : "unsafe"}`}>{run.safe ? "SAFE" : "UNSAFE -- rejected"}</div>
       )}

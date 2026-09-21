@@ -96,7 +96,11 @@ class OrchestrationStack(Stack):
             code=_lambda.Code.from_asset(str(lambda_asset_dir)),
             timeout=Duration.seconds(25),
             memory_size=512,
-            environment={"CARE_AGENT_NARRATOR_BACKEND": "bedrock", "EVIDENCE_BUCKET_NAME": evidence_bucket.bucket_name},
+            environment={
+                "CARE_AGENT_NARRATOR_BACKEND": "bedrock",
+                "EVIDENCE_BUCKET_NAME": evidence_bucket.bucket_name,
+                **common_env,
+            },
         )
         grant_bedrock_invoke(agent_task_handler)
         # Writes the full grounding trace to S3 (same {run_id}.json key
@@ -104,6 +108,14 @@ class OrchestrationStack(Stack):
         # can show one for this path too -- previously only the sync path
         # had one anywhere.
         evidence_bucket.grant_put(agent_task_handler)
+        # V2 (engine="v2") writes a `current_stage` checkpoint mid-run via
+        # `run_writes.conditional_status_write` (see agent_task.py) so
+        # GET /runs/{run_id} polling can show live tool-calling progress
+        # the same way it already shows status transitions -- this handler
+        # previously had no DynamoDB access at all. `UpdateItem` only:
+        # matches every other handler's exact-action-grant style in this
+        # file, and this handler never reads or deletes a record.
+        runs_table.grant(agent_task_handler, "dynamodb:UpdateItem")
 
         record_result_handler = _lambda.Function(
             self,
@@ -220,6 +232,12 @@ class OrchestrationStack(Stack):
                     # produced on the sync and Queue paths. See
                     # docs/DECISIONS.md, 2026-09-21 entry.
                     "persona": sfn.JsonPath.string_at("$.persona"),
+                    # Same whitelist, same lesson: added alongside `engine`
+                    # in start_run.py's execution input (see
+                    # docs/DECISIONS.md) -- must also be listed here or
+                    # agent_task.py never sees it, exactly as happened
+                    # with `persona` above.
+                    "engine": sfn.JsonPath.string_at("$.engine"),
                 }
             ),
             result_path="$.agent_result",

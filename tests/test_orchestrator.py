@@ -169,13 +169,15 @@ def test_run_compound_reasoning_answers_a_real_compound_question():
 def test_run_compound_reasoning_discloses_a_partially_rejected_plan():
     """Regression test: an independent review found that when a plan
     mixes one legal call and one illegal call, the legal call's success
-    made the loop break immediately (see the `if accepted or not
-    rejections` check) -- so the illegal call's rejection was used for
-    nothing, never became a repair attempt and never became a
-    `Limitation` either. The final Brief looked identical to one where
-    the user had only ever asked about the legal marker, with no sign
-    anything was left out. The rejected half must now show up as a
-    disclosed limitation."""
+    made the loop break immediately -- the illegal call's rejection was
+    used for nothing, never became a repair attempt and never became a
+    `Limitation` either. Fixed in two steps (see docs/DECISIONS.md,
+    2026-09-21 entries): first, disclosure (the rejection always becomes
+    a `Limitation`); then, this test's own scripted planner has no
+    second plan to offer, so the repair attempt below finds nothing new
+    and the original rejection is still what gets disclosed -- proving
+    the "planner gives up on repair" path doesn't silently lose it
+    either."""
     planner = _ScriptedPlanner(
         [
             ToolPlan(
@@ -188,8 +190,45 @@ def test_run_compound_reasoning_discloses_a_partially_rejected_plan():
     )
     brief, _ = run_compound_reasoning("What's my LDL trend, and what about this other marker?", _real_ctx(), planner)
     assert brief.grounded_facts  # the legal half still answered
-    assert len(planner.calls) == 1  # never got a repair attempt -- it was accepted-and-done in one round
+    assert len(planner.calls) == 2  # a repair attempt for the rejected half now genuinely happens
     assert any(lim.kind == "partial_tool_rejection" and "made_up_marker" in lim.detail for lim in brief.limitations)
+
+
+def test_run_compound_reasoning_repairs_the_rejected_half_of_a_mixed_plan():
+    """The actual enhancement: unlike the disclosure-only test above
+    (whose scripted planner has nothing left to offer), a repair round
+    that *does* fix the rejected half must be used -- both calls' facts
+    end up in the Brief, no `partial_tool_rejection` limitation remains,
+    and the already-accepted call from round one is never re-executed
+    (asserted via `trace_calls` containing exactly one execution per
+    tool, not two, even though the repair round's own plan re-proposes
+    the already-accepted `hba1c_percent` call alongside the fixed one)."""
+    planner = _ScriptedPlanner(
+        [
+            ToolPlan(
+                calls=(
+                    PlannedToolCall("get_marker_trend", {"concept_id": "hba1c_percent"}),
+                    PlannedToolCall("get_marker_trend", {"concept_id": "made_up_marker"}),
+                )
+            ),
+            ToolPlan(
+                calls=(
+                    PlannedToolCall("get_marker_trend", {"concept_id": "hba1c_percent"}),
+                    PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),
+                )
+            ),
+        ]
+    )
+    brief, trace_calls = run_compound_reasoning("What's my LDL and A1C trend?", _real_ctx(), planner)
+
+    assert len(planner.calls) == 2
+    assert not any(lim.kind == "partial_tool_rejection" for lim in brief.limitations)
+    all_values = {v for fact in brief.grounded_facts for v in fact.numeric_values}
+    assert {5.8, 6.1}.issubset(all_values)  # hba1c_percent, from round one
+    assert {148.0, 162.0}.issubset(all_values)  # ldl_c_mg_dl, from the repaired round two
+
+    execution_calls = [c for c in trace_calls if c.name == "get_marker_trend"]
+    assert len(execution_calls) == 2  # hba1c_percent executed once, not twice
 
 
 def test_run_compound_reasoning_repairs_after_a_rejected_call():

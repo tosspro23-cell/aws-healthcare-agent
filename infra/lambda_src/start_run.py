@@ -86,6 +86,14 @@ def handler(event: dict, context: object) -> dict:
     if persona not in ("patient", "clinician"):
         return _json_response(400, {"error": "'persona', if supplied, must be 'patient' or 'clinician'."})
 
+    # Same shape as `persona` above -- mirrors adapter.py's exact
+    # validation. V2 (`engine="v2"`) now runs through this path too (see
+    # docs/DECISIONS.md): `agent_task.py` branches on this field the same
+    # way `adapter.py` already does.
+    engine = body.get("engine", "v1")
+    if engine not in ("v1", "v2"):
+        return _json_response(400, {"error": "'engine', if supplied, must be 'v1' or 'v2'."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         # `start_execution`'s `name` param must be a string; an
@@ -97,7 +105,14 @@ def handler(event: dict, context: object) -> dict:
         return _json_response(400, {"error": "'run_id', if supplied, must be 1-80 characters with no whitespace or special characters."})
 
     owner_sub = auth_context.owner_sub_from_event(event)
-    submitted_input = {"run_id": run_id, "user_id": user_id, "question": question, "owner_sub": owner_sub, "persona": persona}
+    submitted_input = {
+        "run_id": run_id,
+        "user_id": user_id,
+        "question": question,
+        "owner_sub": owner_sub,
+        "persona": persona,
+        "engine": engine,
+    }
 
     try:
         _sfn().start_execution(

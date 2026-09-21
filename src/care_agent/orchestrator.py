@@ -387,10 +387,19 @@ def run_compound_reasoning(
     on_stage: Callable[[str], None] | None = None,
 ) -> tuple[Brief, list[ToolCall]]:
     """The V2 entry point: plan -> capability-gate -> execute -> build a
-    `Brief`. Bounded to `MAX_ITERATIONS` planner calls; a plan where every
-    call is rejected gets exactly one repair attempt before this function
-    gives up honestly (an empty `Brief` with a `Limitation` explaining why,
-    never a guess).
+    `Brief`. Bounded to `MAX_ITERATIONS` planner calls total. A round
+    that has any rejections gets one more repair attempt (not just a
+    round where *everything* was rejected) -- newly-accepted calls are
+    executed immediately each round, so a repair round only ever needs
+    to fix the part that actually failed; nothing already executed is
+    ever re-executed, even if a repair round's plan re-proposes it. If
+    the bounded loop ends with no call ever having succeeded, this gives
+    up honestly (an empty `Brief` with a `Limitation` explaining why,
+    never a guess); if some calls succeeded but others remained rejected
+    when the budget ran out, that's disclosed as a `Limitation` too, not
+    silently dropped. See docs/DECISIONS.md, 2026-09-21 entries (F5's
+    initial disclosure-only fix, then this repair-the-rejected-half
+    enhancement).
 
     `on_stage`, if given, is called with a short human-readable string at
     each real checkpoint (planning, tool execution) -- purely an
@@ -405,18 +414,20 @@ def run_compound_reasoning(
         if on_stage is not None:
             on_stage(message)
 
+    def call_signature(call: PlannedToolCall) -> tuple[str, tuple[tuple[str, str], ...]]:
+        return (call.tool_name, tuple(sorted(call.args.items())))
+
     trace_calls: list[ToolCall] = []
+    brief = Brief(intent=COMPOUND_REASONING)
+    executed_signatures: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+    all_executed_calls: list[PlannedToolCall] = []
     repair_reason: str | None = None
-    accepted: list[PlannedToolCall] = []
-    # Rejections from the round that actually broke the loop -- i.e. the
-    # ones that never got a repair attempt because *other* calls in that
-    # same round were accepted (see the `if accepted or not rejections`
-    # break below). An independent review found these were previously
-    # discarded outright whenever `accepted` was non-empty: a plan mixing
-    # one legal and one illegal call silently returned only the legal
-    # part, with `brief.limitations` empty and the narrator never told
-    # anything was missing. See docs/DECISIONS.md, 2026-09-21 entry.
-    unresolved_rejections: list[str] = []
+    # The most recent round's rejections still needing a repair attempt.
+    # Only overwritten by a round that actually proposed at least one
+    # call -- an empty repair-round response (the planner effectively
+    # giving up) must not silently erase what the *previous* round
+    # already found rejected. See docs/DECISIONS.md, 2026-09-21 entry.
+    unresolved: list[str] = []
 
     for _iteration in range(MAX_ITERATIONS):
         stage("Planning which tools to call..." if repair_reason is None else "Repairing the tool plan...")
@@ -429,7 +440,7 @@ def run_compound_reasoning(
             )
         )
         rejections: list[str] = []
-        accepted = []
+        round_accepted: list[PlannedToolCall] = []
         for call in plan.calls:
             allowed, reason = capability_gate(call)
             trace_calls.append(
@@ -441,18 +452,36 @@ def run_compound_reasoning(
                 )
             )
             if allowed:
-                accepted.append(call)
+                round_accepted.append(call)
             else:
                 rejections.append(reason or "rejected")
-        if accepted or not rejections:
-            unresolved_rejections = rejections
-            break
-        repair_reason = "; ".join(rejections)
-    else:
-        pass  # loop exhausted; `accepted` holds whatever the last attempt accepted (possibly empty)
 
-    brief = Brief(intent=COMPOUND_REASONING)
-    if not accepted:
+        # Execute newly-accepted calls right away, this round -- a repair
+        # round's plan may legitimately re-propose a call already
+        # accepted+executed earlier alongside a fixed one; dedup by
+        # signature so it's never run twice (which would double-count its
+        # grounded facts).
+        new_calls = [c for c in round_accepted if call_signature(c) not in executed_signatures]
+        if new_calls:
+            stage(f"Calling tools: {', '.join(c.tool_name for c in new_calls)}...")
+            for call in new_calls:
+                result = execute_tool_call(call, ctx)
+                executed_signatures.add(call_signature(call))
+                all_executed_calls.append(call)
+                trace_calls.append(ToolCall(name=call.tool_name, args=call.args, result_summary=result.result_summary, ok=result.ok))
+                brief.grounded_facts.extend(result.grounded_facts)
+                brief.limitations.extend(result.limitations)
+                brief.focus_items.extend(result.focus_items)
+                brief.mentioned_markers.update(result.mentioned_markers)
+                brief.retrieved_chunks.extend(result.retrieved_chunks)
+
+        if plan.calls:
+            unresolved = rejections
+        if not unresolved:
+            break
+        repair_reason = "; ".join(unresolved)
+
+    if not all_executed_calls:
         brief.limitations.append(
             Limitation(
                 kind="unsupported_request",
@@ -461,23 +490,14 @@ def run_compound_reasoning(
         )
         return brief, trace_calls
 
-    # Disclose, don't silently drop: at least one call succeeded, but any
-    # calls rejected alongside it in the same round never got a repair
-    # attempt (the loop above breaks as soon as anything is accepted) --
-    # the user should be told part of their question went unanswered,
-    # not shown an answer that quietly covers only the legal part.
-    for reason in unresolved_rejections:
+    # Disclose, don't silently drop: the bounded repair budget ran out
+    # with something still rejected. Reached only when `unresolved` is
+    # still non-empty after the loop -- i.e. every repair attempt within
+    # `MAX_ITERATIONS` either failed again or the planner gave up on it.
+    for reason in unresolved:
         brief.limitations.append(Limitation(kind="partial_tool_rejection", detail=reason))
 
-    stage(f"Calling tools: {', '.join(c.tool_name for c in accepted)}...")
-    for call in accepted:
-        result = execute_tool_call(call, ctx)
-        trace_calls.append(ToolCall(name=call.tool_name, args=call.args, result_summary=result.result_summary, ok=result.ok))
-        brief.grounded_facts.extend(result.grounded_facts)
-        brief.limitations.extend(result.limitations)
-        brief.focus_items.extend(result.focus_items)
-        brief.mentioned_markers.update(result.mentioned_markers)
-        brief.retrieved_chunks.extend(result.retrieved_chunks)
+    accepted = all_executed_calls
 
     # V1 (`agent.py`'s `ask()`) always retrieves knowledge-base context,
     # for every question, regardless of intent -- it's cheap and doesn't

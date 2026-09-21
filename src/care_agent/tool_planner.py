@@ -27,6 +27,32 @@ DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_REGION = "us-east-1"
 
 
+def _clean_tool_args(raw_args: dict) -> dict[str, str]:
+    """Converts a tool-use `input` dict (arbitrary JSON values) into
+    `PlannedToolCall.args`' `dict[str, str]` shape -- dropping, not
+    stringifying, any value that is `None`, a `list`, or a `dict`.
+
+    An independent review found the previous unconditional
+    `{k: str(v) for k, v in raw_args.items()}` turned a missing/null/
+    malformed argument into a deceptively *non-empty* string (`None`
+    becomes `"None"`, `[]` becomes `"[]"`) -- exactly the kind of value
+    `orchestrator.capability_gate`'s required-argument check (added for
+    the same review's F4 finding) is supposed to reject as absent, but
+    couldn't, because by the time it saw the value it already looked
+    like a real answer. Dropping the key entirely instead means
+    `call.args.get(param_name)` correctly returns `None` for a
+    missing/null/malformed argument, exactly as if the model had never
+    mentioned it -- the same code path already handles a genuinely
+    absent argument. A real string/int/float/bool value still coerces to
+    `str` exactly as before. See docs/DECISIONS.md.
+
+    No `boto3` dependency (unlike `BedrockToolPlanner` itself) -- kept as
+    a standalone function specifically so it's unit-testable without the
+    `bedrock` extra installed.
+    """
+    return {k: str(v) for k, v in raw_args.items() if v is not None and not isinstance(v, (list, dict))}
+
+
 def _tool_config() -> dict:
     """`TOOL_SPECS`' lightweight parameter dicts, translated into Bedrock
     Converse's `toolConfig.tools[].toolSpec.inputSchema.json` shape (a real
@@ -92,5 +118,5 @@ class BedrockToolPlanner:
                     raw_args = json.loads(raw_args)
                 except json.JSONDecodeError:
                     raw_args = {}
-            calls.append(PlannedToolCall(tool_name=tool_use.get("name", ""), args={k: str(v) for k, v in raw_args.items()}))
+            calls.append(PlannedToolCall(tool_name=tool_use.get("name", ""), args=_clean_tool_args(raw_args)))
         return ToolPlan(calls=tuple(calls))

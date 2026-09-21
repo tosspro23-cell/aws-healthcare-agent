@@ -3825,6 +3825,108 @@ deployed at the time of this entry.
 
 ---
 
+## 2026-09-21 — V2 gets Step Functions + Queue, polling-based progress instead of a new WebSocket API, plus 3 review-suggested hardening items
+
+**Context**: V2 (tool-calling compound reasoning) only ran through the
+synchronous `/ask` route; V1 already had two additional execution modes
+(Step Functions, SQS Queue) V2 never got. Separately, the real deployed
+sync path shows no progress while V2 works (just a wait, then the final
+answer) -- only the local-only `CompoundDemo.tsx` demo ever showed live
+tool-calling progress, via SSE against `scripts/dev_server.py`. Asked
+via `AskUserQuestion` how to close the streaming gap: reuse the existing
+DynamoDB-polling infrastructure the async paths already have, or build a
+new WebSocket API (new protocol, new custom Lambda authorizer since
+WebSocket doesn't support the HTTP API's JWT authorizer, new connections
+table, new IAM, real new cost). Chose the former -- it's a direct
+consequence of building V2's Step Functions/Queue support anyway, costs
+nothing new, and matches this project's own stated philosophy
+(`orchestrator.py`'s docstring: "coarse-grained stage updates, not
+per-token streaming").
+
+**Decision, Part A (V2 persistence + progress)**: threaded `engine`
+through `start_run.py`/`enqueue_job.py` exactly the way `persona` was
+threaded two entries ago -- including remembering that lesson's exact
+failure mode: `orchestration_stack.py`'s `InvokeAgent` `LambdaInvoke`
+task builds its payload from an explicit field whitelist, so `engine`
+had to be added there too, not just to the execution's top-level input
+(a new regression test, `test_engine_flows_through_invoke_agent_payload`,
+guards this the same way `test_persona_flows_through_invoke_agent_payload`
+already does). `agent_task.py`/`process_job.py` now branch
+`ask()`/`ask_compound()` on `engine`, mirroring `adapter.py`'s existing
+branch exactly (`agent_runtime.tool_planner` is now imported by all
+three). For progress: `ask_compound`'s existing `on_stage` hook (already
+built for the local SSE demo) now also writes a `current_stage`
+checkpoint to the run's own DynamoDB record via `run_writes` (its third
+caller -- previously described as scoped to exactly two; docstring
+updated) whenever the run is still `RUNNING`. `GET /runs/{run_id}`
+(`get_run.py`) already returns the full item unfiltered
+(`result = dict(item)` -- confirmed, no code change needed there), and
+the frontend's existing 1s poll loop (`AskForm.tsx`'s `pollUntilTerminal`)
+just renders the new field (`RunResultView.tsx`) -- no new transport, no
+new API Gateway resource, reusing infrastructure this project had
+already built, tested, and load-tested (`docs/STRESS_TEST.md`).
+`agent_task_handler` needed new `dynamodb:UpdateItem` access (it
+previously had none) plus `RUNS_TABLE_NAME` in its environment.
+
+**Decision, Part B (item 2: V1/V2 source-data check equivalence)**: new
+`tests/test_v1_v2_source_data_equivalence.py`, reusing
+`tests/test_agent_edge_cases.py`'s exact injected-dataset scenarios
+(stale panel, an LDL-C of 50000 mg/dL) and calling both `agent.ask(...)`
+and `agent.ask_compound(...)` against the identical data, asserting both
+produce the same `Limitation.kind` (`stale_data`, `implausible_value`).
+Direct regression coverage for the `_apply_source_data_checks`
+extraction from two entries ago, proving the two pipelines can't
+silently diverge again the way an independent review found they already
+had.
+
+**Decision, Part C (item 3: stop coercing bad tool args into fake-valid
+strings)**: `tool_planner.py`'s `{k: str(v) for k, v in raw_args.items()}`
+turned `None`/`[]`/`{}` into deceptively non-empty strings (`"None"`,
+`"[]"`) that could fool the required-argument presence check added for
+a separate review finding (F4). Extracted into a pure `_clean_tool_args`
+function (no `boto3` dependency, unlike `BedrockToolPlanner` itself, so
+it's the first thing in this file ever unit-tested -- new
+`tests/test_tool_planner.py`, `tool_planner.py`'s coverage went from a
+flat 0% to real coverage of the part that doesn't need a live AWS call)
+that drops (not stringifies) `None`/`list`/`dict` values, so a missing
+argument reads as genuinely absent to `capability_gate`.
+
+**Decision, Part D (item 4: repair only the rejected half of a mixed
+plan)**: the previous entry's F5 fix disclosed a partially-rejected
+plan's rejection but never attempted to repair it -- a round with any
+rejection immediately stopped after executing whatever was accepted.
+Restructured `run_compound_reasoning` so any round with rejections gets
+one more repair attempt (still bounded by `MAX_ITERATIONS=2`), while:
+executing newly-accepted calls immediately each round (not deferred);
+deduping by `(tool_name, sorted(args.items()))` so a repair round's plan
+re-proposing an already-executed call is never re-run (and never
+double-counts its grounded facts); and tracking "unresolved" rejections
+as the *last round that actually proposed something*'s rejections, so an
+empty repair-round response (the planner giving up) doesn't silently
+erase what the *previous* round already found rejected. Hand-traced
+against every existing test before writing the change (all passed
+unchanged except one deliberate update:
+`test_run_compound_reasoning_discloses_a_partially_rejected_plan`'s
+`len(planner.calls) == 1` became `== 2`, since a repair attempt now
+genuinely happens for the mixed case); added
+`test_run_compound_reasoning_repairs_the_rejected_half_of_a_mixed_plan`
+proving the actual enhancement (both calls' facts present, no
+`partial_tool_rejection` limitation remains, the already-accepted call
+is provably not re-executed).
+
+**Consequence**: V2 now has feature parity with V1 across all three
+execution modes, with visible progress on the two async ones without
+any new AWS resource type. All four parts verified against a
+from-scratch clean venv matching CI's exact dependency sets (core: 235
+passed, 86.47% coverage, up from 85.75% purely from `tool_planner.py`
+gaining real coverage; infra: 180 passed, up from 173) plus frontend
+`tsc`/`eslint`/`vitest`/`build`, and a manual browser check confirming
+the Engine selector now renders for all three modes. Not yet deployed at
+the time of this entry -- live end-to-end verification of
+`current_stage` against the real deployed API is still pending.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

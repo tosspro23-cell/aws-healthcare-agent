@@ -92,6 +92,12 @@ def handler(event: dict, context: object) -> dict:
     if persona not in ("patient", "clinician"):
         return _json_response(400, {"error": "'persona', if supplied, must be 'patient' or 'clinician'."})
 
+    # See start_run.py's identical validation -- V2 now runs through this
+    # path too.
+    engine = body.get("engine", "v1")
+    if engine not in ("v1", "v2"):
+        return _json_response(400, {"error": "'engine', if supplied, must be 'v1' or 'v2'."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -108,6 +114,7 @@ def handler(event: dict, context: object) -> dict:
                 "status": "QUEUED",
                 "owner_sub": owner_sub,
                 "execution_type": "SQS",
+                "engine": engine,
                 "user_id": user_id,
                 "question": question,
                 "queued_at": now,
@@ -122,7 +129,7 @@ def handler(event: dict, context: object) -> dict:
     try:
         _sqs().send_message(
             QueueUrl=_QUEUE_URL,
-            MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question, "persona": persona}),
+            MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question, "persona": persona, "engine": engine}),
         )
     except Exception as exc:  # noqa: BLE001 -- compensating write below, then report failure
         # The DynamoDB record above and this send are two separate calls,

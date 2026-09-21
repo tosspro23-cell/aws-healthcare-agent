@@ -1,11 +1,12 @@
 """SQS-triggered Lambda: consumes one queued job and runs the agent.
 
 This is the queue-buffered alternative to `agent_task.py` (Step
-Functions) -- same `HealthAgent.ask()` call, same shared
-`agent_runtime.py` construction, same `CARE_AGENT_NARRATOR_BACKEND=bedrock`
-wiring, but invoked by SQS instead of by a Step Functions Task, and with
-concurrency bounded by the queue's event-source `max_concurrency` (see
-`../stacks/queue_stack.py`) instead of by an explicit `add_retry` policy.
+Functions) -- same `HealthAgent.ask()`/`ask_compound()` branch on
+`engine`, same shared `agent_runtime.py` construction, same
+`CARE_AGENT_NARRATOR_BACKEND=bedrock` wiring, but invoked by SQS instead
+of by a Step Functions Task, and with concurrency bounded by the queue's
+event-source `max_concurrency` (see `../stacks/queue_stack.py`) instead
+of by an explicit `add_retry` policy.
 
 Retry semantics are deliberately queue-native here, not Step-Functions-
 style: an *unknown/permanent* failure (`UnknownUserError`) is caught and
@@ -44,6 +45,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 import run_writes
 from agent_runtime import agent as _agent
+from agent_runtime import tool_planner as _tool_planner
 from botocore.exceptions import ClientError
 
 from care_agent.data_store import UnknownUserError
@@ -69,6 +71,17 @@ def _s3():
     if _s3_client is None:
         _s3_client = boto3.client("s3")
     return _s3_client
+
+
+def _make_stage_callback(run_id: str):
+    # Same as agent_task.py's identical helper -- a run that's already
+    # raced to a terminal state simply no-ops this write via the
+    # `if_status_in` condition; never worth failing the actual answer
+    # over a progress-display checkpoint.
+    def on_stage(message: str) -> None:
+        run_writes.conditional_status_write(run_id, if_status_in=("RUNNING",), current_stage=message)
+
+    return on_stage
 
 
 def _claim_for_processing(run_id: str, *, now: str, lease_expires_at: str) -> bool:
@@ -115,10 +128,11 @@ def handler(event: dict, context: object) -> None:
         run_id = message["run_id"]
         user_id = message["user_id"]
         question = message["question"]
-        # Defaults to "patient" for a message enqueued before this field
-        # existed -- see enqueue_job.py's validation, which guarantees
-        # any *new* message has it.
+        # Both default for a message enqueued before these fields existed
+        # -- see enqueue_job.py's validation, which guarantees any *new*
+        # message has them.
         persona = message.get("persona", "patient")
+        engine = message.get("engine", "v1")
 
         now = datetime.now(timezone.utc)
         entered_running = _claim_for_processing(
@@ -130,7 +144,17 @@ def handler(event: dict, context: object) -> None:
             continue
 
         try:
-            response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
+            if engine == "v2":
+                response = _agent.ask_compound(
+                    user_id=user_id,
+                    question_text=question,
+                    planner=_tool_planner,
+                    question_id=run_id,
+                    persona=persona,
+                    on_stage=_make_stage_callback(run_id),
+                )
+            else:
+                response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
         except UnknownUserError as exc:
             run_writes.conditional_status_write(
                 run_id,

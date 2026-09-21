@@ -1,12 +1,14 @@
-"""Shared DynamoDB conditional-write helper for the SQS-buffered queue
-path (`process_job.py`, `reconcile_dlq.py`) -- both need the identical
-reserved-keyword-safe UpdateExpression shape for a status-conditioned
-write, so it's factored out here rather than duplicated between them.
-Not meant as a general-purpose helper beyond these two call sites: the
-Step Functions path's Lambdas (`record_result.py`, `cancel_run.py`,
-`mark_running.py`) each write their own bespoke version because their
-conditions are each a single fixed status check, not a variable
-`if_status_in` set.
+"""Shared DynamoDB conditional-write helper, originally for the
+SQS-buffered queue path (`process_job.py`, `reconcile_dlq.py`) -- both
+needed the identical reserved-keyword-safe UpdateExpression shape for a
+status-conditioned write, so it was factored out here rather than
+duplicated between them. `agent_task.py` (Step Functions) is now a third
+caller, for a narrower purpose: writing a `current_stage` checkpoint
+mid-run (status still `RUNNING`) so `GET /runs/{run_id}` polling can show
+V2's live tool-calling progress. The rest of the Step Functions path's
+Lambdas (`record_result.py`, `cancel_run.py`, `mark_running.py`) still
+write their own bespoke version, since their conditions are each a
+single fixed status check, not a variable `if_status_in` set.
 """
 
 from __future__ import annotations

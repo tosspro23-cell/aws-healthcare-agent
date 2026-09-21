@@ -32,10 +32,9 @@ export function AskForm() {
   const [mode, setMode] = useState<Mode>("sync");
   const [userId, setUserId] = useState(config.demoUserId);
   const [question, setQuestion] = useState("What should I focus on first in my results?");
-  // "Ask" (sync) mode only -- `/runs`/`/jobs` don't support `engine="v2"`
-  // yet (see docs/DECISIONS.md, 2026-09-20 entry). This is the *real*,
-  // deployed `ask_compound` path -- unlike CompoundDemo.tsx (local dev
-  // server), this goes through the actual production API.
+  // All three modes support `engine="v2"` now (see docs/DECISIONS.md,
+  // 2026-09-21 entry) -- this is the *real*, deployed `ask_compound` path
+  // for every mode, unlike CompoundDemo.tsx (local dev server only).
   const [engine, setEngine] = useState<Engine>("v1");
   const [persona, setPersona] = useState<Persona>("patient");
   const [loading, setLoading] = useState(false);
@@ -136,7 +135,7 @@ export function AskForm() {
       } else {
         const executionType = mode === "step_functions" ? "STEP_FUNCTIONS" : "SQS";
         const starter = mode === "step_functions" ? startRun : enqueueJob;
-        const started = await starter(userId, question, undefined, persona);
+        const started = await starter(userId, question, undefined, persona, engine);
         addHistoryEntry({ run_id: started.run_id, question, execution_type: executionType, submitted_at: new Date().toISOString() });
         // Show an optimistic pending state immediately rather than
         // blocking on a `getRun` call here -- the Step Functions path's
@@ -237,15 +236,13 @@ export function AskForm() {
           User ID
           <input value={userId} onChange={(e) => setUserId(e.target.value)} />
         </label>
-        {mode === "sync" && (
-          <label>
-            Engine
-            <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={loading || pending}>
-              <option value="v1">V1 -- heuristic + semantic planner</option>
-              <option value="v2">V2 -- tool-calling agent (real deployed path)</option>
-            </select>
-          </label>
-        )}
+        <label>
+          Engine
+          <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={loading || pending}>
+            <option value="v1">V1 -- heuristic + semantic planner</option>
+            <option value="v2">V2 -- tool-calling agent</option>
+          </select>
+        </label>
         <label>
           Persona
           <select value={persona} onChange={(e) => setPersona(e.target.value as Persona)} disabled={loading || pending}>

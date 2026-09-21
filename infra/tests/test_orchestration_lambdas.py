@@ -149,6 +149,42 @@ def test_agent_task_uses_clinician_persona_from_event(evidence_bucket):
     assert "decision-support" in result["answer"].lower()
 
 
+class _FakeToolPlanner:
+    """Same shape as `test_adapter.py`'s `_FakeToolPlanner` -- a scripted
+    fake so this exercises the Lambda *routing* (does `engine="v2"` reach
+    `ask_compound`, get its stage checkpoints written to DynamoDB) without
+    a real Bedrock call in CI."""
+
+    backend_name = "fake"
+
+    def propose_plan(self, question_text, repair_reason=None):
+        from care_agent.orchestrator import PlannedToolCall, ToolPlan
+
+        return ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))
+
+
+def test_agent_task_v2_calls_ask_compound_and_writes_stage_checkpoints(runs_table):
+    """`engine="v2"` now runs through this path too (previously only the
+    synchronous /ask route supported it -- see docs/DECISIONS.md,
+    2026-09-21 entry). While running, it writes a `current_stage`
+    checkpoint to the run's own DynamoDB record via `run_writes`, so
+    `GET /runs/{run_id}` polling can show live tool-calling progress the
+    same way `dev_server.py`'s local SSE demo does, with no new
+    transport."""
+    agent_task._s3_client = None
+    runs_table.put_item(Item={"run_id": "v2-task-run", "status": "RUNNING"})
+
+    with patch.object(agent_task, "_tool_planner", _FakeToolPlanner()):
+        result = agent_task.handler(
+            {"run_id": "v2-task-run", "user_id": "user_demo_001", "question": "How is my LDL trending?", "engine": "v2"}, None
+        )
+
+    assert result["safe"] is True
+    assert result["trace"]["intent"] == "compound_reasoning"
+    item = runs_table.get_item(Key={"run_id": "v2-task-run"})["Item"]
+    assert "current_stage" in item and item["current_stage"]
+
+
 def test_agent_task_propagates_exceptions_for_unknown_user():
     """Deliberately does NOT catch this -- Step Functions' Catch block is
     supposed to see it (see agent_task.py's module docstring)."""
@@ -250,6 +286,30 @@ def test_start_run_invalid_persona_returns_400(state_machine_arn):
     assert result["statusCode"] == 400
 
 
+def test_start_run_threads_engine_into_the_execution_input(state_machine_arn):
+    """V2 now runs through this path too -- same shape as persona's
+    identical test above."""
+    import json
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "run_id": "v2-run", "engine": "v2"}')
+        start_run.handler(event, None)
+
+    sfn = boto3.client("stepfunctions", region_name="us-east-1")
+    execution_arn = f"{state_machine_arn.replace(':stateMachine:', ':execution:')}:v2-run"
+    execution_input = json.loads(sfn.describe_execution(executionArn=execution_arn)["input"])
+    assert execution_input["engine"] == "v2"
+
+
+def test_start_run_invalid_engine_returns_400(state_machine_arn):
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "engine": "v3"}')
+        result = start_run.handler(event, None)
+    assert result["statusCode"] == 400
+
+
 def test_start_run_missing_fields_returns_400(state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
@@ -298,6 +358,7 @@ def test_start_run_handles_execution_already_exists_with_matching_input_as_idemp
             "question": "hello",
             "owner_sub": _DEFAULT_CALLER_SUB,
             "persona": "patient",
+            "engine": "v1",
         }
     )
     fake_client = MagicMock()

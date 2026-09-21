@@ -85,6 +85,17 @@ def test_persona_flows_through_invoke_agent_payload():
     assert "persona.$" in invoke_agent_params["Payload"]
 
 
+def test_engine_flows_through_invoke_agent_payload():
+    """Same class of bug as `test_persona_flows_through_invoke_agent_payload`
+    above, for `engine` -- added to start_run.py's execution input to give
+    V2 a Step-Functions-orchestrated execution mode; must also be listed
+    in InvokeAgent's own explicit Payload whitelist or agent_task.py never
+    sees it. See docs/DECISIONS.md."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent_params = definition["States"]["InvokeAgent"]["Parameters"]
+    assert "engine.$" in invoke_agent_params["Payload"]
+
+
 def test_narrator_backend_flows_through_invoke_agent_and_into_record_success():
     """Regression test: an independent review found that InvokeAgent's
     ResultSelector only extracted `answer`/`safe` from agent_task.py's
