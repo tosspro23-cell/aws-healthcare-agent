@@ -67,6 +67,24 @@ def test_invoke_agent_has_a_bounded_timeout():
     assert invoke_agent["TimeoutSeconds"] == 25
 
 
+def test_persona_flows_through_invoke_agent_payload():
+    """Regression test: `persona` was added to start_run.py's execution
+    input but not to InvokeAgent's own explicit Payload whitelist, so
+    agent_task.py always saw its own "patient" default regardless of what
+    was actually requested -- the same class of silent-drop bug as
+    `test_narrator_backend_flows_through_invoke_agent_and_into_record_success`
+    below, just on the way in rather than the way out. Found via a real
+    clinician-persona Step Functions run against the deployed stack (the
+    answer read as patient-framed prose, not the clinical-summary framing
+    the same question produced via the sync and Queue paths), not by
+    inspection -- a unit test calling agent_task.handler directly
+    couldn't catch this either, same reason as MarkRunning's owner_sub
+    regression above. See docs/DECISIONS.md."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent_params = definition["States"]["InvokeAgent"]["Parameters"]
+    assert "persona.$" in invoke_agent_params["Payload"]
+
+
 def test_narrator_backend_flows_through_invoke_agent_and_into_record_success():
     """Regression test: an independent review found that InvokeAgent's
     ResultSelector only extracted `answer`/`safe` from agent_task.py's

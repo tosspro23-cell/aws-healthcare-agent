@@ -208,6 +208,18 @@ class OrchestrationStack(Stack):
                     "run_id": sfn.JsonPath.string_at("$.run_id"),
                     "user_id": sfn.JsonPath.string_at("$.user_id"),
                     "question": sfn.JsonPath.string_at("$.question"),
+                    # Explicit `payload` mappings here whitelist which
+                    # execution-input fields reach each task -- `persona`
+                    # was added to the execution input (start_run.py) but
+                    # not to this whitelist, so agent_task.py always saw
+                    # its own "patient" default regardless of what was
+                    # requested. Found by testing a real clinician-persona
+                    # Step Functions run against the deployed stack and
+                    # noticing the answer read as patient-framed prose,
+                    # not the clinical-summary framing the same question
+                    # produced on the sync and Queue paths. See
+                    # docs/DECISIONS.md, 2026-09-21 entry.
+                    "persona": sfn.JsonPath.string_at("$.persona"),
                 }
             ),
             result_path="$.agent_result",

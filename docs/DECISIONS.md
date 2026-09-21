@@ -3647,6 +3647,60 @@ infra file is something CI would actually catch.
 
 ---
 
+## 2026-09-21 — The Step Functions persona fix from the previous entry was still incomplete
+
+**Context**: After deploying the previous entry's fix, live production
+testing (7 representative real requests across both engines, both
+personas, and both async paths, via the real deployed API with a real
+Cognito token) found that the Queue path correctly produced
+clinician-framed prose, but the **Step Functions path did not** -- its
+answer read as patient-framed prose for the same question and the same
+`persona: "clinician"` request. `start_run.py` does put `persona` into
+the execution's top-level input (verified by the previous entry's own
+regression test), so the drop had to be somewhere between that input and
+`agent_task.py`.
+
+Root cause, found in `orchestration_stack.py`: the `InvokeAgent`
+`LambdaInvoke` task builds its `payload` from an *explicit* field
+whitelist (`sfn.TaskInput.from_object({"run_id": ..., "user_id": ...,
+"question": ...})`), not a pass-through of the full execution state --
+`persona` simply wasn't in that list, so it never reached
+`agent_task.py`'s event at all, regardless of being present in the
+execution's top-level input. This is the exact same class of bug this
+file already has a named regression test for
+(`test_narrator_backend_flows_through_invoke_agent_and_into_record_success`,
+from an earlier phase's independent review) -- an explicit Step
+Functions payload mapping is a second, easy-to-forget place a field has
+to be added, separate from wherever it's produced. Unit-testing
+`agent_task.handler` directly (as most of this project's Lambda tests
+do) cannot catch this class of bug either, since it bypasses the state
+machine's own payload-mapping layer entirely -- only a real execution
+(or an assertion on the synthesized ASL definition) exercises it. That
+same limitation is exactly why this bug survived through unit tests,
+`cdk synth`, and CI all the way to a real deployed run before being
+caught -- this is a genuine gap in what this project's test suite can
+see, not a one-off oversight.
+
+**Decision**: Added `"persona": sfn.JsonPath.string_at("$.persona")` to
+`InvokeAgent`'s payload mapping, and a new regression test,
+`test_persona_flows_through_invoke_agent_payload`, asserting
+`"persona.$" in` the synthesized `InvokeAgent` state's `Parameters
+Payload` -- mirroring the existing `narrator_backend` regression test's
+exact shape and reasoning, right next to it in the test file.
+
+**Consequence**: All three paths (sync, Step Functions, Queue) now
+produce genuinely persona-differentiated answers, confirmed against the
+real deployed API, not just against unit tests. The broader lesson: for
+this project's Step Functions state machine specifically, any field
+added to a Lambda's *call signature* needs a matching addition to that
+Lambda's *own* `LambdaInvoke` payload mapping in `orchestration_stack.py`
+-- adding it to the execution's top-level input alone (what `start_run.py`
+does) is necessary but not sufficient, and neither `cdk synth` nor a
+unit test calling the handler directly will catch a mapping that's still
+missing it.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title
