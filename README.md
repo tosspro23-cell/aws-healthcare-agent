@@ -2,6 +2,52 @@
 
 [![CI](https://github.com/tosspro23-cell/aws-healthcare-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/tosspro23-cell/aws-healthcare-agent/actions/workflows/ci.yml)
 
+## Try it live
+
+**[d355ijp67vmjbx.cloudfront.net](https://d355ijp67vmjbx.cloudfront.net)**
+-- the Workbench, actually running (CloudFront + S3, backed by the real
+API Gateway / Lambda / Cognito / Step Functions / SQS / Bedrock stack --
+nothing mocked). Self-sign-up is deliberately disabled (synthetic demo
+data, single seeded account, created via `AdminCreateUser`) -- ask for a
+demo login.
+
+Once signed in, there's one form with three independent controls, each
+worth trying:
+
+- **Engine** -- `V1` (a fixed, deterministic classify → reason → narrate
+  pipeline) vs `V2` (a bounded tool-calling agent -- an LLM planner picks
+  from a fixed set of deterministic tools, never computes a fact itself).
+  Both share the exact same safety gate; only the internal path to
+  getting there differs.
+- **Persona** -- `Patient` vs `Clinician`. Changes tone/framing only
+  (second-person vs a "the patient" clinical-summary register) -- never
+  the underlying facts, never which safety checks apply.
+- **Mode** -- `Ask` (synchronous), `Start run (Step Functions)`,
+  `Enqueue job (Queue)` -- three different AWS execution paths for the
+  same question, all three supporting both engines. The two async modes
+  poll `GET /runs/{run_id}`; for `V2`, watch the status area while it's
+  pending -- a live `current_stage` field ("Planning which tools to
+  call...", "Calling tools: ...") updates as the run actually
+  progresses, not just a spinner.
+
+A few things worth specifically trying:
+- Ask something a real clinician summary would phrase differently from
+  a patient-facing one ("What should I focus on first?") under both
+  personas, both engines.
+- Ask a supplement-dosing question ("Exactly how many mg of vitamin D
+  should I take?") -- watch the safety layer decline to invent a number
+  rather than answer it directly (`disposition:
+  answered_after_hard_fallback` in the trace).
+- Expand the trace panel under any answer -- every safety check that
+  ran, every grounded fact's exact source field, every tool call `V2`
+  made and why the planner made it.
+
+See [Live demo](#live-demo) below for two annotated screenshots of a
+real run, or run the whole kernel locally with no AWS account at all --
+see [Quickstart](#quickstart).
+
+---
+
 A small, grounded health-data reasoning agent, being deployed AWS-native
 (Lambda / API Gateway / DynamoDB / Step Functions / SQS / Bedrock, built
 with the AWS CDK — see current status below). It answers questions about a user's
@@ -10,19 +56,42 @@ bloodwork, questionnaire context, and general health knowledge using
 supplement dosing, and no reliance on a paid external API for its default
 path.
 
-**Current status: Phases 0–6 complete** (kernel import → deployment
+**Current status: Phases 0–7 complete** (kernel import → deployment
 skeleton → auth → Step Functions orchestration → Bedrock → stress test →
-frontend Workbench — see [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for
-the phase-by-phase writeup), **plus CI/CD, security, and eval
-infrastructure beyond the original roadmap**: a GitHub Actions pipeline
-deploys via GitHub OIDC (no stored AWS credential anywhere in this repo)
-behind a required human approval on every push that actually touches
-something deployed; `cdk synth` runs cdk-nag's `AwsSolutionsChecks` as a
-hard gate, not an optional lint; and a capability-based regression eval
-(`care_agent.eval`) runs against the real agent on every push, with a
-pass-rate trend chart tracked over time in
-[`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md). See "CI/CD" below and
-[`docs/DECISIONS.md`](docs/DECISIONS.md) for the full reasoning on each.
+frontend Workbench → V2 tool-calling agent — see
+[`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) for the phase-by-phase
+writeup), **plus CI/CD, security, and eval infrastructure beyond the
+original roadmap**: a GitHub Actions pipeline deploys via GitHub OIDC
+(no stored AWS credential anywhere in this repo) behind a required human
+approval on every push that actually touches something deployed;
+`cdk synth` runs cdk-nag's `AwsSolutionsChecks` as a hard gate, not an
+optional lint; and a capability-based regression eval (`care_agent.eval`)
+runs against the real agent on every push, with a pass-rate trend chart
+tracked over time in [`docs/EVAL_HISTORY.md`](docs/EVAL_HISTORY.md). See
+"CI/CD" below and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the full
+reasoning on each.
+
+Phase 7 added a second, additive reasoning engine: **V2** is a bounded
+tool-calling agent (an LLM planner selects among a fixed set of
+deterministic tools -- never computes a fact itself) that reuses the
+exact same safety gate as V1 (`agent.py`'s `_narrate_and_verify`, shared
+by both, not two independently-maintained gates), and a **persona**
+switch (patient vs. clinician framing, never a change to the facts or
+which safety checks apply). Both now run through all three execution
+paths (`Ask`/sync, Step Functions, Queue), with V2's tool-calling
+progress visible live on the two async paths via a `current_stage`
+field polled from the same run record. Two independent reviews of this
+work (separate from the "15 findings" review below) found and got fixed:
+a real grounding false positive on decimal numbers, V2 never reaching
+the vetted knowledge base, a clinician-persona phrasing that bypassed
+the diagnosis/dosing safety checks entirely, V2 silently skipping V1's
+stale-data/implausible-value checks, and three smaller robustness gaps
+(a malformed tool call crashing instead of being rejected, a
+partially-rejected tool plan not disclosing what it couldn't answer,
+and a state-machine regression from an earlier persona fix) -- all
+fixed and re-verified against the real deployed API with a real Cognito
+token, not just locally. See `docs/DECISIONS.md`'s 2026-09-20/21 entries
+for the detailed writeup of each.
 
 Phase 4 (Bedrock) closed out both its acceptance items: a real,
 non-mocked `bedrock-runtime.Converse` call, and that same integration
@@ -246,6 +315,29 @@ chunk retrieved (with source + score), every grounded fact used, every
 limitation surfaced, and every safety check's pass/fail — the "expose
 enough trace/debug information" requirement.
 
+### V2 — bounded tool-calling agent
+
+`HealthAgent.ask_compound()` (`src/care_agent/orchestrator.py`) is a
+second, additive pipeline: instead of the fixed 5-intent classifier
+above, an LLM `ToolPlanner` (`BedrockToolPlanner`, using Bedrock
+Converse's native tool-use) selects among a fixed set of deterministic
+tools (`get_marker_trend`, `get_marker_snapshot`, `get_focus_markers`,
+`get_questionnaire_fact`, `get_supplement_cautions`, `get_allergies`,
+`search_knowledge`) to answer multi-part questions a fixed classifier
+can't route well ("Compare my LDL and A1C trends and tell me if my
+reported diet change is helping"). The planner only ever *chooses*
+calls; every tool wraps the same deterministic Python the V1 pipeline
+already uses (`reasoning.py`, `trend.py`) — no new computation logic
+exists in V2. Every planned call passes `capability_gate` before it
+runs (unknown tool names, out-of-vocabulary markers, and malformed
+arguments are rejected, never guessed at), the loop is bounded to
+`MAX_ITERATIONS = 2` (an initial plan plus one repair attempt for
+whatever was rejected), and the result is the *same* `Brief` type V1
+produces — which is what lets `agent.py`'s `_narrate_and_verify` (narrate,
+run `safety.run_safety_checks`, fall back to the deterministic narrator
+on any failure) apply completely unchanged. There is exactly one safety
+gate in this project, not two.
+
 ## Design choices
 
 - **Reasoning and narration are separate modules.** `reasoning.py` never
@@ -443,11 +535,29 @@ no credentials to try immediately:
 - **The narrator's questionnaire-modifier phrasing is templated per topic**,
   not composed from arbitrary combinations — adding a new questionnaire
   signal means adding a new template branch, not just new data.
+- **V2's "live" progress is polling, not true push.** The two async
+  paths write a `current_stage` checkpoint to the run's DynamoDB record
+  while it's `RUNNING`, and the frontend's existing 1s poll loop renders
+  it -- deliberately reusing infrastructure this project already had
+  (state machine, queue, DynamoDB polling) rather than adding a new
+  WebSocket API (a real, considered, explicitly declined alternative --
+  see `docs/DECISIONS.md`, 2026-09-21). Fine for this project's actual
+  process length (a few seconds, a handful of coarse stages), but it's
+  polling latency, not sub-second push.
+- **The safety-check patterns are lexical, not semantic.** `no_diagnosis`/
+  `no_dosing` match specific English phrasings (extended this session to
+  also cover the clinician persona's third-person framing after an
+  independent review found the gap) -- a sufficiently creative paraphrase
+  could still slip past a pattern-matching check. `numeric_grounding`
+  closes the more load-bearing gap (no new *number* can appear
+  ungrounded, regardless of phrasing), but a longer-term, more robust
+  design would constrain output to a structured, pre-vetted vocabulary
+  rather than checking free text after the fact.
 
 ## Repo map
 
 - Source code (the shared kernel): `src/care_agent/`
-- Tests: `tests/` (`pytest -q`, 160+ cases incl. the shipped sample scenarios
+- Tests: `tests/` (`pytest -q`, 230+ cases incl. the shipped sample scenarios
   and constructed edge cases — see [`tests/test_agent_edge_cases.py`](tests/test_agent_edge_cases.py))
 - Capability regression eval: [`src/care_agent/eval.py`](src/care_agent/eval.py) (`tests/test_eval.py`, `python -m care_agent eval-capabilities`)
 - Example output: [`examples/example_output.md`](examples/example_output.md)

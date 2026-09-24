@@ -473,6 +473,88 @@ underlying API, is the client-side auth/UX story simpler or harder to
 build against API Gateway + Cognito than against Azure Functions +
 Entra/MSAL?
 
+## Phase 7 — V2: bounded tool-calling agent, persona, and hardening it against two independent reviews
+
+Not part of the original phased plan -- an explicitly-approved exception
+during an otherwise "stop building, do market validation" window (see
+`docs/DECISIONS.md`).
+
+- ✅ **`HealthAgent.ask_compound()`** (`src/care_agent/orchestrator.py`):
+  a second, additive reasoning pipeline alongside V1's fixed classifier.
+  A Bedrock-Converse-backed `ToolPlanner` selects among a fixed set of
+  deterministic tools (never computes a fact itself); every call passes
+  `capability_gate` before running (unknown tools, out-of-vocabulary
+  markers, and -- after an independent review found a real gap --
+  malformed/missing arguments are all rejected, never silently guessed
+  at or allowed to crash); bounded to `MAX_ITERATIONS=2`. Produces the
+  *same* `Brief` type V1 does, so `agent.py`'s existing safety gate
+  (`_narrate_and_verify`) applies completely unchanged -- one safety
+  gate for both engines, never two.
+- ✅ **Persona** (`patient`/`clinician`): changes narration framing only
+  (second-person vs. a "the patient..." clinical-summary register),
+  never the underlying facts or which safety checks apply -- a firm
+  architectural line, held even under review pressure (FDA CDS guidance
+  on clinician-facing tools was the deciding research point: clinicians
+  facing a fast, high-volume tool don't reliably have time to
+  independently re-verify its basis either, so a clinician audience
+  doesn't justify loosening grounding checks).
+- ✅ **Live tool-calling progress**: a local dev server + browser demo
+  (`scripts/dev_server.py`, `CompoundDemo.tsx`) first proved this with
+  real Server-Sent Events; the production version instead threads V2's
+  existing `on_stage` hook into a `current_stage` field written to the
+  run's DynamoDB record while `RUNNING`, polled by the same 1s loop
+  `GET /runs/{run_id}` already used -- a real WebSocket API (new
+  protocol, new custom authorizer since WebSocket doesn't support the
+  HTTP API's JWT authorizer, new connections table, new cost) was
+  explicitly considered and declined in favor of reusing infrastructure
+  already built, tested, and load-tested.
+- ✅ **Full execution-mode parity with V1**: V2 now runs through all
+  three paths (`Ask`/sync, Step Functions, Queue), not just sync --
+  `engine` threaded through `start_run.py`/`enqueue_job.py` and
+  `orchestration_stack.py`'s `InvokeAgent` payload mapping the same way
+  `persona` was (see the regression this exact pattern caused below).
+- ✅ **Two independent reviews, both fully reproduced and fixed, not
+  just accepted on their word**:
+  - First pass found: a real grounding false positive on decimal
+    numbers (`safety.py`'s sentence-boundary detection mistook a
+    decimal point for end-of-sentence), V2's narration template
+    silently dropping fact categories when multiple were present, V2
+    never actually reaching `trace.retrieved_chunks` despite the tool
+    call itself working, V2 never proactively retrieving the knowledge
+    base the way V1 always does, and a marker-name-proximity safety
+    check too strict against real catalog aliases.
+  - Second pass (5 findings, 2 High) found: **a clinician-persona
+    phrasing that bypassed `check_no_diagnosis`/`check_no_dosing`
+    entirely** ("The patient has diabetes." passed outright where "You
+    have diabetes." correctly failed -- the checks were written assuming
+    only second-person phrasing, and the clinician prompt's own explicit
+    instruction to use third person opened exactly that gap); **V2
+    silently skipping V1's source-data staleness/plausibility checks**
+    (fixed by extracting `_apply_source_data_checks`, now called by
+    both pipelines, so a third pipeline can't reintroduce the gap); a
+    state-machine regression the persona fix itself caused in
+    `stress_test.py`'s direct `start_execution` calls; a malformed tool
+    call crashing instead of being cleanly rejected; and a
+    partially-rejected tool plan silently dropping the rejected half
+    with no disclosure (later enhanced further: a mixed plan now gets a
+    genuine repair attempt for just the rejected part, not just a
+    disclosure).
+  - Every finding from both reviews was independently reproduced against
+    this repo's actual code before being fixed, and every fix shipped
+    with a regression test and was re-verified against the real deployed
+    API with a real Cognito token -- see `docs/DECISIONS.md`'s
+    2026-09-20/21 entries for the full writeup of each, including two
+    honest process failures caught along the way (a `ruff format`
+    gap and a `mypy` run silently masked by an unrelated local venv
+    issue for the whole session, both now fixed with a standing "verify
+    in a venv matching CI exactly" practice).
+- ✅ **Workbench redesign**: the local-only "V2 (dev demo)" tab was
+  gated behind an actual `window.location.hostname` check after the
+  user found it live-broken on the real deployed site (it was only ever
+  meant to work against `scripts/dev_server.py`); a real visual pass
+  (top bar, palette, card surfaces, monospace IDs) replaced the
+  original plain default styling.
+
 ## Process checklist (apply at every phase, not just once)
 
 - [x] Adversarial/boundary tests added for the new surface (extreme values,
