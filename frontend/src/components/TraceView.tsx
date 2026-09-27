@@ -24,15 +24,19 @@ export function TraceView({ trace }: { trace: AgentTrace }) {
         <ul className="checks">
           {trace.safety_checks.map((check) => (
             <li key={check.name} className={check.passed ? "pass" : "fail"}>
-              <span className="badge">{check.passed ? "PASS" : "FAIL"}</span>
-              <span className="check-name">{check.name}</span>
-              {/* narrator_fallback is a synthetic informational entry, not
-                  one of the four real checks -- it has no meaningful
-                  severity of its own, so skip the tag for it. */}
-              {check.name !== "narrator_fallback" && (
-                <span className={`severity severity-${check.severity}`}>{check.severity}</span>
-              )}
-              {check.detail && <span className="check-detail">{check.detail}</span>}
+              <span className="badge" aria-label={check.passed ? "passed" : "failed"}>
+                {check.passed ? "✓" : "✕"}
+              </span>
+              <div>
+                <span className="check-name">{check.name}</span>
+                {/* narrator_fallback is a synthetic informational entry, not
+                    one of the four real checks -- it has no meaningful
+                    severity of its own, so skip the tag for it. */}
+                {check.name !== "narrator_fallback" && (
+                  <span className={`severity severity-${check.severity}`}> {check.severity}</span>
+                )}
+                {check.detail && <span className="check-detail">{check.detail}</span>}
+              </div>
             </li>
           ))}
         </ul>
@@ -55,16 +59,19 @@ export function TraceView({ trace }: { trace: AgentTrace }) {
         <ul className="facts">
           {trace.grounded_facts.map((fact, i) => (
             <li key={i}>
-              <div className="claim">{fact.claim}</div>
-              <div className="meta">
-                source: {fact.source_type} / {fact.source_ref}
-                {fact.numeric_values.length > 0 && (
-                  <>
-                    {" "}
-                    &middot; values: {fact.numeric_values.join(", ")}
-                    {fact.unit ? ` ${fact.unit}` : ""}
-                  </>
-                )}
+              <span className="citation-mark">[{i + 1}]</span>
+              <div>
+                <div className="claim">{fact.claim}</div>
+                <div className="meta">
+                  source: {fact.source_type} / {fact.source_ref}
+                  {fact.numeric_values.length > 0 && (
+                    <>
+                      {" "}
+                      &middot; values: {fact.numeric_values.join(", ")}
+                      {fact.unit ? ` ${fact.unit}` : ""}
+                    </>
+                  )}
+                </div>
               </div>
             </li>
           ))}

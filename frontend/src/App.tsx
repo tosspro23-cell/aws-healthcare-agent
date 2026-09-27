@@ -102,6 +102,11 @@ export function App() {
     <div className="app-shell">
       <TopBar signedIn onSignOut={signOut} />
       <main>
+        <p className="workbench-intro">
+          Ask a question about your bloodwork, questionnaire answers, or general health knowledge.{" "}
+          <strong>Every claim is traced back to its exact source</strong> and independently safety-checked before it's
+          shown to you -- expand the trace panel under any answer to see how.
+        </p>
         {IS_LOCAL_DEV && (
           <div className="view-toggle" role="tablist" aria-label="View">
             <button

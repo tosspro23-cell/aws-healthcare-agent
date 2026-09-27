@@ -2,9 +2,9 @@
   color-scheme: light;
 
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
-    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   --bg: #eef1f6;
   --surface: #ffffff;
@@ -20,6 +20,14 @@
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --accent-soft: #eaf0fe;
+
+  /* Distinct from --accent (the input/action color) on purpose: this
+     project's real differentiator is the evidence trace, not the form,
+     so its section headers, check marks, and citation markers get their
+     own color identity instead of reusing the same blue as every
+     button. */
+  --verify: #0f766e;
+  --verify-soft: #ecfdf5;
 
   --success-fg: #166534;
   --success-bg: #dcfce7;
@@ -153,6 +161,18 @@ main {
   align-self: center;
 }
 
+.workbench-intro {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 0.95em;
+  line-height: 1.5;
+  max-width: 62ch;
+}
+
+.workbench-intro strong {
+  color: var(--text);
+}
+
 /* -- View / mode / engine tabs (segmented-control style) ------------ */
 
 .view-toggle,
@@ -178,6 +198,7 @@ main {
   padding: 8px 14px;
   min-height: 36px;
   border-radius: 6px;
+  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
 .view-tab:hover:not(.active),
@@ -433,18 +454,33 @@ code {
 }
 
 .trace {
-  margin-top: 18px;
+  margin-top: 20px;
   border-top: 1px solid var(--border);
-  padding-top: 14px;
+  padding-top: 16px;
+}
+
+.trace > section {
+  margin-bottom: 16px;
 }
 
 .trace h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.72em;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-faint);
-  margin-bottom: 8px;
+  color: var(--verify);
+  margin-bottom: 10px;
+}
+
+.trace h3::before {
+  content: "";
+  width: 4px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--verify);
 }
 
 .checks {
@@ -452,22 +488,29 @@ code {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .checks li {
   display: flex;
-  gap: 8px;
-  align-items: baseline;
+  gap: 10px;
+  align-items: flex-start;
   font-size: 0.9em;
+  padding: 6px 0;
 }
 
 .badge {
-  font-family: var(--font-mono);
-  font-size: 0.7em;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  font-size: 0.72em;
   font-weight: 700;
-  padding: 1px 7px;
-  border-radius: 4px;
+  line-height: 1;
+  margin-top: 1px;
 }
 
 .checks li.pass .badge {
@@ -480,8 +523,16 @@ code {
   color: var(--danger-fg);
 }
 
+.check-name {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
 .check-detail {
   color: var(--text-faint);
+  display: block;
+  font-size: 0.92em;
+  margin-top: 2px;
 }
 
 .disposition {
@@ -531,7 +582,26 @@ code {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+}
+
+.facts li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  background: var(--verify-soft);
+  border-left: 2px solid var(--verify);
+  border-radius: 0 6px 6px 0;
+}
+
+.facts .citation-mark {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  font-weight: 700;
+  color: var(--verify);
+  margin-top: 2px;
 }
 
 .facts .claim {
@@ -540,6 +610,7 @@ code {
 
 .facts .meta {
   font-size: 0.8em;
+  margin-top: 2px;
 }
 
 details summary {
@@ -554,23 +625,38 @@ details summary {
 
 .tool-calls {
   list-style: none;
-  padding: 0;
+  padding: 0 0 0 4px;
   margin: 4px 0 0;
   font-size: 0.85em;
   display: flex;
   flex-direction: column;
-  gap: 4px;
 }
 
 .tool-calls li {
-  background: #f1f5f9;
+  position: relative;
+  padding: 6px 0 10px 20px;
+  border-left: 2px solid var(--border);
   color: #334155;
-  border-radius: 6px;
-  padding: 7px 11px;
+}
+
+.tool-calls li:last-child {
+  border-left-color: transparent;
+  padding-bottom: 0;
+}
+
+.tool-calls li::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--verify);
 }
 
 .tool-calls code {
-  color: var(--accent-hover);
+  color: var(--verify);
   font-weight: 600;
 }
 

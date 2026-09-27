@@ -28,6 +28,12 @@ const MODE_LABELS: Record<Mode, string> = {
   queue: "Enqueue job (Queue)",
 };
 
+const EXAMPLE_QUESTIONS = [
+  "What should I focus on first in my results?",
+  "How is my LDL trending?",
+  "Compare my LDL and A1C trends and tell me if my reported diet change is helping.",
+];
+
 export function AskForm() {
   const [mode, setMode] = useState<Mode>("sync");
   const [userId, setUserId] = useState(config.demoUserId);
@@ -254,6 +260,19 @@ export function AskForm() {
           Question
           <textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3} />
         </label>
+        <div className="example-questions">
+          {EXAMPLE_QUESTIONS.map((q) => (
+            <button
+              type="button"
+              key={q}
+              className="example-question"
+              onClick={() => setQuestion(q)}
+              disabled={loading || pending}
+            >
+              {q}
+            </button>
+          ))}
+        </div>
         <button type="submit" disabled={loading || pending}>
           {loading ? "Working..." : MODE_LABELS[mode]}
         </button>

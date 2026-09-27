@@ -3927,6 +3927,56 @@ the time of this entry -- live end-to-end verification of
 
 ---
 
+## 2026-09-28 — Second Workbench visual pass: making the evidence trace look like the product's actual differentiator
+
+**Context**: The user is planning to demo this project to clients/
+employers and felt the frontend's professionalism didn't match the
+backend's depth -- a fair read: the first redesign pass (2026-09-21)
+fixed structural issues (broken local-demo tab, generic default styling)
+but didn't address that the UI still read as "a form with some JSON
+under it" rather than a product built around evidence and traceability,
+which is this project's actual point.
+
+**Decision**: A second, more deliberate design pass with three real
+moves, not just color tweaks:
+
+1. **Typography with character**: IBM Plex Sans (body) + IBM Plex Mono
+   (IDs, source refs, tool names) via Google Fonts, replacing the system
+   font stack. Chosen for its technical/clinical register -- it reads as
+   "precision instrument," not generic SaaS.
+2. **A distinct color identity for the evidence trace, separate from the
+   form.** A new `--verify` (teal, `#0f766e`) token, used only for the
+   trace panel's section headers, safety-check icons, citation markers,
+   and tool-call timeline dots -- `--accent` (the existing blue) stays
+   scoped to form inputs/buttons. The visual split reinforces the actual
+   product idea: one color for "what you're asking," a different one for
+   "here's the proof."
+3. **The trace panel redesigned to read as an audit report, not a debug
+   dump**: safety checks got ✓/✕ icon badges instead of PASS/FAIL text;
+   grounded facts became citation-style cards (`[1]`, `[2]`, teal left
+   border, light teal background) instead of a plain list; tool calls
+   became a connected timeline (dot + line) instead of flat rows.
+
+Also: a one-line intro under the top bar on first landing ("every claim
+is traced back to its exact source..."), and three clickable example
+questions in `AskForm.tsx` (the same UX pattern `CompoundDemo.tsx`
+already had for local dev, now in the real production form) -- removes
+the "I don't know what to type" friction a cold demo audience hits
+immediately.
+
+**Consequence**: Verified visually in the browser pane (a temporary
+`window.fetch` patch rendered a real result through the actual component
+tree, not a static mockup) at both desktop and mobile widths, plus
+`tsc`/`eslint`/`vitest`/`build` all clean. `TraceView.tsx` is shared by
+both `AskForm.tsx` and `CompoundDemo.tsx`, so both get the redesign from
+one change. No backend/infra changes -- pure frontend, low risk, and
+(per `docs/DECISIONS.md`'s established "check-deploy-paths" logic) a
+push touching only `frontend/` still goes through the normal deploy
+gate since the frontend *is* deployed (CloudFront), unlike a docs-only
+push.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title
