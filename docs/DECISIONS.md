@@ -3977,6 +3977,81 @@ push.
 
 ---
 
+## 2026-09-29 — Two real `numeric_grounding` false positives found live, both fixed without reopening what they used to catch
+
+**Context**: The user tested the redeployed Workbench (V2, Step
+Functions, the trend question "How is my LDL trending?") and got a real
+soft fallback: the trace showed `numeric_grounding` rejecting "148mg/dL"
+and "162mg/dL" as having "no matching marker name nearby", even though
+the rejected draft (`trace.rejected_draft`) plainly read "Your LDL-C has
+increased over the past few months. On 2025-12-08, it was 148 mg/dL,
+and on 2026-05-06, it rose to 162 mg/dL." -- a real, safe, correctly-
+grounded sentence, not a fabrication. The user separately reported a
+second recurring pattern: an LLM narrator phrasing a trend as "increased
+by 14 mg/dL" (a computed delta, 162-148) also got rejected, since 14 was
+never itself a literal grounded number.
+
+**Root cause (first issue)**: `verify_numeric_grounding`'s marker-name-
+proximity check (`_sentence_context`) scopes its search to the *current
+sentence only* -- a deliberate choice (see the 2026-09-20 entry) to stop
+a different marker's name on an *adjacent* line/sentence from wrongly
+validating a value that belongs to it. But "Your LDL-C has increased...
+On [date], it was 148 mg/dL..." is two sentences: "LDL-C" is named in
+the first, and both values are in the second, referred to only by "it".
+The narrower window that closes the cross-marker bug also, as a side
+effect, rejects this entirely natural, safe pronoun-reference structure.
+Confirmed by reproducing the exact rejected draft directly against
+`verify_numeric_grounding`, not by inspection.
+
+**Decision (first issue)**: `_sentence_context` gained an optional
+`sentences_back` parameter (default 1, i.e. unchanged behavior) that can
+widen only the *left* boundary to cross an additional sentence break.
+`verify_numeric_grounding` uses it as a narrow fallback: if the value's
+own sentence names *no* marker at all (computed against the union of
+every grounded fact's name/aliases for this answer, not just the ones
+relevant to this specific value), widen by exactly one sentence and
+recheck. If the current sentence already names a *different* marker,
+never widen -- that's a genuine mismatch, not an ambiguous pronoun
+reference, and must still be rejected. Caught and fixed a real bug in
+this fix itself while verifying it live (not just running the existing
+suite): the initial `_sentence_context` implementation set the widened
+`left` boundary on the *first* boundary found regardless of whether a
+second one existed, so `sentences_back=2` silently behaved identically
+to `sentences_back=1` whenever the text had no second boundary further
+back -- exactly the common case (a marker introduced in the *first*
+sentence of the whole answer). Fixed by only committing `left` once the
+`sentences_back`-th boundary is actually found, falling through to the
+full capped range otherwise. Regression-tested for both halves: the
+real rejected draft now passes, and a constructed cross-marker-mismatch
+case (a value only ever grounded as Triglycerides, narrated next to
+"LDL-C") still correctly fails -- proving the widening didn't reopen
+the bug it was built to avoid reopening.
+
+**Decision (second issue, delta grounding)**: a `GroundedFact` for a
+trend already carries both endpoint values (e.g. `(162.0, 148.0)`) under
+one unit. `verify_numeric_grounding` now also computes the absolute
+pairwise differences between a fact's own numeric values and merges them
+into the same `facts_by_value_unit` lookup a real value uses -- so "14
+mg/dL" is accepted only as the *exact* arithmetic difference between two
+values *of the same already-verified fact*, still bound to that same
+unit, and still required to have the correct marker's name nearby via
+the identical check every other value goes through. Never an arbitrary
+combination across two unrelated facts, which would be a materially
+weaker guarantee. A fabricated delta that doesn't match the real
+difference (e.g. claiming a 20-point rise when the real one is 14) is
+regression-tested to still fail.
+
+**Consequence**: Both fixes verified against a from-scratch clean venv
+matching CI's exact dependency set (`ruff check`, `ruff format --check`,
+`mypy src`, `pytest -q --cov=care_agent --cov-fail-under=85` -- 240
+passed, 86.61% coverage) plus 6 new targeted regression tests in
+`tests/test_safety.py` (the real reported draft now passing; the delta
+phrasing now passing; a fabricated delta still failing; the cross-marker
+protection still intact; the widening still bounded to exactly one
+sentence, not unlimited). Not yet deployed at the time of this entry.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

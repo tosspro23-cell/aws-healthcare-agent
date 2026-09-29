@@ -64,6 +64,7 @@ the actual safety net.
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass
 
@@ -226,16 +227,36 @@ def _is_sentence_boundary(text: str, i: int) -> bool:
     return True
 
 
-def _sentence_context(text: str, start: int, end: int) -> str:
+def _sentence_context(text: str, start: int, end: int, sentences_back: int = 1) -> str:
     """The current sentence/line around `text[start:end]`: expands outward
     to the nearest preceding and following sentence-ending punctuation or
-    newline, capped at `_CONTEXT_MAX_CHARS` in each direction."""
+    newline, capped at `_CONTEXT_MAX_CHARS` in each direction.
+
+    `sentences_back` (default 1, i.e. just the current sentence) can widen
+    the *left* boundary to cross that many sentence breaks instead of one
+    -- used by `verify_numeric_grounding`'s anaphora fallback (see its own
+    comment) to recover a value whose marker name was established one
+    sentence earlier and only referred to by pronoun in the value's own
+    sentence, without touching the *forward* boundary at all."""
     left_cap = max(0, start - _CONTEXT_MAX_CHARS)
+    # `left` only ever gets set once the `sentences_back`-th boundary is
+    # actually found -- not on every intermediate boundary crossed while
+    # still under budget. Setting it eagerly on each one (a bug an actual
+    # live test of `sentences_back=2` caught: it silently behaved
+    # identically to `sentences_back=1` whenever only one boundary existed
+    # in the scanned range at all) would stop `left` at the *first*
+    # boundary found even when fewer boundaries exist than requested,
+    # instead of correctly falling through to `left_cap` (the full
+    # capped range, including the sentence before the first one) in that
+    # case.
     left = left_cap
+    boundaries_crossed = 0
     for i in range(start - 1, left_cap - 1, -1):
         if _is_sentence_boundary(text, i):
-            left = i + 1
-            break
+            boundaries_crossed += 1
+            if boundaries_crossed >= sentences_back:
+                left = i + 1
+                break
 
     right_cap = min(len(text), end + _CONTEXT_MAX_CHARS)
     right = right_cap
@@ -373,8 +394,39 @@ def verify_numeric_grounding(
         if fact.unit and fact.numeric_values:
             for value in fact.numeric_values:
                 facts_by_value_unit.setdefault((value, fact.unit.strip().lower()), []).append(fact)
+            # A trend fact carries both endpoint values (e.g. 148 and 162
+            # for one LDL-C fact) -- narrating "an increase of 14 mg/dL"
+            # is correct arithmetic over an already-grounded fact, but 14
+            # itself was never a literal grounded number, so it used to
+            # fail outright. Only the exact absolute difference between
+            # two values *of the same already-verified fact* is added
+            # here (never an arbitrary combination across two different
+            # facts, which would be a much weaker guarantee) -- and it's
+            # merged into the same lookup a real value uses, so it's
+            # still bound to the *same* unit and still requires the
+            # correct marker name nearby below, not a separate, weaker
+            # path. See docs/DECISIONS.md.
+            if len(fact.numeric_values) >= 2:
+                for a, b in itertools.combinations(fact.numeric_values, 2):
+                    delta = abs(a - b)
+                    facts_by_value_unit.setdefault((delta, fact.unit.strip().lower()), []).append(fact)
+
+    # Every marker name this *answer* could legitimately be talking about
+    # -- not just the ones relevant to the value currently being checked.
+    # Used only to distinguish "this sentence names no marker at all"
+    # (a pronoun/implicit reference -- see the anaphora fallback below)
+    # from "this sentence names a *different* marker" (a genuine mismatch
+    # that must still be rejected, not widened past).
+    all_marker_names: set[str] = set()
+    for fact in grounded_facts:
+        if fact.display_name:
+            all_marker_names.add(fact.display_name)
+        all_marker_names.update(fact.display_name_aliases)
 
     ordinal_spans = {m.span(1) for m in _ORDINAL_LIST_MARKER_RE.finditer(text_without_dates)}
+
+    def _names_nearby(names: set[str], window: str) -> bool:
+        return any(re.search(rf"\b{re.escape(name)}\b", window, re.IGNORECASE) for name in names)
 
     ungrounded: list[str] = []
     consumed_spans: list[tuple[int, int]] = []
@@ -413,7 +465,20 @@ def verify_numeric_grounding(
         marker_names |= {alias for c in candidates for alias in c.display_name_aliases}
         if marker_names:
             window = _sentence_context(text_without_dates, match.start(), match.end())
-            if not any(re.search(rf"\b{re.escape(name)}\b", window, re.IGNORECASE) for name in marker_names):
+            found = _names_nearby(marker_names, window)
+            if not found and not _names_nearby(all_marker_names, window):
+                # The current sentence names no marker at all -- likely an
+                # implicit/pronoun reference to a marker established one
+                # sentence earlier ("Your LDL-C has increased... it was
+                # 148 mg/dL..."), a real false positive an independent
+                # review's own live testing found. Only widen when the
+                # current sentence is ambiguous like this; a sentence that
+                # already names a *different* marker is a genuine mismatch
+                # and must still be rejected without widening. See
+                # docs/DECISIONS.md.
+                wider_window = _sentence_context(text_without_dates, match.start(), match.end(), sentences_back=2)
+                found = _names_nearby(marker_names, wider_window)
+            if not found:
                 ungrounded.append(f"{raw_value}{raw_unit} (no matching marker name nearby)")
 
     for match in _NUMBER_RE.finditer(text_without_dates):

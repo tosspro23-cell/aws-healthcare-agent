@@ -464,6 +464,105 @@ def test_grounding_survives_two_decimal_values_for_the_same_marker_in_one_senten
     assert check.passed is True
 
 
+def test_grounding_survives_a_marker_name_established_one_sentence_earlier():
+    """Regression test: a real rejected draft found live (see
+    docs/DECISIONS.md) -- the marker's name is introduced in one
+    sentence, and the following sentence gives its values by pronoun
+    ("Your LDL-C has increased... it was 148 mg/dL, and... it rose to
+    162 mg/dL."). The sentence-scoped proximity window (correctly, for
+    the cross-marker bypass it closes) only looked at the *values'* own
+    sentence, which never repeats "LDL-C" -- a genuine false positive on
+    an entirely natural, safe sentence structure, not a fabrication."""
+    facts = [
+        GroundedFact(
+            claim="LDL-C trend",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0, 148.0),
+            unit="mg/dL",
+            display_name="LDL-C",
+        )
+    ]
+    text = "Your LDL-C has increased over the past few months. On 2025-12-08, it was 148 mg/dL, and on 2026-05-06, it rose to 162 mg/dL."
+    check = verify_numeric_grounding(text, facts, {"2025-12-08", "2026-05-06"})
+    assert check.passed is True
+
+
+def test_grounding_does_not_widen_past_a_sentence_that_names_a_different_marker():
+    """The other half of the fix above: widening must only kick in when
+    the value's own sentence names *no* marker at all (an ambiguous
+    pronoun reference). A sentence that explicitly names a *different*
+    marker right next to the value is a genuine mismatch -- e.g. a value
+    only ever grounded as Triglycerides, narrated as if it were LDL-C --
+    and must still be rejected, not rescued by an unrelated marker's name
+    appearing in the sentence before it."""
+    facts = [
+        GroundedFact(
+            claim="trig", source_type="bloodwork", source_ref="p1:trig", numeric_values=(190.0,), unit="mg/dL", display_name="Triglycerides"
+        ),
+        GroundedFact(
+            claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(130.0,), unit="mg/dL", display_name="LDL-C"
+        ),
+    ]
+    text = "Your Triglycerides are high. Your LDL-C came in at 190 mg/dL, matching a different reading."
+    check = verify_numeric_grounding(text, facts)
+    assert check.passed is False
+
+
+def test_grounding_only_widens_by_exactly_one_sentence():
+    """The widening is bounded, not an unbounded backward scan: a marker
+    name two sentences back (with an unrelated sentence in between) must
+    still fail, the same as before this fix."""
+    facts = [
+        GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(148.0,), unit="mg/dL", display_name="LDL-C")
+    ]
+    text = "Your LDL-C is your top priority. Something else happened too. It was 148 mg/dL."
+    check = verify_numeric_grounding(text, facts)
+    assert check.passed is False
+
+
+def test_grounding_accepts_the_arithmetic_difference_between_two_grounded_values():
+    """A second real gap reported alongside the one above: a trend fact
+    carries both endpoint values (e.g. 148 and 162 for one LDL-C fact),
+    but "an increase of 14 mg/dL" -- correct arithmetic over those two
+    already-grounded numbers -- used to fail outright, since 14 itself
+    was never a literal grounded number. Only the exact difference
+    between two values *of the same already-verified fact* is accepted,
+    still bound to the same unit and still requiring the marker's name
+    nearby -- never an arbitrary combination across two unrelated
+    facts."""
+    facts = [
+        GroundedFact(
+            claim="LDL-C trend",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0, 148.0),
+            unit="mg/dL",
+            display_name="LDL-C",
+        )
+    ]
+    check = verify_numeric_grounding("Your LDL-C increased by 14 mg/dL, from 148 mg/dL to 162 mg/dL.", facts)
+    assert check.passed is True
+
+
+def test_grounding_rejects_a_fabricated_delta_that_does_not_match_the_real_difference():
+    """The delta-acceptance above must still be exact arithmetic, not a
+    loophole: a claimed difference that doesn't match the real one
+    (148 to 162 is a 14-point rise, not 20) must still fail."""
+    facts = [
+        GroundedFact(
+            claim="LDL-C trend",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0, 148.0),
+            unit="mg/dL",
+            display_name="LDL-C",
+        )
+    ]
+    check = verify_numeric_grounding("Your LDL-C increased by 20 mg/dL, from 148 mg/dL to 162 mg/dL.", facts)
+    assert check.passed is False
+
+
 def test_report_has_hard_failure_false_when_only_grounding_fails():
     """The soft-only case: every hard check passes, only numeric_grounding
     fails. This is the scenario `agent.py` classifies as
