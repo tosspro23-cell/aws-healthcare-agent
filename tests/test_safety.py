@@ -545,6 +545,29 @@ def test_grounding_accepts_the_arithmetic_difference_between_two_grounded_values
     assert check.passed is True
 
 
+def test_grounding_accepts_a_delta_that_only_matches_after_floating_point_rounding():
+    """Regression test: a real Bedrock narrator wrote "increased by
+    0.3%" for an HbA1c trend of 5.8 -> 6.1 -- exactly correct arithmetic
+    -- and it was rejected anyway, because `6.1 - 5.8` is
+    `0.2999999999999998` in IEEE 754 floats, not exactly `0.3`, so the
+    unrounded subtraction result stored as the lookup key never `==`
+    `float("0.3")` parsed from the narrator's own text, despite both
+    representing the same real number. Found live against the real
+    deployed API, not by inspection."""
+    facts = [
+        GroundedFact(
+            claim="HbA1c trend",
+            source_type="bloodwork",
+            source_ref="trend:hba1c_percent",
+            numeric_values=(6.1, 5.8),
+            unit="%",
+            display_name="HbA1c",
+        )
+    ]
+    check = verify_numeric_grounding("Your HbA1c increased by 0.3%, from 5.8% to 6.1%.", facts)
+    assert check.passed is True
+
+
 def test_grounding_rejects_a_fabricated_delta_that_does_not_match_the_real_difference():
     """The delta-acceptance above must still be exact arithmetic, not a
     loophole: a claimed difference that doesn't match the real one

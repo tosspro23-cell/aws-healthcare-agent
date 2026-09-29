@@ -4138,6 +4138,49 @@ grounding. Not yet deployed at the time of this entry.
 
 ---
 
+## 2026-09-29 (2) — A floating-point bug in the previous entry's own delta fix, found in production
+
+**Context**: Production verification of the previous entry's fixes
+(repeating the same compound LDL/A1C question against the real deployed
+API several times) found a *new* fallback trigger: `ungrounded numbers:
+['0.3%']`. The narrator had written "Your HbA1c increased by 0.3%, from
+5.8% to 6.1%" -- correct arithmetic, exactly the kind of derived-delta
+claim the earlier "flat delta" fix (two entries ago) was built to
+accept.
+
+**Root cause**: `6.1 - 5.8` is `0.2999999999999998` in IEEE 754 double
+precision, not exactly `0.3`. The delta fix stored this raw subtraction
+result as a dict key; the narrator's own text parsed `"0.3"` into the
+clean literal `0.3`. These are the same real-world number but different
+bit patterns, so the dict lookup missed and the check reported "0.3%"
+as ungrounded. This bug existed from the moment the delta fix shipped
+two entries ago -- it simply hadn't been exercised by a real Bedrock
+output that happened to phrase a delta with this exact kind of
+subtraction noise until this verification pass.
+
+**Decision**: `round(abs(a - b), 6)` before using the delta as a dict
+key. Six decimal places is far more precision than any real lab value
+or narrated delta in this project ever needs (values here have at most
+1-2 decimals), so this closes the float-noise gap without weakening
+the exact-arithmetic guarantee at all -- a genuinely wrong delta still
+fails, only a correct one expressed with ordinary decimal precision now
+matches. (The percentage-change computation added in the same original
+fix was not affected -- it already explicitly rounds to whole and
+one-decimal percent, which coincidentally already absorbs float noise
+at that far coarser precision.)
+
+**Consequence**: Verified the exact real case now passes
+(`verify_numeric_grounding` directly, and via a new regression test),
+re-ran the full suite (279 passed locally) and the from-scratch clean
+venv exactly matching CI (252 passed, 86.88% coverage, ruff/mypy clean).
+This is the second real bug found *in a fix for a real bug* this
+session (the first being the `sentences_back` widening bug two entries
+ago) -- both were caught by the same discipline: re-verifying a fix
+against the real deployed API with real Bedrock output, not stopping at
+"the unit tests pass."
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

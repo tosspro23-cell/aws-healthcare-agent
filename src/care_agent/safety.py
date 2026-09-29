@@ -408,7 +408,19 @@ def verify_numeric_grounding(
             # path. See docs/DECISIONS.md.
             if len(fact.numeric_values) >= 2:
                 for a, b in itertools.combinations(fact.numeric_values, 2):
-                    delta = abs(a - b)
+                    # Rounded to 6 decimal places -- found live, not by
+                    # inspection: `6.1 - 5.8` is `0.2999999999999998` in
+                    # IEEE 754 floats, not exactly `0.3`, so a real
+                    # narrator writing the entirely correct "0.3%" was
+                    # rejected outright because the dict key stored here
+                    # (the raw subtraction result) didn't `==` the clean
+                    # `float("0.3")` parsed from that text, despite both
+                    # representing the same real-world number. No real
+                    # lab value or narrated delta in this project needs
+                    # more than a couple decimal places, so 6 is a wide
+                    # margin, not a precision compromise. See
+                    # docs/DECISIONS.md.
+                    delta = round(abs(a - b), 6)
                     facts_by_value_unit.setdefault((delta, fact.unit.strip().lower()), []).append(fact)
                 # Percentage change is a *different* derived unit ("%")
                 # from the fact's own -- and unlike the flat delta above,
