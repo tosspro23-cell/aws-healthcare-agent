@@ -11,6 +11,8 @@ has to choose good phrasing, never new facts.
 
 from __future__ import annotations
 
+import re
+
 from care_agent.intent import COMPOUND_REASONING, PRIORITY_FOCUS, RED_FLAG, SUPPLEMENT_SAFETY, TREND_CHECK
 from care_agent.models import UserProfile
 from care_agent.reasoning import Brief, FocusItem
@@ -45,6 +47,80 @@ def _general_disclaimer_line(persona: str) -> str:
 def _fmt_marker(item: FocusItem) -> str:
     cls = (item.marker.classification or "unclassified").replace("_", " ")
     return f"{item.marker.display_name} {item.marker.value} {item.marker.unit} ({cls})"
+
+
+_DIRECTION_PHRASE = {"up": "increased", "down": "decreased", "flat": "stayed about the same"}
+
+# Pattern-matches the fixed, known GroundedFact.claim shapes this
+# project's own tool executors produce (orchestrator.py/agent.py) --
+# `claim` itself stays in its precise, citation-like format everywhere
+# else (the trace/evidence panel `TraceView.tsx` renders, and every test
+# that asserts on it), since that precision is exactly what an audit
+# trail should look like there. Only the *composed prose answer*
+# benefits from reading as a sentence instead of a database row -- see
+# `_naturalize_claim`'s own docstring for why this exists.
+_TREND_CLAIM_RE = re.compile(
+    r"^(?P<name>.+?) trend: (?P<prev_val>-?[\d.]+) (?P<unit>\S+) on (?P<prev_date>\d{4}-\d{2}-\d{2}) -> "
+    r"(?P<latest_val>-?[\d.]+) (?P<unit2>\S+) on (?P<latest_date>\d{4}-\d{2}-\d{2}) \((?P<direction>\w+)\)$"
+)
+_IMPLAUSIBLE_CLAIM_RE = re.compile(
+    r"^(?P<name>.+?) = (?P<value>-?[\d.]+) (?P<unit>\S+) \(flagged implausible\) on (?P<date>\d{4}-\d{2}-\d{2})$"
+)
+_SNAPSHOT_CLAIM_RE = re.compile(r"^(?P<name>.+?) = (?P<value>-?[\d.]+) (?P<unit>\S+) \((?P<cls>[^)]+)\) on (?P<date>\d{4}-\d{2}-\d{2})$")
+_QUESTIONNAIRE_CLAIM_RE = re.compile(r"^Questionnaire (?P<field>\S+): (?P<value>.+)$")
+_ALLERGIES_CLAIM_RE = re.compile(r"^Reported allergies: (?P<names>.+)$")
+
+
+def _naturalize_claim(claim: str) -> str:
+    """One `GroundedFact.claim` rendered as a natural sentence, for the
+    composed prose answer only. Found worth doing live: a real V2 soft
+    fallback read as an obvious template dump ("Here's what I found:\\n-
+    LDL-C trend: 148 mg/dL on 2025-12-08 -> 162 mg/dL on 2026-05-06
+    (up)") right next to what the real Bedrock narrator wrote for the
+    identical facts ("Your LDL-C has increased from 148 mg/dL... to 162
+    mg/dL...") -- the fallback is this project's actual safety net (every
+    answer through it is still 100% grounded by construction, no model
+    call involved), so it should read as a normal, good answer, not
+    visibly announce "you got the fallback." Never invents content or
+    changes precision -- purely reformats a claim this project's own code
+    already produced. Any claim shape not recognized here (a free-text
+    questionnaire-modifier or supplement-caution claim, already
+    reasonably natural, e.g. "user reports levothyroxine use") falls
+    through unchanged except for capitalization and a trailing period."""
+    m = _IMPLAUSIBLE_CLAIM_RE.match(claim)
+    if m:
+        return (
+            f"Your {m['name']} was recorded as {m['value']} {m['unit']} on {m['date']} -- "
+            "an unusual enough value that it's worth double-checking for a possible data-entry error."
+        )
+    m = _TREND_CLAIM_RE.match(claim)
+    if m:
+        verb = _DIRECTION_PHRASE.get(m["direction"], "changed")
+        return (
+            f"Your {m['name']} has {verb} from {m['prev_val']} {m['unit']} on {m['prev_date']} "
+            f"to {m['latest_val']} {m['unit2']} on {m['latest_date']}."
+        )
+    m = _SNAPSHOT_CLAIM_RE.match(claim)
+    if m:
+        return f"Your {m['name']} was {m['value']} {m['unit']} ({m['cls'].replace('_', ' ')}) on {m['date']}."
+    m = _QUESTIONNAIRE_CLAIM_RE.match(claim)
+    if m:
+        # `field` is a dotted internal identifier (e.g.
+        # "nutrition.sugary_foods") -- readable enough for the trace
+        # panel's citation, but "for nutrition.sugary_foods" reads as
+        # code, not prose, in the composed answer. Humanized to its last
+        # segment with separators turned to spaces ("sugary foods");
+        # never invents a label, just reformats the one already there.
+        topic = m["field"].rsplit(".", 1)[-1].replace("_", " ")
+        return f"You reported {m['value']} for {topic}."
+    m = _ALLERGIES_CLAIM_RE.match(claim)
+    if m:
+        return f"You have reported allergies to {m['names']}."
+    stripped = claim.strip()
+    if not stripped:
+        return stripped
+    capitalized = stripped[0].upper() + stripped[1:]
+    return capitalized if capitalized.endswith((".", "!", "?")) else capitalized + "."
 
 
 def _sources_line(brief: Brief) -> str:
@@ -317,10 +393,9 @@ def _compose_general(brief: Brief, question_text: str, profile: UserProfile) -> 
         # facts themselves rather than falsely claiming there's nothing to
         # show -- caught live by `test_ask_compound_answers_safely_end_to_end`,
         # which found this branch missing entirely (see docs/DECISIONS.md,
-        # 2026-09-20 entry).
-        lines.append("Here's what I found:")
-        for fact in brief.grounded_facts:
-            lines.append(f"- {fact.claim}")
+        # 2026-09-20 entry). Naturalized (see `_naturalize_claim`), not a
+        # raw bullet dump of `claim` strings.
+        lines.append(" ".join(_naturalize_claim(fact.claim) for fact in brief.grounded_facts))
     else:
         lines.append("I don't have enough grounded data to answer that specifically yet.")
 
@@ -348,25 +423,33 @@ def _compose_compound(brief: Brief, question_text: str, profile: UserProfile) ->
     cautions + a marker snapshot) rendered only the marker snapshot,
     dropping a correctly-grounded allergy fact entirely even though it was
     present in the trace (see docs/DECISIONS.md, 2026-09-20 entry). Always
-    show everything gathered, in the order it was gathered."""
+    show everything gathered, in the order it was gathered.
+
+    The facts are joined into one paragraph of naturalized sentences (see
+    `_naturalize_claim`) rather than a "Here's what I found:" bullet
+    dump -- this is this project's actual safety net (every word here is
+    still grounded by construction, no model call involved), and a real
+    soft fallback read as an obvious template next to what the same
+    facts looked like rephrased by the real narrator, which undermines
+    the fallback's whole point: the user shouldn't be able to tell they
+    got the safety net instead of the primary path just by how
+    mechanical it reads. See docs/DECISIONS.md, 2026-09-29 entry."""
     lines: list[str] = []
     if brief.grounded_facts:
-        lines.append("Here's what I found:")
-        for fact in brief.grounded_facts:
-            lines.append(f"- {fact.claim}")
+        lines.append(" ".join(_naturalize_claim(fact.claim) for fact in brief.grounded_facts))
     else:
         lines.append("I don't have enough grounded data to answer that specifically yet.")
 
     lines.append(_general_disclaimer_line(brief.persona))
 
     for lim in brief.limitations:
-        lines.append(f"Limitation: {lim.detail}")
+        lines.append(f"Note: {lim.detail}")
 
     src = _sources_line(brief)
     if src:
         lines.append(src)
 
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 class MockNarrator:

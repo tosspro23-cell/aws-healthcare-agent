@@ -410,6 +410,24 @@ def verify_numeric_grounding(
                 for a, b in itertools.combinations(fact.numeric_values, 2):
                     delta = abs(a - b)
                     facts_by_value_unit.setdefault((delta, fact.unit.strip().lower()), []).append(fact)
+                # Percentage change is a *different* derived unit ("%")
+                # from the fact's own -- and unlike the flat delta above,
+                # needs a baseline to divide by. `GroundedFact.numeric_values`
+                # carries no documented ordering guarantee (V2's trend tool
+                # happens to write (latest, previous), but that's one call
+                # site's convention, not part of the model's own contract --
+                # see its docstring), so both possible baselines are computed
+                # and both accepted, never just one assumed to be "the"
+                # baseline. Rounded to whole and one-decimal percent -- the
+                # two precisions a narrator is actually likely to write
+                # ("9%" or "9.5%" for a true 9.46%), not left unrounded only,
+                # which would reject any real narration that rounds at all.
+                for base, other in itertools.permutations(fact.numeric_values, 2):
+                    if base == 0:
+                        continue
+                    pct_change = abs(other - base) / abs(base) * 100
+                    for rounded in (round(pct_change), round(pct_change, 1)):
+                        facts_by_value_unit.setdefault((float(rounded), "%"), []).append(fact)
 
     # Every marker name this *answer* could legitimately be talking about
     # -- not just the ones relevant to the value currently being checked.

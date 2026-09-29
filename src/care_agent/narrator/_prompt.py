@@ -26,7 +26,20 @@ _SHARED_RULES = (
     "grounded facts. Treat it as general educational background only: you may draw on its general "
     "concepts (e.g. food categories, activity types, what a marker generally means) to make your "
     "answer more specific and useful, but never state a specific number, dose, or value from that "
-    "reference material as true for this user unless it already appears in the grounded facts above."
+    "reference material as true for this user unless it already appears in the grounded facts above. "
+    "This 'no ungrounded numbers' rule is not limited to numbers drawn from that reference "
+    "material -- it also covers any number from your own general medical knowledge that you "
+    "might reach for to explain a concept, e.g. 'HbA1c reflects your average blood sugar over "
+    "the past 2-3 months' or 'a normal range is typically 70-100 mg/dL'. Numbers like these feel "
+    "like harmless background, but they are exactly as ungrounded as an invented result, and the "
+    "same verification step rejects them. Explain concepts like these in words instead, with no "
+    "specific number attached (e.g. 'reflects your average blood sugar over recent months'), "
+    "unless that exact number already appears in the grounded facts above. When you do describe a "
+    "trend or change already present in the grounded facts (e.g. two dated values for one marker), "
+    "you may state the arithmetic difference between them (e.g. 'an increase of 14 mg/dL' when the "
+    "facts show 148 and 162) or the percentage change between them -- but only that difference or "
+    "percentage, computed from those exact two grounded values, never a number you estimate or "
+    "recall from general knowledge."
 )
 
 # Patient-facing (default) and clinician-facing system prompts -- see

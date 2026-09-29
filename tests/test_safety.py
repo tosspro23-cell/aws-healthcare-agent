@@ -563,6 +563,44 @@ def test_grounding_rejects_a_fabricated_delta_that_does_not_match_the_real_diffe
     assert check.passed is False
 
 
+def test_grounding_accepts_a_correctly_rounded_percentage_change_between_two_grounded_values():
+    """The same safe-computed-derived-value pattern as the flat delta
+    above, extended to percentage change (148 -> 162 is a true 9.46%
+    rise) -- accepted at both the whole-percent and one-decimal
+    roundings a narrator is actually likely to write, computed by the
+    check itself, not trusted from the model."""
+    facts = [
+        GroundedFact(
+            claim="LDL-C trend",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0, 148.0),
+            unit="mg/dL",
+            display_name="LDL-C",
+        )
+    ]
+    assert verify_numeric_grounding("Your LDL-C increased by about 9%, from 148 mg/dL to 162 mg/dL.", facts).passed is True
+    assert verify_numeric_grounding("Your LDL-C increased by 9.5%, from 148 mg/dL to 162 mg/dL.", facts).passed is True
+
+
+def test_grounding_rejects_a_fabricated_percentage_that_does_not_match_the_real_change():
+    """Same guarantee as the fabricated-delta test above, for percentage:
+    a claimed percentage that doesn't match the real ~9.5% change must
+    still fail, not become a second, weaker path to bypass grounding."""
+    facts = [
+        GroundedFact(
+            claim="LDL-C trend",
+            source_type="bloodwork",
+            source_ref="trend:ldl_c_mg_dl",
+            numeric_values=(162.0, 148.0),
+            unit="mg/dL",
+            display_name="LDL-C",
+        )
+    ]
+    check = verify_numeric_grounding("Your LDL-C increased by 25%, from 148 mg/dL to 162 mg/dL.", facts)
+    assert check.passed is False
+
+
 def test_report_has_hard_failure_false_when_only_grounding_fails():
     """The soft-only case: every hard check passes, only numeric_grounding
     fails. This is the scenario `agent.py` classifies as

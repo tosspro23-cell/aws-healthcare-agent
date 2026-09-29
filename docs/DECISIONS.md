@@ -4052,6 +4052,92 @@ sentence, not unlimited). Not yet deployed at the time of this entry.
 
 ---
 
+## 2026-09-29 — Declined to loosen numeric_grounding's actual verification; reduced the false-positive *rate* instead, plus a fallback-quality pass
+
+**Context**: After the previous entry's two fixes, the user's broader
+ask was to make this project's single biggest recurring friction point
+-- `numeric_grounding` rejecting real, reasonable LLM output -- less
+frequent. Their specific proposal: let the model "reason freely" with
+numbers whenever the reasoning seems plausible, and/or scope numeric
+verification narrowly to only the user's own health-marker values,
+exempting any other number a "reasonable" model explanation might
+include.
+
+**Decision (declined)**: Explicitly recommended against both variants
+of that proposal, and the user agreed. The check cannot distinguish "the
+model's correct reasoning over grounded numbers" from "the model's
+fabricated reasoning that merely sounds correct" -- they read
+identically. This project already has a real, on-the-record precedent
+for exactly this mistake: an earlier version briefly exempted a bare
+number if the user's own question already mentioned it (to stop a
+different false positive), and a second independent review found it
+reopened a genuine fabrication bypass ("Is my risk score 999?" -> "Your
+risk score is 999." passed safety). The concrete danger case reasoned
+through here: "Based on your LDL trend, your 10-year cardiovascular risk
+has likely increased by about 15%" reads exactly like the "reasonable,
+data-driven trend description" the request asked to permit, and is
+exactly the kind of invented, clinically-authoritative-sounding number
+this project exists to prevent from reaching a user unverified. A false
+positive here costs a fallback to the (still fully grounded, still safe)
+mock narrator; a false negative here is a fabricated clinical claim
+reaching someone. The asymmetry is the whole reason this check is
+strict, not an oversight to relax.
+
+**Decision (done instead) -- reduce the trigger rate, not the guarantee**:
+
+1. **Prompt-side**: `_prompt.py`'s `_SHARED_RULES` previously only
+   warned against numbers from *retrieved reference material*. Live
+   testing found the actual trigger was different: the model's own
+   background medical knowledge, stated directly ("HbA1c reflects your
+   average blood sugar over the past 2-3 months") -- generic, not
+   specific to the user, but a real number all the same, and
+   `verify_numeric_grounding` correctly has no way to know "2" and "3"
+   here aren't a claim about this user. The rule now explicitly names
+   this pattern with the exact example that triggered it, and instructs
+   describing such concepts in words with no attached number instead.
+   Courtesy-layer only (see `_prompt.py`'s own module docstring) -- the
+   check itself is unchanged and exactly as strict.
+2. **Check-side, but still safe**: extended the same server-computed-
+   derived-value pattern the previous entry used for flat deltas to also
+   cover *percentage* change between two values of the same
+   already-verified fact ("increased by ~9%" for a true 9.46% change),
+   accepted at both whole-percent and one-decimal roundings. Still the
+   check computing and verifying the arithmetic itself, never trusting a
+   number the model reports -- the same safe pattern, one more
+   well-defined derived quantity, not a broader trust boundary.
+
+**Also (a separate, related ask): the fallback template read as an
+obvious template.** Live testing surfaced this directly: a real V2 soft
+fallback's answer ("Here's what I found:\n- LDL-C trend: 148 mg/dL on
+2025-12-08 -> 162 mg/dL on 2026-05-06 (up)") sat right next to what the
+real Bedrock narrator wrote for the *identical* facts moments later
+("Your LDL-C has increased from 148 mg/dL... to 162 mg/dL..."), and the
+mechanical one was obviously the fallback. This matters because the
+fallback is this project's actual safety net -- every word through it is
+still grounded by construction, no model call involved -- so a user
+noticing "this reads like a template" undermines trust in exactly the
+path meant to be trustworthy. Added `_naturalize_claim` to
+`mock_narrator.py`: pattern-matches the fixed, known `GroundedFact.claim`
+shapes this project's own tool executors produce (snapshot, trend,
+implausible-value, questionnaire, allergies) and renders each as a
+natural sentence, falling back to light capitalization/punctuation for
+any claim shape it doesn't recognize (never drops content, never
+invents any). `_compose_compound` and `_compose_general`'s equivalent
+branch now join naturalized sentences into a flowing paragraph instead
+of a "Here's what I found:\n- <claim>" bullet dump. `claim` itself is
+untouched everywhere else (the trace/evidence panel, every existing
+test) -- its citation-precise, database-row-like format is exactly
+right there; only the composed prose answer needed to read differently.
+
+**Consequence**: Verified against a from-scratch clean venv matching
+CI's exact dependency set (`ruff check`, `ruff format --check`, `mypy
+src`, `pytest -q --cov=care_agent --cov-fail-under=85` -- 251 passed,
+86.88% coverage) plus a new `tests/test_mock_narrator_naturalization.py`
+(9 tests) and 2 new `tests/test_safety.py` cases for the percentage
+grounding. Not yet deployed at the time of this entry.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title
