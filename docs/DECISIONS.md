@@ -4181,6 +4181,69 @@ against the real deployed API with real Bedrock output, not stopping at
 
 ---
 
+## 2026-09-30 (2) — A third real numeric_grounding false positive found live: a chain of pronoun-only sentences
+
+**Context**: Production verification of the redeployed Workbench (real
+`engine=v2` calls against the deployed API) hit a new fallback trigger on
+an otherwise entirely correct draft:
+
+> "Your LDL-C has increased over time. On 2025-12-08, it was 148 mg/dL. By
+> 2026-05-06, it had risen to 162 mg/dL—an increase of 14 mg/dL. Your most
+> recent reading of 162 mg/dL is considered high."
+
+Rejected with `ungrounded numbers: ['14mg/dL (no matching marker name
+nearby)', '162mg/dL (no matching marker name nearby)']`.
+
+**Root cause**: the marker name "LDL-C" is established once, in the first
+sentence, then referred to by pronoun ("it") across the next two
+sentences before the values in question appear. The anaphora fallback
+added two entries ago only widened the search window by exactly one extra
+sentence (`sentences_back=2`) -- enough for a marker name established one
+sentence earlier, not two. Here, the sentence immediately before the
+value ("On 2025-12-08, it was 148 mg/dL.") itself names no marker either,
+so the one-step widen landed on a second marker-less sentence and still
+found nothing.
+
+**Decision**: generalized the fallback from a single fixed widen into a
+bounded loop (`_MAX_ANAPHORA_SENTENCES_BACK = 4`), widening one sentence
+at a time and stopping the instant either the target marker is found
+(accept) or *any* marker name enters the window that isn't the target one
+(reject -- the existing, still-preserved "don't widen past a different
+marker" guarantee, now checked at every step instead of just the first).
+This is the same principled distinction as before, just no longer capped
+at one iteration. `test_grounding_only_widens_by_exactly_one_sentence`
+asserted the *old*, now-intentionally-changed bound (that this exact
+chained-pronoun pattern should fail) -- replaced with
+`test_grounding_survives_a_chain_of_pronoun_only_sentences` (asserts the
+real case now passes) and `test_grounding_still_bounded_past_several_
+pronoun_only_sentences` (proves the widening is still bounded, using a
+scenario with more intervening marker-less sentences than the new cap
+allows).
+
+**Alternatives considered**: An unbounded backward scan (find the marker
+name anywhere earlier in the answer) was rejected the same way the first
+version of this fix rejected it -- it would let a value bind to a marker
+name from an unrelated, distant part of the answer, reopening the
+cross-marker bypass this whole check exists to close. A small, explicit
+sentence-count cap (plus the pre-existing `_CONTEXT_MAX_CHARS` absolute
+character cap) keeps the fix scoped to "a normal paragraph narrating one
+marker across a few sentences," not "anywhere in the text."
+
+**Consequence**: This is the third real false positive found by live
+production testing in as many verification passes on this exact check
+(sentence-boundary anaphora, the floating-point delta, and now chained
+anaphora) -- each one caught only because this project's standing
+practice is to re-verify safety-check changes against real Bedrock output
+on the deployed API, not stop at unit tests passing. Verified the exact
+rejected draft above now passes directly, re-ran the full suite (263
+passed, 88.16% coverage) and ruff/mypy clean in a from-scratch venv
+matching CI's Python 3.12. Also re-confirmed live against the deployed
+API post-fix: an `engine=v2` Step-Functions run with the clinician
+persona returned a correctly composed, fully-grounded multi-marker
+summary with `disposition: "answered"` (no fallback needed).
+
+---
+
 ## 2026-09-30 — Frontend redesign: a three-zone Workbench replaces the single scrolling column
 
 **Context**: The previous frontend (`AskForm.tsx` + `RunResultView.tsx`) was

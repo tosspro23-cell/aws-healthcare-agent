@@ -509,14 +509,37 @@ def test_grounding_does_not_widen_past_a_sentence_that_names_a_different_marker(
     assert check.passed is False
 
 
-def test_grounding_only_widens_by_exactly_one_sentence():
+def test_grounding_survives_a_chain_of_pronoun_only_sentences():
+    """A second real rejected draft found live (see docs/DECISIONS.md):
+    the marker name is established once, then referred to by pronoun
+    across *two* consecutive sentences before the value in question --
+    "Your LDL-C has increased... On <date>, it was 148 mg/dL... it had
+    risen to 162 mg/dL." The single-extra-sentence widening this test
+    used to guard against being exceeded (see its previous version,
+    `test_grounding_only_widens_by_exactly_one_sentence`) was itself the
+    false positive: two sentences with no marker name in between is a
+    normal way to narrate a trend, not a fabrication."""
+    facts = [
+        GroundedFact(
+            claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(148.0, 162.0), unit="mg/dL", display_name="LDL-C"
+        )
+    ]
+    text = "Your LDL-C has increased over time. On 2025-12-08, it was 148 mg/dL. By 2026-05-06, it had risen to 162 mg/dL."
+    check = verify_numeric_grounding(text, facts, {"2025-12-08", "2026-05-06"})
+    assert check.passed is True
+
+
+def test_grounding_still_bounded_past_several_pronoun_only_sentences():
     """The widening is bounded, not an unbounded backward scan: a marker
-    name two sentences back (with an unrelated sentence in between) must
-    still fail, the same as before this fix."""
+    name several sentences back, separated from the value by more
+    marker-less sentences than `_MAX_ANAPHORA_SENTENCES_BACK` allows,
+    must still fail -- the same guarantee the single-sentence version of
+    this test previously checked at a tighter (too tight, see the test
+    above) bound."""
     facts = [
         GroundedFact(claim="ldl", source_type="bloodwork", source_ref="p1:ldl", numeric_values=(148.0,), unit="mg/dL", display_name="LDL-C")
     ]
-    text = "Your LDL-C is your top priority. Something else happened too. It was 148 mg/dL."
+    text = "Your LDL-C is your top priority. Something else happened too. And then something else. And another thing. It was 148 mg/dL."
     check = verify_numeric_grounding(text, facts)
     assert check.passed is False
 

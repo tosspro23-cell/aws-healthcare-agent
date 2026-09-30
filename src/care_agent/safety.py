@@ -206,6 +206,14 @@ _ORDINAL_LIST_MARKER_RE = re.compile(r"(?m)^\s*[*_]{0,2}(\d+\.)\s")
 _SENTENCE_BOUNDARY_CHARS = ".!?\n"
 _CONTEXT_MAX_CHARS = 200
 
+# How many sentences the numeric-grounding anaphora fallback (see
+# `verify_numeric_grounding`) will widen backward looking for a marker
+# name established earlier and only referred to by pronoun since. 4
+# comfortably covers the real chained-pronoun draft that motivated
+# raising this from 2 (see docs/DECISIONS.md) with a sentence of margin,
+# while still stopping well short of an unbounded scan.
+_MAX_ANAPHORA_SENTENCES_BACK = 4
+
 
 def _is_sentence_boundary(text: str, i: int) -> bool:
     """`text[i] in _SENTENCE_BOUNDARY_CHARS`, except a "." flanked by
@@ -498,16 +506,26 @@ def verify_numeric_grounding(
             found = _names_nearby(marker_names, window)
             if not found and not _names_nearby(all_marker_names, window):
                 # The current sentence names no marker at all -- likely an
-                # implicit/pronoun reference to a marker established one
-                # sentence earlier ("Your LDL-C has increased... it was
-                # 148 mg/dL..."), a real false positive an independent
-                # review's own live testing found. Only widen when the
-                # current sentence is ambiguous like this; a sentence that
-                # already names a *different* marker is a genuine mismatch
-                # and must still be rejected without widening. See
-                # docs/DECISIONS.md.
-                wider_window = _sentence_context(text_without_dates, match.start(), match.end(), sentences_back=2)
-                found = _names_nearby(marker_names, wider_window)
+                # implicit/pronoun reference to a marker established one or
+                # more sentences earlier ("Your LDL-C has increased... On
+                # <date>, it was 148 mg/dL... it had risen to 162 mg/dL..."),
+                # a real false positive a production draft rejected live
+                # (see docs/DECISIONS.md) -- a *chain* of pronoun-only
+                # sentences, not just one, so a single extra sentence of
+                # widening (the original version of this fix) wasn't
+                # enough. Keep widening one sentence at a time, but stop
+                # the instant any sentence in the (growing) window names a
+                # marker that isn't the target one -- a genuine mismatch
+                # must still be rejected without widening further past it,
+                # exactly as before. `_MAX_ANAPHORA_SENTENCES_BACK` keeps
+                # this bounded, not an unbounded backward scan (further
+                # capped in absolute distance by `_CONTEXT_MAX_CHARS`
+                # regardless of sentence count).
+                for sentences_back in range(2, _MAX_ANAPHORA_SENTENCES_BACK + 1):
+                    wider_window = _sentence_context(text_without_dates, match.start(), match.end(), sentences_back=sentences_back)
+                    found = _names_nearby(marker_names, wider_window)
+                    if found or _names_nearby(all_marker_names, wider_window):
+                        break
             if not found:
                 ungrounded.append(f"{raw_value}{raw_unit} (no matching marker name nearby)")
 
