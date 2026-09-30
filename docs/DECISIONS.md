@@ -4181,6 +4181,67 @@ against the real deployed API with real Bedrock output, not stopping at
 
 ---
 
+## 2026-09-30 — Frontend redesign: a three-zone Workbench replaces the single scrolling column
+
+**Context**: The previous frontend (`AskForm.tsx` + `RunResultView.tsx`) was
+a single column: form controls, then result, then trace, all stacked and
+collapsing as you scrolled. It worked, but didn't read as a serious
+product, and every run replaced the previous one -- no visible history of
+a session's questions. For demo/client-facing use, the user wanted
+something closer to a real console (comparable to the kind of workbench
+layout seen in Anthropic/Microsoft/AWS's own consoles): distinct regions
+for controls, conversation, and evidence, with representative example
+questions, mode selection as a clear functional region, and visually
+distinct engine identities. The user explicitly asked for a mockup to
+review before any implementation, approved it as-is ("布局和交互都可以,先做这个"),
+and scoped multi-turn to visual-only for this pass ("多轮先做视觉效果就行").
+
+**Decision**: A three-zone grid layout (`ControlRail` | `ConversationPanel`
+| `EvidencePanel`), replacing `AskForm.tsx`/`RunResultView.tsx` entirely
+with a new `Workbench.tsx`. Two scope decisions, both deliberate:
+
+- **Multi-turn is visual only.** Each `Ask` appends a `Turn` to a running
+  thread instead of replacing it, so it *reads* like a conversation, but
+  every turn is still an independent, context-free `ask()`/`ask_compound()`
+  call -- no shared memory between turns. Real conversation memory would be
+  a backend architecture change and was explicitly out of scope.
+- **At most one turn pending at a time**, enforced by disabling the
+  composer, every rail control, and run history while one is in flight.
+  This keeps the polling model exactly as simple as `AskForm.tsx`'s
+  already-twice-reviewed version (one generation counter + one
+  self-scheduling `setTimeout`, ported here almost unchanged) instead of
+  needing a generation counter per turn id for true concurrent submission.
+
+`RunHistory` was rewritten to drop its old collapsible/standalone variants
+in favor of a plain always-visible list styled for the rail (a control
+rail's whole point is to be glanceable, not a second click away).
+`HistoryEntry` gained optional `engine`/`persona` fields recorded
+client-side at submission time, since the server-side `RunRecord` doesn't
+reliably carry either back (V2's `engine` is only ever persisted for the
+async paths, and `persona` isn't persisted server-side at all).
+
+**Alternatives considered**: True concurrent multi-turn (a poll generation
+counter per turn) was the more "real" version of the workbench metaphor,
+but the user's own scoping call ("多轮先做视觉效果就行") explicitly deferred it,
+and it would have doubled the polling code's complexity for a feature this
+pass didn't need.
+
+**Consequence**: Verified with the full static suite (`tsc -b`, `eslint`,
+`vitest run` -- including a regression test for the cancellation/poll-race
+adapted from `AskForm.tsx`'s original -- and `vite build`), then manually
+in the browser pane against a mocked `/ask`/`/runs` API: sync submission,
+Step Functions submission with live `current_stage` polling, mid-run
+cancellation, multi-turn thread selection updating the evidence panel, and
+narrow-viewport stacking. One real bug found and fixed during that manual
+pass: the composer's single-row textarea clipped its placeholder text into
+two lines on narrow viewports instead of truncating it, because a `rows={1}`
+textarea doesn't grow for a wrapped placeholder -- fixed by constraining
+`::placeholder` to `white-space: nowrap` with `text-overflow: ellipsis`.
+A true concurrent multi-turn mode (per-turn generation counters) remains
+open as a deliberately deferred future step.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

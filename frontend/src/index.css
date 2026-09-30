@@ -27,6 +27,7 @@
      own color identity instead of reusing the same blue as every
      button. */
   --verify: #0f766e;
+  --verify-hover: #0b5c55;
   --verify-soft: #ecfdf5;
 
   --success-fg: #166534;
@@ -60,11 +61,23 @@ body {
   flex-direction: column;
 }
 
+/* The signed-in Workbench is a fixed-height, three-zone console (see
+   `.workspace` below) with its own internal scroll regions -- the outer
+   page itself must never scroll, or the rail/evidence panels would lose
+   their "always visible" property, the entire point of the layout. The
+   sign-in/loading/error screens keep the plain `min-height: 100vh`
+   above instead -- ordinary page flow suits a single centered card. */
+.app-shell.full-height {
+  height: 100vh;
+  overflow: hidden;
+}
+
 /* -- Top bar ------------------------------------------------------- */
 
 .topbar {
   background: linear-gradient(180deg, var(--brand-800), var(--brand-900));
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
 }
 
 .topbar-inner {
@@ -75,6 +88,11 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.full-height .topbar-inner {
+  max-width: none;
+  padding: 10px 20px;
 }
 
 .brand {
@@ -161,35 +179,22 @@ main {
   align-self: center;
 }
 
-.workbench-intro {
-  margin: 0 0 20px;
-  color: var(--text-muted);
-  font-size: 0.95em;
-  line-height: 1.5;
-  max-width: 62ch;
-}
+/* -- View toggle (local-dev-only Workbench/streaming-demo switch) --- */
 
-.workbench-intro strong {
-  color: var(--text);
-}
-
-/* -- View / mode / engine tabs (segmented-control style) ------------ */
-
-.view-toggle,
-.mode-tabs {
+.view-toggle {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin: 0 0 18px;
+  margin: 14px 20px 0;
   padding: 4px;
   background: #e7ebf2;
   border-radius: 9px;
   width: fit-content;
-  max-width: 100%;
+  max-width: calc(100% - 40px);
+  flex-shrink: 0;
 }
 
-.view-tab,
-.mode-tab {
+.view-tab {
   align-self: auto;
   background: transparent;
   color: var(--text-muted);
@@ -201,20 +206,476 @@ main {
   transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.view-tab:hover:not(.active),
-.mode-tab:hover:not(.active):not(:disabled) {
+.view-tab:hover:not(.active) {
   color: var(--text);
 }
 
-.view-tab.active,
-.mode-tab.active {
+.view-tab.active {
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
 }
 
-.mode-tabs {
-  margin-bottom: 4px;
+/* -- Workbench: three-zone console (rail / conversation / evidence) -- */
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 340px;
+}
+
+/* -- Left rail: request-shaping controls ------------------------------ */
+
+.rail {
+  background: var(--brand-900);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 14px 12px 12px;
+  gap: 18px;
+}
+
+.rail-section-label {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5b6884;
+  padding: 0 4px;
+  margin-bottom: 7px;
+}
+
+.rail-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rail-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #aab4c8;
+  font: inherit;
+  font-size: 0.85em;
+  font-weight: 500;
+  text-align: left;
+  width: 100%;
+  min-height: unset;
+  align-self: auto;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.rail-option:hover:not(:disabled) {
+  background: var(--brand-800);
+}
+
+.rail-option.active {
+  background: var(--brand-800);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.rail-option:disabled {
+  opacity: 0.45;
+}
+
+.engine-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.engine-dot.small {
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+  margin-right: 5px;
+}
+
+.engine-dot.v1 {
+  background: var(--accent);
+}
+
+.engine-dot.v2 {
+  background: var(--verify);
+}
+
+.rail-option.active .engine-dot.v1 {
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28);
+}
+
+.rail-option.active .engine-dot.v2 {
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.28);
+}
+
+.persona-icon,
+.mode-icon {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.option-meta {
+  margin-left: auto;
+  font-size: 0.78em;
+  color: #5b6884;
+  font-family: var(--font-mono);
+}
+
+.rail-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rail-history-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-history-empty {
+  font-size: 0.8em;
+  color: #5b6884;
+  padding: 0 4px;
+}
+
+.rail-history {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+}
+
+.history-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: #aab4c8;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  min-height: unset;
+  align-self: auto;
+  background: transparent;
+}
+
+.history-row:hover:not(:disabled) {
+  background: var(--brand-800);
+}
+
+.history-row:disabled {
+  opacity: 0.45;
+}
+
+.history-row .h-q {
+  font-size: 0.82em;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-row .h-meta {
+  display: flex;
+  align-items: center;
+  font-size: 0.7em;
+  color: #5b6884;
+  font-family: var(--font-mono);
+}
+
+/* -- Center: conversation thread + composer --------------------------- */
+
+.conversation-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+
+.conv-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 22px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.conv-empty {
+  margin: auto;
+  text-align: center;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 640px;
+}
+
+.turn-question {
+  align-self: flex-end;
+  background: var(--brand-900);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 12px 12px 3px 12px;
+  font-size: 0.9em;
+  max-width: 80%;
+}
+
+.turn-answer-card {
+  align-self: stretch;
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
+  cursor: pointer;
+  min-height: unset;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.turn-answer-card:hover {
+  border-color: var(--border-strong);
+}
+
+.turn.selected .turn-answer-card {
+  border-color: var(--verify);
+  box-shadow: 0 0 0 3px var(--verify-soft);
+}
+
+.turn-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+
+.badge-pill.safe {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.badge-pill.unsafe {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.badge-pill.pending {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+.badge-pill.neutral {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+}
+
+.badge-pill.engine-v1 {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.badge-pill.engine-v2 {
+  background: var(--verify-soft);
+  color: var(--verify);
+}
+
+.badge-pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.badge-pill.engine-v1 .dot {
+  background: var(--accent);
+}
+
+.badge-pill.engine-v2 .dot {
+  background: var(--verify);
+}
+
+.badge-pill.persona {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+}
+
+.badge-pill.mode {
+  background: var(--neutral-bg);
+  color: var(--neutral-fg);
+  font-family: var(--font-mono);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.turn-hint {
+  font-size: 0.78em;
+  color: var(--text-faint);
+  margin-top: 9px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.composer-error {
+  margin: 0 22px 10px;
+}
+
+.composer-cancel-row {
+  padding: 0 22px 8px;
+}
+
+.example-row {
+  padding: 0 22px 10px;
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.example-chip {
+  font-size: 0.8em;
+  color: var(--verify);
+  background: var(--verify-soft);
+  border: 1px solid transparent;
+  padding: 7px 12px;
+  border-radius: 999px;
+  min-height: unset;
+  align-self: auto;
+  font-weight: 500;
+}
+
+.example-chip:hover:not(:disabled) {
+  background: #d7f5ea;
+}
+
+.composer {
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px 22px 16px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  font: inherit;
+  font-size: 0.95em;
+  padding: 11px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: #fcfdfe;
+  max-height: 120px;
+  line-height: 1.4;
+}
+
+.composer textarea:focus {
+  outline: none;
+  border-color: var(--verify);
+  box-shadow: 0 0 0 3px var(--verify-soft);
+}
+
+/* A single-row textarea (rows=1) doesn't grow for a wrapped placeholder,
+   so on narrow viewports (where the iOS zoom-guard font-size is larger)
+   a two-line placeholder clips instead of wrapping cleanly -- keep it to
+   one line with an ellipsis instead. */
+.composer textarea::placeholder {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.send-btn {
+  background: var(--verify);
+  color: #fff;
+  height: 44px;
+  min-height: 44px;
+  align-self: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--verify-hover);
+}
+
+/* -- Right: evidence panel --------------------------------------------- */
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.evidence-header {
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.evidence-title {
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--verify);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.evidence-title svg {
+  width: 14px;
+  height: 14px;
+}
+
+.evidence-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px 20px;
+}
+
+.evidence-empty {
+  padding-top: 4px;
 }
 
 /* -- Ask form ---------------------------------------------------------- */
@@ -660,41 +1121,6 @@ details summary {
   font-weight: 600;
 }
 
-.status-badge {
-  display: inline-block;
-  padding: 3px 11px;
-  border-radius: 999px;
-  font-size: 0.75em;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  margin-bottom: 8px;
-  margin-right: 6px;
-  background: var(--neutral-bg);
-  color: var(--neutral-fg);
-}
-
-.status-badge.pending {
-  background: var(--warning-bg);
-  color: var(--warning-fg);
-}
-
-.status-badge.succeeded {
-  background: var(--success-bg);
-  color: var(--success-fg);
-}
-
-.status-badge.failed,
-.status-badge.timed_out {
-  background: var(--danger-bg);
-  color: var(--danger-fg);
-}
-
-.status-badge.cancelled {
-  background: var(--neutral-bg);
-  color: var(--neutral-fg);
-}
-
 .cancel-button {
   background: #b91c1c;
   margin: 8px 0;
@@ -702,75 +1128,6 @@ details summary {
 
 .cancel-button:hover:not(:disabled) {
   background: #991b1b;
-}
-
-.run-history {
-  margin-top: 24px;
-  background: var(--surface);
-  padding: 14px 18px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-card);
-}
-
-.run-history summary {
-  cursor: pointer;
-  font-size: 0.78em;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.run-history ul {
-  list-style: none;
-  padding: 0;
-  margin: 10px 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.history-entry {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: #f6f8fb;
-  color: var(--text);
-  padding: 8px 11px;
-  border-radius: 6px;
-  font-size: 0.85em;
-  text-align: left;
-  min-height: unset;
-}
-
-.history-entry:hover {
-  background: #edf1f7;
-}
-
-.execution-type-tag {
-  font-family: var(--font-mono);
-  font-size: 0.68em;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--accent-soft);
-  color: #2843a8;
-  flex-shrink: 0;
-}
-
-.history-question {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.history-time {
-  flex-shrink: 0;
-  color: var(--text-faint);
-  font-size: 0.9em;
 }
 
 .rejected-draft {
@@ -817,24 +1174,47 @@ details summary {
     padding: 12px 16px;
   }
 
-  .view-toggle,
-  .mode-tabs {
-    width: 100%;
+  .view-toggle {
+    width: calc(100% - 32px);
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   }
 
-  .view-tab,
-  .mode-tab {
+  .view-tab {
     text-align: center;
   }
+}
 
-  .history-entry {
-    flex-wrap: wrap;
+/* Narrow viewports: the three-zone console gives up its fixed-height,
+   independently-scrolling panels (a real console assumes a mouse and a
+   wide screen) for plain stacked, whole-page scrolling -- rail, then
+   conversation, then evidence, all still reachable, just not all
+   visible at once the way the desktop layout keeps them. */
+@media (max-width: 900px) {
+  .app-shell.full-height {
+    height: auto;
+    overflow: visible;
   }
 
-  .history-time {
-    width: 100%;
-    order: 1;
+  .workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .rail {
+    max-height: 260px;
+  }
+
+  .conversation-col {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .conv-scroll {
+    max-height: 60vh;
+  }
+
+  .evidence {
+    max-height: 70vh;
   }
 }

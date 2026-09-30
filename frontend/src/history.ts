@@ -23,6 +23,8 @@
  * exposed here without any backend call at all.
  */
 
+import type { Engine, Persona } from "./api";
+
 const STORAGE_KEY = "care_agent_run_history";
 const MAX_ENTRIES = 50;
 
@@ -31,6 +33,13 @@ export interface HistoryEntry {
   question: string;
   execution_type: "SYNC" | "STEP_FUNCTIONS" | "SQS";
   submitted_at: string;
+  /** Recorded at submission time, when the client still has them --
+   * `GET /runs/{run_id}` can't reliably supply either back (engine is
+   * only stored in the DynamoDB record for the sync/queue paths, never
+   * for Step Functions; persona is never stored anywhere server-side).
+   * Optional so entries written before this field existed still load. */
+  engine?: Engine;
+  persona?: Persona;
 }
 
 export function loadHistory(): HistoryEntry[] {

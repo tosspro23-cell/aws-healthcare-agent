@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { beginSignIn, completeSignIn, getAccessToken, signOut } from "./auth";
-import { AskForm } from "./components/AskForm";
+import { Workbench } from "./components/Workbench";
 import { CompoundDemo } from "./components/CompoundDemo";
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "error";
@@ -14,7 +14,8 @@ type View = "workbench" | "local-stream-demo";
 // broken product feature rather than what it actually is. Gating it on the
 // page's own hostname means it simply cannot render anywhere it can't
 // work; the real, deployed way to exercise V2 is the Engine selector
-// inside AskForm's "Ask" mode, which goes through the actual production API.
+// inside the Workbench's control rail, which goes through the actual
+// production API.
 const IS_LOCAL_DEV = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
 
 export function App() {
@@ -99,39 +100,38 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell full-height">
       <TopBar signedIn onSignOut={signOut} />
-      <main>
-        <p className="workbench-intro">
-          Ask a question about your bloodwork, questionnaire answers, or general health knowledge.{" "}
-          <strong>Every claim is traced back to its exact source</strong> and independently safety-checked before it's
-          shown to you -- expand the trace panel under any answer to see how.
-        </p>
-        {IS_LOCAL_DEV && (
-          <div className="view-toggle" role="tablist" aria-label="View">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === "workbench"}
-              className={`view-tab ${view === "workbench" ? "active" : ""}`}
-              onClick={() => setView("workbench")}
-            >
-              Workbench
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === "local-stream-demo"}
-              className={`view-tab ${view === "local-stream-demo" ? "active" : ""}`}
-              onClick={() => setView("local-stream-demo")}
-            >
-              Local streaming demo (dev only)
-            </button>
-          </div>
-        )}
+      {IS_LOCAL_DEV && (
+        <div className="view-toggle" role="tablist" aria-label="View">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "workbench"}
+            className={`view-tab ${view === "workbench" ? "active" : ""}`}
+            onClick={() => setView("workbench")}
+          >
+            Workbench
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "local-stream-demo"}
+            className={`view-tab ${view === "local-stream-demo" ? "active" : ""}`}
+            onClick={() => setView("local-stream-demo")}
+          >
+            Local streaming demo (dev only)
+          </button>
+        </div>
+      )}
 
-        {view === "workbench" || !IS_LOCAL_DEV ? <AskForm /> : <CompoundDemo />}
-      </main>
+      {view === "workbench" || !IS_LOCAL_DEV ? (
+        <Workbench />
+      ) : (
+        <main>
+          <CompoundDemo />
+        </main>
+      )}
     </div>
   );
 }
