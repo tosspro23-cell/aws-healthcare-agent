@@ -72,7 +72,7 @@ describe("Workbench polling supersession", () => {
 
     render(<Workbench />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Step Functions/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Step Fns/ }));
     fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "What should I focus on first in my results?" } });
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
     await vi.advanceTimersByTimeAsync(0);

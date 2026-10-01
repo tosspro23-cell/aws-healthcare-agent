@@ -41,6 +41,13 @@
 
   --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 12px rgba(15, 23, 42, 0.04);
   --radius: 10px;
+
+  /* Caps the conversation column's readable content width -- without
+     it, a wide monitor stretches turn cards and the composer across the
+     full available space, which reads as unfinished rather than
+     spacious. Shared by `.turn` and the composer-area elements below it
+     so the whole column lines up at the same edge. */
+  --conv-max-width: 720px;
 }
 
 * {
@@ -77,6 +84,7 @@ body {
 .topbar {
   background: linear-gradient(180deg, var(--brand-800), var(--brand-900));
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
   flex-shrink: 0;
 }
 
@@ -105,12 +113,16 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--accent);
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  /* Ties the two engine-identity colors (blue V1, teal V2) together in
+     the one piece of brand chrome that's always on screen, instead of
+     a flat, arbitrary accent fill. */
+  background: linear-gradient(135deg, var(--accent), var(--verify));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 3px rgba(0, 0, 0, 0.3);
   color: white;
-  font-size: 0.72em;
+  font-size: 0.74em;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -118,19 +130,21 @@ body {
 .brand-text {
   display: flex;
   flex-direction: column;
-  line-height: 1.15;
+  line-height: 1.2;
 }
 
 .brand-name {
   color: white;
   font-weight: 600;
-  font-size: 0.98em;
+  font-size: 1.05em;
+  letter-spacing: -0.01em;
 }
 
 .brand-tag {
-  color: #93a3bd;
-  font-size: 0.76em;
-  letter-spacing: 0.03em;
+  color: #8d9bb8;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
@@ -222,7 +236,37 @@ main {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 340px;
+  grid-template-columns: var(--rail-w, 220px) 6px minmax(320px, 1fr) 6px var(--evidence-w, 340px);
+}
+
+/* A thin draggable strip between two panels (see Workbench.tsx's
+   ColumnResizeHandle) -- its own grid column rather than an
+   absolutely-positioned overlay, so it can't drift out of sync with the
+   panels it sits between. */
+.col-resize-handle {
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+}
+
+.col-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+  transition: background 0.12s ease;
+}
+
+.col-resize-handle:hover::after,
+.col-resize-handle:focus-visible::after {
+  background: var(--verify);
+}
+
+.col-resize-handle:focus-visible {
+  outline: none;
 }
 
 /* -- Left rail: request-shaping controls ------------------------------ */
@@ -232,9 +276,10 @@ main {
   border-right: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   flex-direction: column;
+  min-height: 0;
   overflow-y: auto;
   padding: 14px 12px 12px;
-  gap: 18px;
+  gap: 16px;
 }
 
 .rail-section-label {
@@ -247,42 +292,53 @@ main {
   margin-bottom: 7px;
 }
 
-.rail-options {
+/* A compact horizontal segmented control -- replaces the original
+   stacked-full-width-button rail sections. Found live, on a real
+   wide/tall monitor, that three stacked sections (Engine, Persona,
+   Mode) at the old full-width-button height left almost no vertical
+   room for the run history below -- the whole point of a glanceable
+   rail. A single-row segmented control per section says the same thing
+   in roughly a third of the height. */
+.segmented {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  background: var(--brand-800);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
 }
 
-.rail-option {
+.segmented-option {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 9px;
-  border-radius: 8px;
-  border: 1px solid transparent;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 6px;
+  border-radius: 6px;
+  border: none;
   background: transparent;
   color: #aab4c8;
   font: inherit;
-  font-size: 0.85em;
-  font-weight: 500;
-  text-align: left;
-  width: 100%;
+  font-size: 0.8em;
+  font-weight: 600;
+  text-align: center;
   min-height: unset;
   align-self: auto;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 
-.rail-option:hover:not(:disabled) {
-  background: var(--brand-800);
+.segmented-option:hover:not(:disabled):not(.active) {
+  color: #e2e8f0;
 }
 
-.rail-option.active {
-  background: var(--brand-800);
-  border-color: rgba(255, 255, 255, 0.08);
+.segmented-option.active {
+  background: var(--brand-900);
   color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
-.rail-option:disabled {
+.segmented-option:disabled {
   opacity: 0.45;
 }
 
@@ -308,27 +364,20 @@ main {
   background: var(--verify);
 }
 
-.rail-option.active .engine-dot.v1 {
+.segmented-option.active .engine-dot.v1 {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28);
 }
 
-.rail-option.active .engine-dot.v2 {
+.segmented-option.active .engine-dot.v2 {
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.28);
 }
 
 .persona-icon,
 .mode-icon {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
   opacity: 0.85;
-}
-
-.option-meta {
-  margin-left: auto;
-  font-size: 0.78em;
-  color: #5b6884;
-  font-family: var(--font-mono);
 }
 
 .rail-divider {
@@ -404,16 +453,29 @@ main {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* A CSS Grid item's default min-height is `auto`, not 0 -- without
+     this, the column refuses to shrink below its content's height, so
+     on a tall thread the whole grid row grows past the viewport instead
+     of this column's own `overflow-y: auto` ever kicking in (found
+     live: two questions in, the thread ran off the bottom with no way
+     to scroll). Same fix applied to `.rail` and `.evidence` below. */
+  min-height: 0;
   background: var(--bg);
   border-right: 1px solid var(--border);
 }
 
 .conv-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 18px 22px 12px;
   display: flex;
   flex-direction: column;
+  /* Centers each turn (capped at `.turn`'s own max-width) instead of
+     letting it hug the left edge with a large empty gap on the right --
+     found live on a real wide monitor, where the rail+evidence columns
+     left well over 1000px of unused center-column width. */
+  align-items: center;
   gap: 14px;
 }
 
@@ -426,7 +488,8 @@ main {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 640px;
+  width: 100%;
+  max-width: var(--conv-max-width);
 }
 
 .turn-question {
@@ -552,14 +615,20 @@ main {
 }
 
 .composer-error {
-  margin: 0 22px 10px;
+  max-width: var(--conv-max-width);
+  margin: 0 auto 10px;
+  padding: 0 22px;
 }
 
 .composer-cancel-row {
+  max-width: var(--conv-max-width);
+  margin: 0 auto;
   padding: 0 22px 8px;
 }
 
 .example-row {
+  max-width: var(--conv-max-width);
+  margin: 0 auto;
   padding: 0 22px 10px;
   display: flex;
   gap: 7px;
@@ -585,11 +654,16 @@ main {
 .composer {
   border-top: 1px solid var(--border);
   background: var(--surface);
+  flex-shrink: 0;
+}
+
+.composer-inner {
+  max-width: var(--conv-max-width);
+  margin: 0 auto;
   padding: 12px 22px 16px;
   display: flex;
   gap: 10px;
   align-items: flex-end;
-  flex-shrink: 0;
 }
 
 .composer textarea {
@@ -642,6 +716,7 @@ main {
 .evidence {
   display: flex;
   flex-direction: column;
+  min-height: 0;
   background: var(--surface);
   overflow: hidden;
 }
@@ -1199,6 +1274,10 @@ details summary {
   .workspace {
     grid-template-columns: 1fr;
     height: auto;
+  }
+
+  .col-resize-handle {
+    display: none;
   }
 
   .rail {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { config } from "../config";
 import {
   askQuestion,
@@ -18,6 +19,76 @@ import { EvidencePanel } from "./EvidencePanel";
 import { addHistoryEntry, type HistoryEntry } from "../history";
 
 export type Mode = "sync" | "step_functions" | "queue";
+
+const RAIL_MIN = 180;
+const RAIL_MAX = 340;
+const RAIL_DEFAULT = 220;
+const EVIDENCE_MIN = 280;
+const EVIDENCE_MAX = 560;
+const EVIDENCE_DEFAULT = 340;
+const LAYOUT_STORAGE_KEY = "care_agent_workbench_layout";
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+function loadColumnWidths(): { railWidth: number; evidenceWidth: number } {
+  try {
+    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return { railWidth: RAIL_DEFAULT, evidenceWidth: EVIDENCE_DEFAULT };
+    const parsed = JSON.parse(raw) as { railWidth?: unknown; evidenceWidth?: unknown };
+    return {
+      railWidth: clamp(Number(parsed.railWidth) || RAIL_DEFAULT, RAIL_MIN, RAIL_MAX),
+      evidenceWidth: clamp(Number(parsed.evidenceWidth) || EVIDENCE_DEFAULT, EVIDENCE_MIN, EVIDENCE_MAX),
+    };
+  } catch {
+    // Corrupt or inaccessible localStorage is a per-viewer convenience
+    // lost, not a reason to break the page -- fall back to the defaults.
+    return { railWidth: RAIL_DEFAULT, evidenceWidth: EVIDENCE_DEFAULT };
+  }
+}
+
+/** A thin draggable strip between two grid columns. Uses pointer capture
+ * (not window-level mousemove/mouseup listeners) so the drag keeps
+ * tracking correctly even if the cursor leaves the 6px hit target --
+ * standard behavior for a resize handle, and far less code than manually
+ * wiring up global listeners. */
+function ColumnResizeHandle({ onDrag, label }: { onDrag: (deltaX: number) => void; label: string }) {
+  const lastX = useRef<number | null>(null);
+
+  function handlePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    lastX.current = e.clientX;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function handlePointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (lastX.current === null) return;
+    const delta = e.clientX - lastX.current;
+    lastX.current = e.clientX;
+    if (delta !== 0) onDrag(delta);
+  }
+  function handlePointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    lastX.current = null;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+  }
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "ArrowLeft") onDrag(-10);
+    else if (e.key === "ArrowRight") onDrag(10);
+  }
+
+  return (
+    <div
+      className="col-resize-handle"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      tabIndex={0}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onKeyDown={handleKeyDown}
+    />
+  );
+}
 
 export interface Turn {
   id: string;
@@ -97,6 +168,16 @@ export function Workbench() {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [railWidth, setRailWidth] = useState(() => loadColumnWidths().railWidth);
+  const [evidenceWidth, setEvidenceWidth] = useState(() => loadColumnWidths().evidenceWidth);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ railWidth, evidenceWidth }));
+    } catch {
+      // Best-effort only -- a lost layout preference isn't worth surfacing.
+    }
+  }, [railWidth, evidenceWidth]);
 
   const pollGeneration = useRef(0);
   const pollTimeoutHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -254,7 +335,10 @@ export function Workbench() {
   const selectedTurn = turns.find((t) => t.id === selectedTurnId);
 
   return (
-    <div className="workspace">
+    <div
+      className="workspace"
+      style={{ "--rail-w": `${railWidth}px`, "--evidence-w": `${evidenceWidth}px` } as React.CSSProperties}
+    >
       <ControlRail
         engine={engine}
         setEngine={setEngine}
@@ -266,6 +350,7 @@ export function Workbench() {
         historyVersion={historyVersion}
         onSelectHistoryEntry={handleSelectHistoryEntry}
       />
+      <ColumnResizeHandle label="Resize control rail" onDrag={(dx) => setRailWidth((w) => clamp(w + dx, RAIL_MIN, RAIL_MAX))} />
       <ConversationPanel
         turns={turns}
         selectedTurnId={selectedTurnId}
@@ -279,6 +364,7 @@ export function Workbench() {
         cancelling={cancelling}
         error={error}
       />
+      <ColumnResizeHandle label="Resize evidence panel" onDrag={(dx) => setEvidenceWidth((w) => clamp(w - dx, EVIDENCE_MIN, EVIDENCE_MAX))} />
       <EvidencePanel turn={selectedTurn} />
     </div>
   );

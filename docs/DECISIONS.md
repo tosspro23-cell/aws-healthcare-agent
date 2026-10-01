@@ -4244,6 +4244,82 @@ summary with `disposition: "answered"` (no fallback needed).
 
 ---
 
+## 2026-10-02 — Workbench layout fixes found via real production testing on a wide monitor
+
+**Context**: The Workbench redesign (previous entry) was built and verified
+against a narrow ~800-1024px test pane. The user then tested the real
+deployed site on their own, much wider and taller monitor (~1920px) and
+found several real problems invisible at the narrower width:
+
+- After a couple of questions, the conversation thread ran off the bottom
+  of the screen with no way to scroll up or down to see earlier turns --
+  same for the evidence panel once its content (grounded facts, tool
+  calls) got long enough.
+- On a wide screen, the center conversation column hugged the left edge,
+  leaving a large empty gap on the right -- a side effect of `.turn`'s
+  640px max-width with no centering.
+- The three columns were fixed-width with no way to resize them.
+- The left rail's Engine/Persona/Mode sections, each a stack of
+  full-width buttons, ate enough vertical space that the run history
+  below them had almost no room on a shorter window.
+- The topbar's branding read as a quick placeholder, not a finished
+  product's chrome.
+
+**Root cause (scroll)**: `.conversation-col` and `.evidence` are items of
+`.workspace`'s CSS Grid. A grid item's default `min-height` is `auto`, not
+`0` -- it refuses to shrink below its content's intrinsic height. Without
+an explicit `min-height: 0`, the grid row grows to fit the tallest
+column's content instead of that column's own `overflow-y: auto` ever
+engaging, and since the outer `.app-shell.full-height` has
+`overflow: hidden`, the overflow was simply invisible with no way to
+reach it -- not a disabled scrollbar, an genuinely unreachable one.
+
+**Decision**:
+- Added `min-height: 0` to `.rail`, `.conversation-col`, and `.evidence`
+  (the actual fix; `.rail` wasn't yet reported broken but has the
+  identical bug and would fail the same way with a long history list).
+- Centered the conversation column's content on wide screens: `.turn` and
+  the composer-area elements now share a `--conv-max-width: 720px` cap,
+  with `.conv-scroll { align-items: center }` centering turns within it
+  (a new `.composer-inner` wrapper was needed so the composer's top
+  border could stay full-width while its content centers).
+- Added draggable resize handles between the three columns (new
+  `ColumnResizeHandle` in `Workbench.tsx`, using pointer capture rather
+  than window-level mouse listeners), with widths clamped to a sane
+  range and persisted to `localStorage` so a viewer's preferred layout
+  survives a reload.
+- Rebuilt Engine/Persona/Mode as compact horizontal segmented controls
+  (`.segmented`/`.segmented-option`) instead of stacked full-width
+  buttons -- the same information in roughly a third of the vertical
+  space, leaving the run history list room to actually be useful.
+  Renamed the sync mode's segmented label from "Ask" to "Sync": once the
+  old "sync" meta text that used to disambiguate it was dropped, a
+  button named exactly "Ask" was indistinguishable (visually and by
+  accessible name) from the composer's own "Ask" send button -- found by
+  the adapted `Workbench.test.tsx` regression test failing on exactly
+  this ambiguity, not by inspection.
+- Polished the topbar: a two-color gradient brand mark (tying together
+  the V1/V2 engine identity colors already used elsewhere), tighter
+  brand-name letter-spacing, and a subtle shadow separating it from the
+  content below.
+
+**Consequence**: Verified with the full static suite (`tsc -b`, `eslint`,
+`vitest run`, `vite build`) and manually in the browser pane at a
+1920x1000 viewport matching the width the bugs were actually found at:
+submitted five+ turns and confirmed the conversation panel scrolls while
+the composer stays anchored; submitted a ten-grounded-fact answer and
+confirmed the evidence panel scrolls independently; dragged both resize
+handles and confirmed the columns respond and the new widths survive a
+reload; confirmed the narrow-viewport (mobile) stacked layout still works
+with the resize handles correctly hidden there. This is the second time
+in this project that a layout bug was invisible in a narrow test pane and
+only surfaced on a real, wide monitor -- the same lesson as the earlier
+numeric_grounding false positives, applied to the frontend: a passing
+test suite and a narrow dev-tool viewport are not the same as verifying
+against how the thing is actually used.
+
+---
+
 ## 2026-09-30 — Frontend redesign: a three-zone Workbench replaces the single scrolling column
 
 **Context**: The previous frontend (`AskForm.tsx` + `RunResultView.tsx`) was
