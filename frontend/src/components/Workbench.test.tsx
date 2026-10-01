@@ -102,3 +102,50 @@ describe("Workbench polling supersession", () => {
     expect(screen.queryByText("Working…")).not.toBeInTheDocument();
   });
 });
+
+function emptyTrace(): import("../api").AgentTrace {
+  return {
+    question_id: null,
+    user_id: "user_demo_001",
+    intent: "general_bloodwork_question",
+    tool_calls: [],
+    retrieved_chunks: [],
+    grounded_facts: [],
+    limitations: [],
+    safety_checks: [],
+    rejected_draft: null,
+    narrator_backend: "mock",
+    disposition: "answered",
+  };
+}
+
+describe("Workbench conversation memory", () => {
+  it("folds the conversation's prior Q&A into a follow-up's question text, while keeping the turn's own display question bare", async () => {
+    vi.mocked(api.askQuestion)
+      .mockResolvedValueOnce({ run_id: "run-1", answer: "Your LDL-C is 162 mg/dL.", safe: true, trace: emptyTrace() })
+      .mockResolvedValueOnce({ run_id: "run-2", answer: "It's considered high.", safe: true, trace: emptyTrace() });
+
+    render(<Workbench />);
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "How is my LDL trending?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The first turn in a fresh conversation has no prior context to fold in.
+    expect(vi.mocked(api.askQuestion).mock.calls[0][1]).toBe("How is my LDL trending?");
+
+    fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "Is that high?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const sentFollowUp = vi.mocked(api.askQuestion).mock.calls[1][1];
+    expect(sentFollowUp).toContain("Q: How is my LDL trending?");
+    expect(sentFollowUp).toContain("A: Your LDL-C is 162 mg/dL.");
+    expect(sentFollowUp).toContain("New question: Is that high?");
+
+    // The turn's own question bubble stays exactly what the user typed --
+    // the injected context is only ever sent to the API, never displayed.
+    expect(screen.getByText("Is that high?")).toBeInTheDocument();
+    expect(screen.queryByText(/New question:/)).not.toBeInTheDocument();
+  });
+});

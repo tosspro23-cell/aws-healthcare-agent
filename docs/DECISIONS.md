@@ -4244,6 +4244,78 @@ summary with `disposition: "answered"` (no fallback needed).
 
 ---
 
+## 2026-10-02 (3) — Real multi-turn conversation memory, via client-side context injection, plus threaded history
+
+**Context**: The Workbench's "multi-turn" had been deliberately visual
+only since the original redesign (see that entry): each `Ask` appended a
+new `Turn` to the thread, but every turn was still an independent,
+context-free `ask()`/`ask_compound()` call -- a follow-up question had no
+idea what the previous answer said. The user asked for this to become
+real: genuine follow-up continuity, plus history grouped into switchable
+conversation threads the way ChatGPT/Claude Code's own sidebars work,
+instead of a flat list of isolated answers.
+
+**Decision**: asked the user to choose between two approaches before
+building either (`AskUserQuestion`, given the real architectural
+tradeoff involved) -- client-side context injection into each
+follow-up's question text, or a new backend-side session. They chose
+client-side injection. Implemented:
+
+- `Workbench.tsx`'s new `buildContextualQuestion` folds the active
+  conversation's last `MAX_CONTEXT_TURNS` (4) successful turns into the
+  text actually sent for a follow-up (`Q: ...\nA: ...` pairs, then
+  `New question: ...`), with an explicit instruction not to restate old
+  figures unless reconfirmed this turn. `Turn.question` itself is never
+  touched -- only the text sent to the API carries the extra context, so
+  the question bubble in the UI stays exactly what the user typed.
+- `history.ts` rewritten from a flat list of individual runs
+  (`HistoryEntry`) to a `Conversation` model: an id, a title (the first
+  question, truncated, set once and never retitled), and an ordered list
+  of lightweight entries (same shape as the old `HistoryEntry` -- just
+  `run_id`/`question`/`execution_type`/`submitted_at`/`engine`/`persona`,
+  re-fetched from `GET /runs/{run_id}` on demand, not the full trace --
+  same "lightweight pointer, not a cache" philosophy the old flat history
+  already used). `RunHistory.tsx` now lists conversations, each showing
+  its title, turn count, and last-active time; selecting one
+  (`Workbench.tsx`'s new `handleSelectConversation`) re-fetches every one
+  of its entries in parallel and rebuilds the full turn list, resuming
+  polling only if the *last* entry is still non-terminal (by construction
+  every earlier entry must already be terminal, since only one turn is
+  ever pending at a time).
+- Added an explicit "New conversation" action in the rail (disabled when
+  there's nothing active to leave) -- without it, every question would
+  pile into one endless thread with no way to start fresh.
+
+**Alternatives considered**: A real backend session (new DynamoDB table,
+new API surface for conversation state) was the user's other option --
+not chosen, since every execution path here (`/ask`, `/runs`, `/jobs`) is
+already stateless per call, and client-side injection gets genuine
+continuity without any of that new infra or attack surface.
+
+**Known tradeoff, accepted rather than engineered around**: a turn's
+`numeric_grounding` check only verifies numbers against *that turn's*
+own freshly-fetched data. If the model restates a number from earlier in
+the injected context without this turn's own tool calls re-grounding it,
+the check won't recognize it -- same as any other ungrounded claim, the
+answer falls back to the deterministic template rather than showing
+something wrong. This is the same safety net every other false positive
+in this project has relied on, not a new gap; no changes to `safety.py`
+were made for this feature.
+
+**Consequence**: Verified with the full static suite (`tsc -b`, `eslint`,
+`vitest run` -- including a new test proving a follow-up's question text
+genuinely contains the prior turn's `Q:`/`A:` pair while the turn's own
+displayed question bubble stays bare, and a fixed `auth.test.ts` whose
+hardcoded storage key was still the old flat-history one -- and `vite
+build`), then manually in the browser pane: submitted two turns in one
+conversation and read the actual network payload to confirm the second
+request's `question` field contained the first Q&A; started a new
+conversation and confirmed the thread list and composer reset; selected
+the earlier conversation from history and confirmed both turns restored
+with the correct turn highlighted and its evidence shown.
+
+---
+
 ## 2026-10-02 (2) — A fourth real numeric_grounding false positive, plus an active-state contrast bug, both found live
 
 **Context**: Continued production testing (same wide-monitor session as the

@@ -440,8 +440,41 @@ main {
   background: var(--brand-800);
 }
 
+.history-row.active {
+  background: var(--brand-800);
+  box-shadow: inset 2px 0 0 var(--verify);
+}
+
 .history-row:disabled {
   opacity: 0.45;
+}
+
+.new-conversation-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: transparent;
+  color: #cbd5e1;
+  font: inherit;
+  font-size: 0.82em;
+  font-weight: 600;
+  min-height: unset;
+  align-self: auto;
+}
+
+.new-conversation-btn:hover:not(:disabled) {
+  background: var(--brand-800);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+.new-conversation-btn:disabled {
+  opacity: 0.35;
 }
 
 .history-row .h-q {

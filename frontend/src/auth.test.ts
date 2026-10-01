@@ -14,7 +14,7 @@ import { getAccessToken, handleSessionExpired, signOut } from "./auth";
 const ACCESS_TOKEN_KEY = "care_agent_access_token";
 const EXPIRES_AT_KEY = "care_agent_access_token_expires_at";
 const CODE_VERIFIER_KEY = "care_agent_pkce_code_verifier";
-const HISTORY_KEY = "care_agent_run_history";
+const HISTORY_KEY = "care_agent_conversations";
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -70,7 +70,10 @@ describe("handleSessionExpired", () => {
 describe("signOut", () => {
   it("clears the session and run history, then redirects to the Cognito logout URL", () => {
     sessionStorage.setItem(ACCESS_TOKEN_KEY, "real-token");
-    localStorage.setItem(HISTORY_KEY, JSON.stringify([{ run_id: "r1", question: "hi" }]));
+    localStorage.setItem(
+      HISTORY_KEY,
+      JSON.stringify([{ id: "c1", title: "hi", startedAt: "", lastActiveAt: "", entries: [{ run_id: "r1", question: "hi", execution_type: "SYNC", submitted_at: "" }] }]),
+    );
     const location = { href: "" };
     vi.stubGlobal("location", location);
 

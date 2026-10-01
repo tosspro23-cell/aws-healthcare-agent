@@ -1,7 +1,7 @@
 import type { Engine, Persona } from "../api";
 import type { Mode } from "./Workbench";
 import { RunHistory } from "./RunHistory";
-import type { HistoryEntry } from "../history";
+import type { Conversation } from "../history";
 
 // "Sync", not "Ask" -- the latter used to be this mode's label, but a
 // segmented-control button named exactly "Ask" is indistinguishable
@@ -39,7 +39,10 @@ export function ControlRail({
   setMode,
   disabled,
   historyVersion,
-  onSelectHistoryEntry,
+  activeConversationId,
+  onSelectConversation,
+  onNewConversation,
+  hasActiveConversation,
 }: {
   engine: Engine;
   setEngine: (e: Engine) => void;
@@ -49,7 +52,10 @@ export function ControlRail({
   setMode: (m: Mode) => void;
   disabled: boolean;
   historyVersion: number;
-  onSelectHistoryEntry: (entry: HistoryEntry) => void;
+  activeConversationId: string | null;
+  onSelectConversation: (conversation: Conversation) => void;
+  onNewConversation: () => void;
+  hasActiveConversation: boolean;
 }) {
   return (
     <aside className="rail">
@@ -132,9 +138,16 @@ export function ControlRail({
 
       <div className="rail-divider" />
 
+      <button type="button" className="new-conversation-btn" onClick={onNewConversation} disabled={disabled || !hasActiveConversation}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        New conversation
+      </button>
+
       <div className="rail-history-wrap">
-        <div className="rail-section-label">Recent runs</div>
-        <RunHistory version={historyVersion} onSelect={onSelectHistoryEntry} disabled={disabled} />
+        <div className="rail-section-label">Conversations</div>
+        <RunHistory version={historyVersion} onSelect={onSelectConversation} disabled={disabled} activeConversationId={activeConversationId} />
       </div>
     </aside>
   );

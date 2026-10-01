@@ -1,4 +1,4 @@
-import { loadHistory, type HistoryEntry } from "../history";
+import { loadConversations, type Conversation } from "../history";
 
 /** `version` is bumped by the parent after every new submission purely to
  * force this component to re-render (it's read in the dependency-less
@@ -9,29 +9,54 @@ import { loadHistory, type HistoryEntry } from "../history";
  * Lives in the Workbench's left-hand control rail, which already has its
  * own persistent section labels, so this renders a plain always-visible
  * list rather than a collapsible `<details>` -- there's no reason to make
- * "see your recent runs" a second click in a rail whose whole point is
- * to be glanceable. `disabled` mirrors every other rail control: a run
- * is being polled right now, and this app only ever tracks one poll loop
- * at a time (see `Workbench.tsx`), so opening a second run from history
- * mid-poll isn't supported. */
-export function RunHistory({ version: _version, onSelect, disabled }: { version: number; onSelect: (entry: HistoryEntry) => void; disabled: boolean }) {
-  const entries = loadHistory();
+ * "see your recent conversations" a second click in a rail whose whole
+ * point is to be glanceable. `disabled` mirrors every other rail control:
+ * a run is being polled right now, and this app only ever tracks one poll
+ * loop at a time (see `Workbench.tsx`), so opening a different
+ * conversation mid-poll isn't supported.
+ *
+ * Grouped by conversation, not a flat list of individual runs -- found
+ * live: the user wanted the same "click a past thread, see the whole
+ * thing again" pattern ChatGPT/Claude Code's own sidebars use, not a
+ * list of isolated answers with no sense of which ones were actually one
+ * back-and-forth. */
+export function RunHistory({
+  version: _version,
+  onSelect,
+  disabled,
+  activeConversationId,
+}: {
+  version: number;
+  onSelect: (conversation: Conversation) => void;
+  disabled: boolean;
+  activeConversationId: string | null;
+}) {
+  const conversations = loadConversations();
 
-  if (entries.length === 0) return <p className="rail-history-empty">No runs yet this session.</p>;
+  if (conversations.length === 0) return <p className="rail-history-empty">No conversations yet this session.</p>;
 
   return (
     <ul className="rail-history">
-      {entries.map((entry) => (
-        <li key={entry.run_id}>
-          <button type="button" className="history-row" onClick={() => onSelect(entry)} disabled={disabled}>
-            <span className="h-q">{entry.question}</span>
-            <span className="h-meta">
-              {entry.engine && <span className={`engine-dot ${entry.engine} small`} />}
-              {entry.execution_type} &middot; {new Date(entry.submitted_at).toLocaleTimeString()}
-            </span>
-          </button>
-        </li>
-      ))}
+      {conversations.map((conversation) => {
+        const latestEngine = conversation.entries[conversation.entries.length - 1]?.engine;
+        const turnCount = conversation.entries.length;
+        return (
+          <li key={conversation.id}>
+            <button
+              type="button"
+              className={`history-row ${conversation.id === activeConversationId ? "active" : ""}`}
+              onClick={() => onSelect(conversation)}
+              disabled={disabled}
+            >
+              <span className="h-q">{conversation.title}</span>
+              <span className="h-meta">
+                {latestEngine && <span className={`engine-dot ${latestEngine} small`} />}
+                {turnCount} turn{turnCount === 1 ? "" : "s"} &middot; {new Date(conversation.lastActiveAt).toLocaleTimeString()}
+              </span>
+            </button>
+          </li>
+        );
+      })}
     </ul>
   );
 }

@@ -16,7 +16,7 @@ import {
 import { ControlRail } from "./ControlRail";
 import { ConversationPanel } from "./ConversationPanel";
 import { EvidencePanel } from "./EvidencePanel";
-import { addHistoryEntry, type HistoryEntry } from "../history";
+import { startConversation, addEntryToConversation, type Conversation, type ConversationEntry } from "../history";
 
 export type Mode = "sync" | "step_functions" | "queue";
 
@@ -121,16 +121,60 @@ function isTerminal(status: string): boolean {
   return TERMINAL_STATUSES.has(status);
 }
 
-function executionTypeFor(mode: Mode): HistoryEntry["execution_type"] {
+/** Pure mapping from a `RunRecord` to the `Turn` fields it determines --
+ * shared by the live-polling path (`applyRunRecord`, one turn at a time)
+ * and restoring a whole conversation from history (`handleSelectConversation`,
+ * many turns at once from `Promise.allSettled`), so the two paths can't
+ * silently drift into mapping the same status differently. */
+function runRecordToPatch(run: RunRecord): Partial<Turn> {
+  return {
+    status: !isTerminal(run.status) ? "pending" : run.status === "CANCELLED" ? "cancelled" : run.status === "SUCCEEDED" ? "succeeded" : "failed",
+    answer: run.answer,
+    safe: run.safe,
+    trace: run.trace,
+    currentStage: run.current_stage,
+    errorMessage: run.error_message,
+  };
+}
+
+function executionTypeFor(mode: Mode): ConversationEntry["execution_type"] {
   if (mode === "sync") return "SYNC";
   if (mode === "step_functions") return "STEP_FUNCTIONS";
   return "SQS";
 }
 
-function modeFromExecutionType(executionType: HistoryEntry["execution_type"]): Mode {
+function modeFromExecutionType(executionType: ConversationEntry["execution_type"]): Mode {
   if (executionType === "SYNC") return "sync";
   if (executionType === "STEP_FUNCTIONS") return "step_functions";
   return "queue";
+}
+
+const MAX_CONTEXT_TURNS = 4;
+
+/** Folds recent turns from the *same conversation* into the question
+ * text actually sent to the backend -- the real point of the feature,
+ * not cosmetic: the model genuinely sees prior Q&A, not just a UI that
+ * looks like a conversation while every call stays independent. Chosen
+ * over a backend session (a new DynamoDB table + API surface) because
+ * every execution path here is already stateless per-call; this works
+ * within that without any infra change. The explicit instruction not to
+ * restate old figures is a mitigation, not a guarantee -- if the model
+ * does repeat an earlier number without this turn's own tool calls
+ * re-grounding it, `numeric_grounding` won't recognize it and the answer
+ * falls back to the deterministic template, exactly like any other
+ * ungrounded claim. That's an accepted tradeoff (see docs/DECISIONS.md),
+ * not a gap nobody noticed. `Turn.question` itself is never touched --
+ * only the text actually sent to the API includes this context, so the
+ * question bubble in the UI keeps showing exactly what the user typed. */
+function buildContextualQuestion(priorTurns: Turn[], newQuestion: string): string {
+  const relevant = priorTurns.filter((t) => t.status === "succeeded" && t.answer).slice(-MAX_CONTEXT_TURNS);
+  if (relevant.length === 0) return newQuestion;
+  const transcript = relevant.map((t) => `Q: ${t.question}\nA: ${t.answer}`).join("\n\n");
+  return (
+    "Context from earlier in this conversation, for continuity only -- base any new numeric claims on your own " +
+    "fresh data lookups for this question, not by repeating earlier figures unless they're reconfirmed now:\n\n" +
+    `${transcript}\n\nNew question: ${newQuestion}`
+  );
 }
 
 /** The Workbench redesign's real point: a three-zone layout (control
@@ -140,14 +184,16 @@ function modeFromExecutionType(executionType: HistoryEntry["execution_type"]): M
  * component). See docs/DECISIONS.md for the design discussion and the
  * annotated mockup this was built from.
  *
- * "Multi-turn" here is deliberately visual only: each `Ask` appends a
- * new `Turn` to the thread rather than replacing the previous one, so
- * it *reads* like a conversation -- but every turn is still an
- * independent `HealthAgent.ask()`/`ask_compound()` call with no shared
- * context between turns (the kernel's own documented limitation: no
- * conversation memory). A follow-up question doesn't know what the
- * previous answer said. Building that would be a real backend
- * architecture change, out of scope here and explicitly deferred.
+ * Multi-turn memory is real, not cosmetic, but it's client-side context
+ * injection rather than a backend session: every execution path here
+ * (`ask()`/`ask_compound()` via `/ask`, `/runs`, `/jobs`) is stateless
+ * per call, with no session concept on the backend at all, so
+ * `buildContextualQuestion` folds the active conversation's recent Q&A
+ * into the text actually sent for a follow-up (see its own docstring for
+ * why this was chosen over a new backend session, and the one real
+ * tradeoff it accepts). `Turn.question` itself always stays exactly what
+ * the user typed -- only the text sent to the API carries the extra
+ * context, so the question bubble in the UI isn't cluttered by it.
  *
  * At most one turn is ever `pending` at a time, by construction (every
  * control that could start a second one -- the composer, the rail, run
@@ -168,6 +214,7 @@ export function Workbench() {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [railWidth, setRailWidth] = useState(() => loadColumnWidths().railWidth);
   const [evidenceWidth, setEvidenceWidth] = useState(() => loadColumnWidths().evidenceWidth);
 
@@ -197,14 +244,7 @@ export function Workbench() {
   }
 
   function applyRunRecord(id: string, run: RunRecord) {
-    updateTurn(id, {
-      status: !isTerminal(run.status) ? "pending" : run.status === "CANCELLED" ? "cancelled" : run.status === "SUCCEEDED" ? "succeeded" : "failed",
-      answer: run.answer,
-      safe: run.safe,
-      trace: run.trace,
-      currentStage: run.current_stage,
-      errorMessage: run.error_message,
-    });
+    updateTurn(id, runRecordToPatch(run));
   }
 
   // A self-scheduling setTimeout, not setInterval, plus a monotonic
@@ -253,6 +293,15 @@ export function Workbench() {
     setError(null);
     setQuestion("");
 
+    // A fresh conversation starts (and is persisted) the moment its first
+    // question is asked -- not deferred until the answer comes back -- so
+    // a conversation that fails or is still pending still shows up in
+    // history, the same as any individual run always has.
+    const conversationId = activeConversationId ?? startConversation(q).id;
+    if (!activeConversationId) setActiveConversationId(conversationId);
+
+    const sentQuestion = buildContextualQuestion(turns, q);
+
     const id = crypto.randomUUID();
     const turn: Turn = { id, question: q, engine, persona, mode, status: "pending" };
     setTurns((prev) => [...prev, turn]);
@@ -260,14 +309,14 @@ export function Workbench() {
 
     try {
       if (mode === "sync") {
-        const result = await askQuestion(userId, q, engine, persona);
+        const result = await askQuestion(userId, sentQuestion, engine, persona);
         updateTurn(id, { status: "succeeded", runId: result.run_id, answer: result.answer, safe: result.safe, trace: result.trace });
-        addHistoryEntry({ run_id: result.run_id, question: q, execution_type: "SYNC", submitted_at: new Date().toISOString(), engine, persona });
+        addEntryToConversation(conversationId, { run_id: result.run_id, question: q, execution_type: "SYNC", submitted_at: new Date().toISOString(), engine, persona });
       } else {
         const starter = mode === "step_functions" ? startRun : enqueueJob;
-        const started = await starter(userId, q, undefined, persona, engine);
+        const started = await starter(userId, sentQuestion, undefined, persona, engine);
         updateTurn(id, { runId: started.run_id });
-        addHistoryEntry({
+        addEntryToConversation(conversationId, {
           run_id: started.run_id,
           question: q,
           execution_type: executionTypeFor(mode),
@@ -306,28 +355,59 @@ export function Workbench() {
     }
   }
 
-  async function handleSelectHistoryEntry(entry: HistoryEntry) {
+  /** Restores an entire past conversation, not just one run -- clicking a
+   * thread in history re-fetches every one of its turns (in parallel;
+   * they're independent reads) and rebuilds the full back-and-forth, the
+   * same "pick a thread back up" pattern ChatGPT/Claude Code's own
+   * history sidebars use. Only the *last* entry can still be non-terminal
+   * when revisited: by construction only one turn is ever pending at a
+   * time, so every earlier entry in this conversation must already have
+   * finished before the next one could have been submitted. */
+  async function handleSelectConversation(conversation: Conversation) {
     if (disabled) return;
     setError(null);
-    const id = crypto.randomUUID();
-    const turn: Turn = {
-      id,
+    stopPolling();
+
+    const restored: Turn[] = conversation.entries.map((entry) => ({
+      id: crypto.randomUUID(),
       question: entry.question,
       engine: entry.engine ?? "v1",
       persona: entry.persona ?? "patient",
       mode: modeFromExecutionType(entry.execution_type),
       status: "pending",
-      runId: entry.run_id,
-    };
-    setTurns((prev) => [...prev, turn]);
-    setSelectedTurnId(id);
-    try {
-      const run = await getRun(entry.run_id);
-      applyRunRecord(id, run);
-      if (!isTerminal(run.status)) pollUntilTerminal(id, entry.run_id);
-    } catch (err) {
-      updateTurn(id, { status: "failed", errorMessage: err instanceof ApiError ? `${err.status}: ${err.message}` : String(err) });
+    }));
+    setTurns(restored);
+    setActiveConversationId(conversation.id);
+    setSelectedTurnId(restored[restored.length - 1]?.id ?? null);
+
+    const results = await Promise.allSettled(conversation.entries.map((entry) => getRun(entry.run_id)));
+
+    setTurns((prev) =>
+      prev.map((turn, i) => {
+        const result = results[i];
+        if (result.status === "fulfilled") {
+          return { ...turn, runId: conversation.entries[i].run_id, ...runRecordToPatch(result.value) };
+        }
+        const err = result.reason as unknown;
+        return { ...turn, status: "failed", errorMessage: err instanceof ApiError ? `${err.status}: ${err.message}` : String(err) };
+      }),
+    );
+
+    const lastIndex = conversation.entries.length - 1;
+    const lastResult = results[lastIndex];
+    if (lastResult?.status === "fulfilled" && !isTerminal(lastResult.value.status)) {
+      pollUntilTerminal(restored[lastIndex].id, conversation.entries[lastIndex].run_id);
     }
+  }
+
+  function handleNewConversation() {
+    if (disabled) return;
+    stopPolling();
+    setError(null);
+    setQuestion("");
+    setTurns([]);
+    setSelectedTurnId(null);
+    setActiveConversationId(null);
   }
 
   const pendingTurn = turns.find((t) => t.status === "pending" && !t.pollStalled);
@@ -348,7 +428,10 @@ export function Workbench() {
         setMode={setMode}
         disabled={disabled}
         historyVersion={historyVersion}
-        onSelectHistoryEntry={handleSelectHistoryEntry}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
+        hasActiveConversation={turns.length > 0}
       />
       <ColumnResizeHandle label="Resize control rail" onDrag={(dx) => setRailWidth((w) => clamp(w + dx, RAIL_MIN, RAIL_MAX))} />
       <ConversationPanel

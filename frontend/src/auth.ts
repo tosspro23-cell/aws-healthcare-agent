@@ -6,7 +6,7 @@
  * an in-browser redirect, not a script pretending to be one.
  */
 import { config } from "./config";
-import { clearHistory } from "./history";
+import { clearConversations } from "./history";
 
 const CODE_VERIFIER_KEY = "care_agent_pkce_code_verifier";
 const ACCESS_TOKEN_KEY = "care_agent_access_token";
@@ -69,7 +69,7 @@ export function signOut(): void {
   // full question text (not just run_ids) was readable by whoever signs
   // into the same browser next. This is convenience state for the
   // current session's user, not something that should outlive them.
-  clearHistory();
+  clearConversations();
   const params = new URLSearchParams({ client_id: config.appClientId, logout_uri: config.logoutUri });
   window.location.href = `https://${config.cognitoDomain}/logout?${params.toString()}`;
 }
