@@ -122,8 +122,16 @@ _DOSING_PATTERNS = [
 # uses (verified against every marker in data/sample_bloodwork.json, not
 # guessed) -- adding a new marker type with a different unit requires
 # adding it here too, or numbers attached to that unit only get the
-# weaker value-only check below.
-_KNOWN_UNITS = ("mg/dL", "mg/L", "ng/mL", "mIU/L", "mL/min/1.73m2", "U/L", "%")
+# weaker value-only check below. "percentage points"/"percentage point"
+# are not a data unit but a real, common way to phrase a flat delta
+# between two "%" values ("HbA1c rose by 0.3 percentage points") -- a
+# live rejected draft found this exact phrasing didn't match the tight
+# `_VALUE_UNIT_RE` at all (no data unit sits immediately after the
+# number), so it fell through to the weak bare-number path, which never
+# learned about computed deltas in the first place. Normalized to "%"
+# before the lookup below, not treated as a separate unit bucket.
+_KNOWN_UNITS = ("mg/dL", "mg/L", "ng/mL", "mIU/L", "mL/min/1.73m2", "U/L", "percentage points", "percentage point", "%")
+_UNIT_ALIASES = {"percentage points": "%", "percentage point": "%"}
 # `(?!\w)` rather than `\b` after the unit: `\b` requires a transition
 # between a word and non-word character, which fails right after "%" when
 # the next character is *also* non-word (e.g. the "." in "162%."). The
@@ -485,7 +493,9 @@ def verify_numeric_grounding(
         except ValueError:
             continue
 
-        candidates = facts_by_value_unit.get((value, raw_unit.strip().lower()), [])
+        unit_key = raw_unit.strip().lower()
+        unit_key = _UNIT_ALIASES.get(unit_key, unit_key)
+        candidates = facts_by_value_unit.get((value, unit_key), [])
         if not candidates:
             ungrounded.append(f"{raw_value}{raw_unit}")
             continue

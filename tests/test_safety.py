@@ -647,6 +647,50 @@ def test_grounding_rejects_a_fabricated_percentage_that_does_not_match_the_real_
     assert check.passed is False
 
 
+def test_grounding_accepts_a_delta_phrased_as_percentage_points_not_a_percent_sign():
+    """A fourth real false positive found live (see docs/DECISIONS.md):
+    a correct flat delta between two "%"-unit values ("HbA1c rose by 0.3
+    percentage points") was rejected outright. `_VALUE_UNIT_RE` only
+    matches a number immediately followed by a *data* unit token, and
+    "percentage points" isn't one -- so the number fell through to the
+    weak bare-number path, which never learned about computed deltas at
+    all (only the strict value+unit path did). Normalizing "percentage
+    points"/"percentage point" to "%" before the lookup fixes this
+    without weakening anything: the delta must still match the real
+    computed difference, and the marker name must still be nearby."""
+    facts = [
+        GroundedFact(
+            claim="HbA1c trend",
+            source_type="bloodwork",
+            source_ref="trend:hba1c_percent",
+            numeric_values=(6.1, 5.8),
+            unit="%",
+            display_name="HbA1c",
+        )
+    ]
+    check = verify_numeric_grounding("Your HbA1c increased from 5.8% to 6.1%, a rise of 0.3 percentage points.", facts)
+    assert check.passed is True
+
+
+def test_grounding_rejects_a_fabricated_percentage_point_delta():
+    """The other half of the fix above: a percentage-point delta that
+    doesn't match the real computed difference must still fail -- the
+    unit normalization only changes which bucket the number is checked
+    against, never whether it has to match a real value there."""
+    facts = [
+        GroundedFact(
+            claim="HbA1c trend",
+            source_type="bloodwork",
+            source_ref="trend:hba1c_percent",
+            numeric_values=(6.1, 5.8),
+            unit="%",
+            display_name="HbA1c",
+        )
+    ]
+    check = verify_numeric_grounding("Your HbA1c increased from 5.8% to 6.1%, a rise of 1.2 percentage points.", facts)
+    assert check.passed is False
+
+
 def test_report_has_hard_failure_false_when_only_grounding_fails():
     """The soft-only case: every hard check passes, only numeric_grounding
     fails. This is the scenario `agent.py` classifies as

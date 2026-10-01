@@ -4244,6 +4244,72 @@ summary with `disposition: "answered"` (no fallback needed).
 
 ---
 
+## 2026-10-02 (2) — A fourth real numeric_grounding false positive, plus an active-state contrast bug, both found live
+
+**Context**: Continued production testing (same wide-monitor session as the
+previous layout-fixes entry) found two more real problems:
+
+1. A compound V2 question triggered the fallback again, with
+   `narrator_fallback` detail `ungrounded numbers: ['0.3']`. The rejected
+   draft read "**HbA1c** increased from 5.8% to 6.1% (a rise of 0.3
+   percentage points)" -- a correct, already-grounded delta (computed and
+   accepted two entries ago), just phrased with "percentage points"
+   instead of a bare "%".
+2. The left rail's segmented controls (Engine/Persona/Mode) made it hard
+   to tell which option was actually selected -- "我选中的是哪一个" (which one
+   did I even select).
+
+**Root cause (grounding)**: `_VALUE_UNIT_RE` only matches a number
+*immediately* followed by one of `_KNOWN_UNITS` ("%", "mg/dL", etc).
+"percentage points" is two words and isn't a recognized unit token at
+all, so "0.3 percentage points" never matched the strict value+unit path
+-- the one path that knows about computed deltas (`facts_by_value_unit`).
+It fell through to the weak bare-number path instead, which checks
+against `allowed_values` -- populated only from *raw* `GroundedFact`
+values, never from the deltas computed two entries ago. The delta being
+correct was irrelevant; the number simply landed on a check that had
+never heard of it.
+
+**Root cause (contrast)**: the active segmented option's background
+(`--brand-900`) and the segmented control's own container background
+(`--brand-800`) are two very close dark-navy shades -- a real but subtle
+distinction on a calibrated display, easy to miss at a glance or on a
+different monitor.
+
+**Decision**:
+- Added `"percentage points"`/`"percentage point"` to `_KNOWN_UNITS` (so
+  the regex recognizes them as a unit token) and normalize both to `"%"`
+  before the `facts_by_value_unit` lookup (`_UNIT_ALIASES`). This doesn't
+  create a new, weaker acceptance path -- it teaches the *existing*
+  strict check a second way to write the same unit it already handles,
+  so the number still has to match the real computed delta and still
+  needs its marker's name nearby.
+- Changed the active segmented-option style from a dark-on-dark shade
+  difference to a white pill with dark text -- unambiguous contrast
+  regardless of monitor calibration, the same strategy a native iOS/macOS
+  segmented control uses. Caught and fixed a second bug while verifying
+  this: the generic `button:hover:not(:disabled)` rule elsewhere in the
+  stylesheet has *higher* CSS specificity than `.segmented-option.active`
+  (an extra `button` element selector beats two plain classes), so
+  hovering the mouse over the already-active segment repainted it the
+  generic accent-blue hover color instead of staying white. Fixed with an
+  explicit `.segmented-option.active:hover` rule at matching specificity.
+
+**Consequence**: This is the fourth distinct real `numeric_grounding`
+false positive found by live production testing (sentence-boundary
+anaphora, the floating-point delta, chained anaphora, now this unit-
+phrasing gap) -- each one a different *shape* of the same underlying
+risk: a correct, already-verified computed value, expressed in English in
+a way the regex-based check hadn't been taught to recognize yet. Verified
+the exact rejected draft now passes directly, added two regression tests,
+and re-ran the full suite (265 passed, 88.17% coverage) and ruff/mypy
+clean in the same from-scratch CI-matching venv as previous entries. The
+contrast fix was verified by reading the computed `background-color` of
+the active button directly (`rgb(255,255,255)`) both at rest and while
+simulating a hover over it, not just by eye.
+
+---
+
 ## 2026-10-02 — Workbench layout fixes found via real production testing on a wide monitor
 
 **Context**: The Workbench redesign (previous entry) was built and verified
