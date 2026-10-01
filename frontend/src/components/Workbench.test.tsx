@@ -84,7 +84,7 @@ describe("Workbench polling supersession", () => {
     // Cancel while that poll request is still in flight -- this is the
     // real, still-reachable version of the supersession race: stopPolling()
     // bumps the generation counter before the cancel's own getRun call.
-    fireEvent.click(screen.getByRole("button", { name: /Cancel this run/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await vi.advanceTimersByTimeAsync(0);
     expect(getRunDeferreds).toHaveLength(2);
 

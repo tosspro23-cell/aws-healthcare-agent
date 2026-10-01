@@ -13,6 +13,7 @@ import {
   type Engine,
   type Persona,
 } from "../api";
+import { ControlBar } from "./ControlBar";
 import { ControlRail } from "./ControlRail";
 import { ConversationPanel } from "./ConversationPanel";
 import { EvidencePanel } from "./EvidencePanel";
@@ -415,11 +416,8 @@ export function Workbench() {
   const selectedTurn = turns.find((t) => t.id === selectedTurnId);
 
   return (
-    <div
-      className="workspace"
-      style={{ "--rail-w": `${railWidth}px`, "--evidence-w": `${evidenceWidth}px` } as React.CSSProperties}
-    >
-      <ControlRail
+    <>
+      <ControlBar
         engine={engine}
         setEngine={setEngine}
         persona={persona}
@@ -427,28 +425,36 @@ export function Workbench() {
         mode={mode}
         setMode={setMode}
         disabled={disabled}
-        historyVersion={historyVersion}
-        activeConversationId={activeConversationId}
-        onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         hasActiveConversation={turns.length > 0}
       />
-      <ColumnResizeHandle label="Resize control rail" onDrag={(dx) => setRailWidth((w) => clamp(w + dx, RAIL_MIN, RAIL_MAX))} />
-      <ConversationPanel
-        turns={turns}
-        selectedTurnId={selectedTurnId}
-        onSelectTurn={setSelectedTurnId}
-        question={question}
-        setQuestion={setQuestion}
-        onSubmit={handleSubmit}
-        disabled={disabled}
-        pendingTurn={pendingTurn}
-        onCancel={handleCancel}
-        cancelling={cancelling}
-        error={error}
-      />
-      <ColumnResizeHandle label="Resize evidence panel" onDrag={(dx) => setEvidenceWidth((w) => clamp(w - dx, EVIDENCE_MIN, EVIDENCE_MAX))} />
-      <EvidencePanel turn={selectedTurn} />
-    </div>
+      <div
+        className="workspace"
+        style={{ "--rail-w": `${railWidth}px`, "--evidence-w": `${evidenceWidth}px` } as React.CSSProperties}
+      >
+        <ControlRail
+          disabled={disabled}
+          historyVersion={historyVersion}
+          activeConversationId={activeConversationId}
+          onSelectConversation={handleSelectConversation}
+        />
+        <ColumnResizeHandle label="Resize control rail" onDrag={(dx) => setRailWidth((w) => clamp(w + dx, RAIL_MIN, RAIL_MAX))} />
+        <ConversationPanel
+          turns={turns}
+          selectedTurnId={selectedTurnId}
+          onSelectTurn={setSelectedTurnId}
+          question={question}
+          setQuestion={setQuestion}
+          onSubmit={handleSubmit}
+          disabled={disabled}
+          pendingTurn={pendingTurn}
+          onCancel={handleCancel}
+          cancelling={cancelling}
+          error={error}
+        />
+        <ColumnResizeHandle label="Resize evidence panel" onDrag={(dx) => setEvidenceWidth((w) => clamp(w - dx, EVIDENCE_MIN, EVIDENCE_MAX))} />
+        <EvidencePanel turn={selectedTurn} />
+      </div>
+    </>
   );
 }

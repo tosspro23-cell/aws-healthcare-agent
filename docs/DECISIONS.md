@@ -4244,6 +4244,80 @@ summary with `disposition: "answered"` (no fallback needed).
 
 ---
 
+## 2026-10-02 (4) — Workbench phase 1: full dark theme, controls moved to a top bar, cancel button repositioned
+
+**Context**: The user pointed to a different project's console UI they
+liked (ARMIE, a construction-intelligence workbench) and asked for an
+assessment of adopting three of its patterns, plus proposed a fourth,
+larger idea. Agreed the first three were worth doing immediately
+(low risk, no backend changes) and that the fourth -- showing the
+patient's own source data (bloodwork, questionnaire) in a dedicated
+panel, mirroring the reference's BIM-model/drawing viewer -- was
+valuable but needed its own scoping pass first (it requires a new,
+currently-nonexistent read API; confirmed by checking the actual deployed
+routes: only `/ask`, `/runs`, `/runs/{run_id}`, `/runs/{run_id}/cancel`,
+`/jobs` exist). The user agreed to split it into two phases and asked for
+phase 1 only.
+
+**Decision** (phase 1, all three done together):
+
+- **Full dark theme.** The rail was already dark; the conversation and
+  evidence columns were still the original light theme, which read as a
+  jarring, unfinished mismatch next to it (and next to the reference,
+  which stays dark throughout). Converted every color token in `:root`
+  to a dark-appropriate value -- `--bg`/`--surface` to dark navy shades,
+  `--text`/`--text-muted`/`--text-faint` to light grays, the
+  success/danger/warning/neutral pairs to translucent chip backgrounds
+  with brighter foreground colors (the flat pastel backgrounds a light
+  theme uses read as muddy or invisible on dark), `--accent`/`--verify`
+  brightened for legibility on dark backgrounds. Because this project
+  already centralizes its palette in CSS custom properties, this single
+  token change cascades correctly through every component built from
+  them (`TraceView`, `CompoundDemo`'s form, badges, markdown rendering)
+  without needing to touch each one -- confirmed by checking both views
+  render correctly, not just the Workbench. One real bug the token swap
+  itself caused: `--bg` and `--brand-900` became the same color (both
+  part of one unified dark palette now), so `.turn-question`'s bubble
+  (background: `--brand-900`) became invisible against the now-identical
+  page background, leaving only white text floating with no visible
+  shape -- fixed by giving it its own `--surface-raised` token, a step
+  lighter than the page, instead of reusing brand-900.
+- **Controls moved to a new top bar.** Engine/Persona/Mode (previously
+  stacked in the left rail) now live in a new `ControlBar` component
+  rendered above the three-column workspace, alongside "New
+  conversation" -- modeled on the reference's top row of
+  Project/Source/Engine dropdowns plus action buttons. `ControlRail` is
+  now just the conversation history list. This is also deliberate
+  groundwork for the still-unscoped phase 2: freeing the rail entirely
+  is what would let it become a patient-data viewer later without
+  fighting for space against request-shaping controls.
+- **Cancel button repositioned.** Previously its own row between the
+  thread and the composer -- the user called this "不太专业" (not
+  polished) compared to the reference, which keeps send/cancel as one
+  action slot right next to the input. The composer's send-button slot
+  now swaps to a red "Cancel" button while a cancellable (non-sync) run
+  is in flight, instead of showing a separate row; a sync run (which
+  can't be cancelled at all) still shows the plain disabled "Working…"
+  send button, unchanged.
+
+**Consequence**: Verified with the full static suite (`tsc -b`, `eslint`,
+`vitest run` -- two tests needed updating for label changes: the
+Step-Functions-mode test already matched on `/Step Fns/`, unaffected,
+but the cancel-flow regression test's selector changed from "Cancel this
+run" to exact "Cancel" -- and `vite build`), then manually in the browser
+pane: submitted turns and confirmed badges/cards/evidence content all
+read correctly on the new dark surfaces including the previously-white
+rejected-draft code block; confirmed the control bar renders and wraps
+correctly down to mobile width; ran the full cancel flow (Step Functions
+run submitted, Cancel clicked in its new composer-slot position,
+confirmed the CANCELLED badge and composer reverting to "Ask"); checked
+the local-dev-only `CompoundDemo` view renders correctly on the same
+token set, not just the Workbench. Phase 2 (patient source-data viewer)
+remains explicitly out of scope for this entry, pending its own design
+pass.
+
+---
+
 ## 2026-10-02 (3) — Real multi-turn conversation memory, via client-side context injection, plus threaded history
 
 **Context**: The Workbench's "multi-turn" had been deliberately visual

@@ -112,14 +112,6 @@ export function ConversationPanel({
 
       {error && <p className="error composer-error">{error}</p>}
 
-      {pendingTurn && pendingTurn.mode !== "sync" && (
-        <div className="composer-cancel-row">
-          <button type="button" className="cancel-button" onClick={onCancel} disabled={cancelling}>
-            {cancelling ? "Cancelling…" : "Cancel this run"}
-          </button>
-        </div>
-      )}
-
       <div className="example-row">
         {EXAMPLE_QUESTIONS.map((q) => (
           <button type="button" key={q} className="example-chip" onClick={() => setQuestion(q)} disabled={disabled}>
@@ -138,12 +130,26 @@ export function ConversationPanel({
             onKeyDown={handleKeyDown}
             disabled={disabled}
           />
-          <button type="button" className="send-btn" onClick={onSubmit} disabled={disabled || !question.trim()}>
-            {disabled ? "Working…" : "Ask"}
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-              <path d="M5 12h14M13 5l7 7-7 7" />
-            </svg>
-          </button>
+          {/* A cancellable (non-sync) run in flight swaps the send button
+           * for Cancel in the same slot, rather than a separate row
+           * elsewhere in the thread -- found live: the user pointed to a
+           * reference console that keeps send/cancel as one action slot
+           * right next to the input, and called the old separate row
+           * "不太专业" (not polished). Sync runs can't be cancelled at all
+           * (see `cancelRun`'s own docstring), so they keep the plain
+           * disabled "Working…" send button instead. */}
+          {pendingTurn && pendingTurn.mode !== "sync" ? (
+            <button type="button" className="cancel-button" onClick={onCancel} disabled={cancelling}>
+              {cancelling ? "Cancelling…" : "Cancel"}
+            </button>
+          ) : (
+            <button type="button" className="send-btn" onClick={onSubmit} disabled={disabled || !question.trim()}>
+              {disabled ? "Working…" : "Ask"}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <path d="M5 12h14M13 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
     </section>

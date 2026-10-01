@@ -1,45 +1,51 @@
 :root {
-  color-scheme: light;
+  /* The whole app is one consistent dark theme now, not just the rail --
+     found live: a dark rail next to two stark-white panels (conversation,
+     evidence) read as glaringly high-contrast and unfinished, compared to
+     a reference console the user pointed to that stays dark throughout.
+     There's no light/dark toggle here; dark is simply the theme. */
+  color-scheme: dark;
 
   --font-sans:
     "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
     "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
-  --bg: #eef1f6;
-  --surface: #ffffff;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
+  --bg: #0b1220;
+  --surface: #141c2e;
+  --surface-raised: #1a2338;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
 
-  --text: #0f172a;
-  --text-muted: #566579;
-  --text-faint: #8a97a8;
+  --text: #e8edf5;
+  --text-muted: #93a1b8;
+  --text-faint: #67748c;
 
   --brand-900: #0b1220;
   --brand-800: #101a2e;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #eaf0fe;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-soft: rgba(59, 130, 246, 0.16);
 
   /* Distinct from --accent (the input/action color) on purpose: this
      project's real differentiator is the evidence trace, not the form,
      so its section headers, check marks, and citation markers get their
      own color identity instead of reusing the same blue as every
      button. */
-  --verify: #0f766e;
-  --verify-hover: #0b5c55;
-  --verify-soft: #ecfdf5;
+  --verify: #2dd4bf;
+  --verify-hover: #5eead4;
+  --verify-soft: rgba(45, 212, 191, 0.14);
 
-  --success-fg: #166534;
-  --success-bg: #dcfce7;
-  --danger-fg: #991b1b;
-  --danger-bg: #fee2e2;
-  --warning-fg: #854d0e;
-  --warning-bg: #fef9c3;
-  --neutral-fg: #374151;
-  --neutral-bg: #e5e7eb;
+  --success-fg: #4ade80;
+  --success-bg: rgba(74, 222, 128, 0.14);
+  --danger-fg: #f87171;
+  --danger-bg: rgba(248, 113, 113, 0.14);
+  --warning-fg: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.14);
+  --neutral-fg: #cbd5e1;
+  --neutral-bg: rgba(255, 255, 255, 0.08);
 
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 12px rgba(15, 23, 42, 0.04);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 12px rgba(0, 0, 0, 0.25);
   --radius: 10px;
 
   /* Caps the conversation column's readable content width -- without
@@ -201,7 +207,7 @@ main {
   gap: 4px;
   margin: 14px 20px 0;
   padding: 4px;
-  background: #e7ebf2;
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 9px;
   width: fit-content;
   max-width: calc(100% - 40px);
@@ -228,6 +234,42 @@ main {
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+/* -- Workbench: top control bar ---------------------------------------- */
+
+.control-bar {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 10px 20px;
+  background: var(--brand-800);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.control-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.control-bar-label {
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5b6884;
+  white-space: nowrap;
+}
+
+.control-bar-spacer {
+  flex: 1;
+}
+
+.control-bar-action {
+  width: auto;
 }
 
 /* -- Workbench: three-zone console (rail / conversation / evidence) -- */
@@ -378,11 +420,11 @@ main {
 }
 
 .segmented-option.active .engine-dot.v1 {
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
 }
 
 .segmented-option.active .engine-dot.v2 {
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.28);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.3);
 }
 
 .persona-icon,
@@ -540,7 +582,12 @@ main {
 
 .turn-question {
   align-self: flex-end;
-  background: var(--brand-900);
+  /* Not var(--brand-900) -- that's now identical to --bg (both part of
+     the single dark theme), so the bubble had no visible background at
+     all, just white text floating with no shape. --surface-raised is a
+     step lighter than the page, the same way the old light theme's
+     --brand-900 was a step darker than its --bg. */
+  background: var(--surface-raised);
   color: #fff;
   padding: 10px 14px;
   border-radius: 12px 12px 3px 12px;
@@ -666,12 +713,6 @@ main {
   padding: 0 22px;
 }
 
-.composer-cancel-row {
-  max-width: var(--conv-max-width);
-  margin: 0 auto;
-  padding: 0 22px 8px;
-}
-
 .example-row {
   max-width: var(--conv-max-width);
   margin: 0 auto;
@@ -694,7 +735,7 @@ main {
 }
 
 .example-chip:hover:not(:disabled) {
-  background: #d7f5ea;
+  background: rgba(45, 212, 191, 0.24);
 }
 
 .composer {
@@ -720,7 +761,8 @@ main {
   padding: 11px 14px;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  background: #fcfdfe;
+  background: var(--bg);
+  color: var(--text);
   max-height: 120px;
   line-height: 1.4;
 }
@@ -834,7 +876,7 @@ main {
   padding: 10px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 7px;
-  background: #fcfdfe;
+  background: var(--bg);
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
@@ -881,7 +923,7 @@ button:disabled {
 .error {
   color: var(--danger-fg);
   background: var(--danger-bg);
-  border: 1px solid #fecaca;
+  border: 1px solid rgba(248, 113, 113, 0.35);
   border-radius: 7px;
   padding: 10px 12px;
   font-size: 0.9em;
@@ -932,7 +974,7 @@ button:disabled {
 .example-question {
   align-self: stretch;
   background: var(--accent-soft);
-  color: #2843a8;
+  color: var(--accent-hover);
   font-size: 0.85em;
   font-weight: 500;
   text-transform: none;
@@ -942,7 +984,7 @@ button:disabled {
 }
 
 .example-question:hover:not(:disabled) {
-  background: #dde7fd;
+  background: rgba(59, 130, 246, 0.26);
 }
 
 /* Live tool-calling progress -- see CompoundDemo.tsx: one line appears
@@ -961,13 +1003,13 @@ button:disabled {
   font-size: 0.9em;
   padding: 7px 11px;
   border-radius: 6px;
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--surface-raised);
+  color: var(--text-muted);
 }
 
 .stage-log li.current {
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
   font-weight: 600;
 }
 
@@ -1008,7 +1050,7 @@ button:disabled {
 
 .markdown code {
   font-family: var(--font-mono);
-  background: #f1f5f9;
+  background: rgba(255, 255, 255, 0.08);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 0.88em;
@@ -1218,7 +1260,7 @@ details summary {
   position: relative;
   padding: 6px 0 10px 20px;
   border-left: 2px solid var(--border);
-  color: #334155;
+  color: var(--text-muted);
 }
 
 .tool-calls li:last-child {
@@ -1242,20 +1284,27 @@ details summary {
   font-weight: 600;
 }
 
+/* Lives in the composer's own send/cancel slot now, not a separate row
+   elsewhere in the thread -- matches `.send-btn`'s sizing so swapping
+   between the two doesn't shift the composer's layout. */
 .cancel-button {
-  background: #b91c1c;
-  margin: 8px 0;
+  background: #dc2626;
+  color: #fff;
+  height: 44px;
+  min-height: 44px;
+  align-self: auto;
+  flex-shrink: 0;
 }
 
 .cancel-button:hover:not(:disabled) {
-  background: #991b1b;
+  background: #ef4444;
 }
 
 .rejected-draft {
   margin-top: 14px;
   padding: 14px;
   background: var(--warning-bg);
-  border: 1px solid #fde68a;
+  border: 1px solid rgba(251, 191, 36, 0.35);
   border-radius: 8px;
 }
 
@@ -1275,10 +1324,11 @@ details summary {
   white-space: pre-wrap;
   font-family: var(--font-mono);
   font-size: 0.82em;
-  background: white;
+  background: var(--bg);
+  color: var(--text);
   padding: 10px;
   border-radius: 6px;
-  border: 1px solid #fde68a;
+  border: 1px solid rgba(251, 191, 36, 0.35);
   margin: 0;
 }
 
