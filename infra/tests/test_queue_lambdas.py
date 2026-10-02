@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lambda_src"))
 import enqueue_job  # noqa: E402
 import process_job  # noqa: E402
 import reconcile_dlq  # noqa: E402
+import run_reads  # noqa: E402
 import run_writes  # noqa: E402
 
 _TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
@@ -44,6 +45,8 @@ def aws_resources():
         enqueue_job._sqs_client = None
         process_job._s3_client = None
         run_writes._dynamodb_resource = None
+        run_reads._dynamodb_resource = None
+        run_reads._s3_client = None
         with patch.dict(os.environ, {"JOBS_QUEUE_URL": queue_url}):
             yield queue_url
 
@@ -99,7 +102,15 @@ def test_enqueue_sends_a_message_to_sqs(aws_resources):
     messages = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get("Messages", [])
     assert len(messages) == 1
     body = json.loads(messages[0]["Body"])
-    assert body == {"run_id": "job-2", "user_id": "user_demo_001", "question": "hello", "persona": "patient", "engine": "v1"}
+    assert body == {
+        "run_id": "job-2",
+        "user_id": "user_demo_001",
+        "question": "hello",
+        "persona": "patient",
+        "engine": "v1",
+        "owner_sub": _DEFAULT_CALLER_SUB,
+        "prior_run_ids": [],
+    }
 
 
 def test_enqueue_sends_the_supplied_persona_to_sqs(aws_resources):
@@ -134,6 +145,12 @@ def test_enqueue_sends_the_supplied_engine_to_sqs(aws_resources):
 
 def test_enqueue_invalid_engine_returns_400(aws_resources):
     event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "engine": "v3"})
+    result = enqueue_job.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+def test_enqueue_invalid_prior_run_ids_type_returns_400(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "prior_run_ids": "not-a-list"})
     result = enqueue_job.handler(event, None)
     assert result["statusCode"] == 400
 
@@ -225,12 +242,24 @@ def test_enqueue_invalid_json_body_returns_400(aws_resources):
 
 
 # -- process_job ------------------------------------------------------------
-def _sqs_event(run_id: str, user_id: str, question: str, persona: str | None = None, engine: str | None = None) -> dict:
+def _sqs_event(
+    run_id: str,
+    user_id: str,
+    question: str,
+    persona: str | None = None,
+    engine: str | None = None,
+    owner_sub: str | None = None,
+    prior_run_ids: list[str] | None = None,
+) -> dict:
     message = {"run_id": run_id, "user_id": user_id, "question": question}
     if persona is not None:
         message["persona"] = persona
     if engine is not None:
         message["engine"] = engine
+    if owner_sub is not None:
+        message["owner_sub"] = owner_sub
+    if prior_run_ids is not None:
+        message["prior_run_ids"] = prior_run_ids
     return {"Records": [{"body": json.dumps(message)}]}
 
 
@@ -277,6 +306,80 @@ def test_process_job_v2_calls_ask_compound_and_writes_stage_checkpoints(aws_reso
     assert item["status"] == "SUCCEEDED"
     assert item["safe"] is True
     assert "current_stage" in item and item["current_stage"]
+
+
+def test_process_job_prior_run_ids_reach_the_agent_as_prior_grounded_facts(aws_resources):
+    """`owner_sub`/`prior_run_ids` both already ride along in the SQS
+    message (enqueue_job.py puts them there) -- this checks process_job.py
+    actually reads them and re-fetches/re-authorizes via run_reads.py,
+    same cross-turn grounding purpose as the other two execution paths.
+    See tests/test_agent_prior_grounding.py for the actual grounding-check
+    behavior this enables."""
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-prior", "status": "QUEUED"})
+    table.put_item(Item={"run_id": "prior-1", "status": "SUCCEEDED", "owner_sub": _DEFAULT_CALLER_SUB})
+    fact = {"claim": "HDL-C = 47 mg/dL", "source_type": "bloodwork", "source_ref": "x", "numeric_values": [47.0], "unit": "mg/dL"}
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=os.environ["EVIDENCE_BUCKET_NAME"],
+        Key="prior-1.json",
+        Body=json.dumps({"grounded_facts": [fact]}).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    captured = {}
+    original_ask = process_job._agent.ask
+
+    def _capturing_ask(**kwargs):
+        captured.update(kwargs)
+        return original_ask(**kwargs)
+
+    with patch.object(process_job._agent, "ask", side_effect=_capturing_ask):
+        process_job.handler(
+            _sqs_event(
+                "job-prior",
+                "user_demo_001",
+                "How is my LDL trending?",
+                owner_sub=_DEFAULT_CALLER_SUB,
+                prior_run_ids=["prior-1"],
+            ),
+            None,
+        )
+
+    assert len(captured["prior_grounded_facts"]) == 1
+    assert captured["prior_grounded_facts"][0].claim == fact["claim"]
+
+
+def test_process_job_prior_run_id_owned_by_a_different_caller_contributes_nothing(aws_resources):
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(_TABLE_NAME)
+    table.put_item(Item={"run_id": "job-prior-2", "status": "QUEUED"})
+    table.put_item(Item={"run_id": "prior-1", "status": "SUCCEEDED", "owner_sub": "a-different-owner"})
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=os.environ["EVIDENCE_BUCKET_NAME"],
+        Key="prior-1.json",
+        Body=json.dumps({"grounded_facts": [{"claim": "secret", "source_type": "bloodwork", "source_ref": "x"}]}).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    captured = {}
+    original_ask = process_job._agent.ask
+
+    def _capturing_ask(**kwargs):
+        captured.update(kwargs)
+        return original_ask(**kwargs)
+
+    with patch.object(process_job._agent, "ask", side_effect=_capturing_ask):
+        process_job.handler(
+            _sqs_event(
+                "job-prior-2",
+                "user_demo_001",
+                "How is my LDL trending?",
+                owner_sub=_DEFAULT_CALLER_SUB,
+                prior_run_ids=["prior-1"],
+            ),
+            None,
+        )
+
+    assert captured["prior_grounded_facts"] == []
 
 
 def test_process_job_uses_clinician_persona_from_the_sqs_message(aws_resources):

@@ -56,6 +56,10 @@ export interface AgentTrace {
    * "answered_after_soft_fallback": only numeric_grounding failed --
    * worth reviewing whether the check itself needs another fix. */
   disposition: "answered" | "answered_after_hard_fallback" | "answered_after_soft_fallback";
+  // Ground-truth wall-clock time for the whole ask()/ask_compound() call,
+  // in milliseconds -- independent of summing individual ToolCall
+  // duration_ms entries. Undefined for any trace predating this field.
+  total_duration_ms?: number;
 }
 
 export interface AskResponse {
@@ -141,10 +145,22 @@ export type Persona = "patient" | "clinician";
  * *real*, deployed `ask_compound` path (see `adapter.py`), not the local
  * dev server `CompoundDemo.tsx` talks to -- this is the production
  * verification path for V2. */
-export async function askQuestion(userId: string, question: string, engine?: Engine, persona?: Persona): Promise<AskResponse> {
+export async function askQuestion(
+  userId: string,
+  question: string,
+  engine?: Engine,
+  persona?: Persona,
+  priorRunIds?: string[],
+): Promise<AskResponse> {
   return (await authedFetch("/ask", {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, question, ...(engine ? { engine } : {}), ...(persona ? { persona } : {}) }),
+    body: JSON.stringify({
+      user_id: userId,
+      question,
+      ...(engine ? { engine } : {}),
+      ...(persona ? { persona } : {}),
+      ...(priorRunIds && priorRunIds.length > 0 ? { prior_run_ids: priorRunIds } : {}),
+    }),
   })) as AskResponse;
 }
 
@@ -161,6 +177,7 @@ export async function startRun(
   runId?: string,
   persona?: Persona,
   engine?: Engine,
+  priorRunIds?: string[],
 ): Promise<{ run_id: string; status: string }> {
   return (await authedFetch("/runs", {
     method: "POST",
@@ -170,6 +187,7 @@ export async function startRun(
       ...(runId ? { run_id: runId } : {}),
       ...(persona ? { persona } : {}),
       ...(engine ? { engine } : {}),
+      ...(priorRunIds && priorRunIds.length > 0 ? { prior_run_ids: priorRunIds } : {}),
     }),
   })) as { run_id: string; status: string };
 }
@@ -185,6 +203,7 @@ export async function enqueueJob(
   runId?: string,
   persona?: Persona,
   engine?: Engine,
+  priorRunIds?: string[],
 ): Promise<{ run_id: string; status: string }> {
   return (await authedFetch("/jobs", {
     method: "POST",
@@ -194,6 +213,7 @@ export async function enqueueJob(
       ...(runId ? { run_id: runId } : {}),
       ...(persona ? { persona } : {}),
       ...(engine ? { engine } : {}),
+      ...(priorRunIds && priorRunIds.length > 0 ? { prior_run_ids: priorRunIds } : {}),
     }),
   })) as { run_id: string; status: string };
 }

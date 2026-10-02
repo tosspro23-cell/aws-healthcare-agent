@@ -98,6 +98,13 @@ def handler(event: dict, context: object) -> dict:
     if engine not in ("v1", "v2"):
         return _json_response(400, {"error": "'engine', if supplied, must be 'v1' or 'v2'."})
 
+    # See adapter.py's identical validation/docstring -- threaded into the
+    # SQS message below so process_job.py can re-fetch and re-authorize
+    # each one itself (see run_reads.py).
+    prior_run_ids = body.get("prior_run_ids", [])
+    if not isinstance(prior_run_ids, list) or not all(isinstance(x, str) for x in prior_run_ids):
+        return _json_response(400, {"error": "'prior_run_ids', if supplied, must be a list of strings."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -129,7 +136,17 @@ def handler(event: dict, context: object) -> dict:
     try:
         _sqs().send_message(
             QueueUrl=_QUEUE_URL,
-            MessageBody=json.dumps({"run_id": run_id, "user_id": user_id, "question": question, "persona": persona, "engine": engine}),
+            MessageBody=json.dumps(
+                {
+                    "run_id": run_id,
+                    "user_id": user_id,
+                    "question": question,
+                    "persona": persona,
+                    "engine": engine,
+                    "owner_sub": owner_sub,
+                    "prior_run_ids": prior_run_ids,
+                }
+            ),
         )
     except Exception as exc:  # noqa: BLE001 -- compensating write below, then report failure
         # The DynamoDB record above and this send are two separate calls,

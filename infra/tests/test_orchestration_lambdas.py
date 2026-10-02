@@ -194,6 +194,92 @@ def test_agent_task_propagates_exceptions_for_unknown_user():
         agent_task.handler({"run_id": "r1", "user_id": "nobody", "question": "hi"}, None)
 
 
+class _CapturingAgent:
+    """Same shape as test_adapter.py's own fake -- captures the kwargs
+    this handler passes through to HealthAgent.ask/ask_compound, without
+    a real narrator/retriever call."""
+
+    def __init__(self):
+        self.last_kwargs: dict | None = None
+
+    def _respond(self, **kwargs):
+        from care_agent.models import AgentResponse, AgentTrace
+
+        self.last_kwargs = kwargs
+        trace = AgentTrace(
+            question_id=kwargs.get("question_id"),
+            user_id=kwargs["user_id"],
+            intent="trend_check",
+            narrator_backend="mock",
+            retriever_backend="bm25",
+        )
+        return AgentResponse(answer="ok", trace=trace, safe=True)
+
+    def ask(self, **kwargs):
+        return self._respond(**kwargs)
+
+    def ask_compound(self, **kwargs):
+        return self._respond(**kwargs)
+
+
+def test_agent_task_prior_run_ids_reach_the_agent_as_prior_grounded_facts(runs_table):
+    """`owner_sub`/`prior_run_ids` both already ride along in the Step
+    Functions execution input (start_run.py puts them there) -- this
+    checks agent_task.py actually reads them and re-fetches/re-authorizes
+    via run_reads.py, same cross-turn grounding purpose as adapter.py's
+    sync path. See tests/test_agent_prior_grounding.py for the actual
+    grounding-check behavior this enables."""
+    fact = {"claim": "HDL-C = 47 mg/dL", "source_type": "bloodwork", "source_ref": "x", "numeric_values": [47.0], "unit": "mg/dL"}
+    runs_table.put_item(Item={"run_id": "prior-1", "status": "SUCCEEDED", "owner_sub": _DEFAULT_CALLER_SUB})
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=os.environ["EVIDENCE_BUCKET_NAME"],
+        Key="prior-1.json",
+        Body=json.dumps({"grounded_facts": [fact]}).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    fake_agent = _CapturingAgent()
+    with patch.object(agent_task, "_agent", fake_agent):
+        agent_task.handler(
+            {
+                "run_id": "r1",
+                "user_id": "user_demo_001",
+                "question": "How is my LDL trending?",
+                "owner_sub": _DEFAULT_CALLER_SUB,
+                "prior_run_ids": ["prior-1"],
+            },
+            None,
+        )
+
+    assert len(fake_agent.last_kwargs["prior_grounded_facts"]) == 1
+    assert fake_agent.last_kwargs["prior_grounded_facts"][0].claim == fact["claim"]
+
+
+def test_agent_task_prior_run_id_owned_by_a_different_caller_contributes_nothing(runs_table):
+    runs_table.put_item(Item={"run_id": "prior-1", "status": "SUCCEEDED", "owner_sub": _OTHER_CALLER_SUB})
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=os.environ["EVIDENCE_BUCKET_NAME"],
+        Key="prior-1.json",
+        Body=json.dumps({"grounded_facts": [{"claim": "secret", "source_type": "bloodwork", "source_ref": "x"}]}).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+    fake_agent = _CapturingAgent()
+    with patch.object(agent_task, "_agent", fake_agent):
+        agent_task.handler(
+            {
+                "run_id": "r1",
+                "user_id": "user_demo_001",
+                "question": "How is my LDL trending?",
+                "owner_sub": _DEFAULT_CALLER_SUB,
+                "prior_run_ids": ["prior-1"],
+            },
+            None,
+        )
+
+    assert fake_agent.last_kwargs["prior_grounded_facts"] == []
+
+
 # -- record_result --------------------------------------------------------
 def test_record_result_finalizes_success(runs_table):
     runs_table.put_item(Item={"run_id": "r1", "status": "RUNNING"})
@@ -278,6 +364,35 @@ def test_start_run_threads_persona_into_the_execution_input(state_machine_arn):
     assert execution_input["persona"] == "clinician"
 
 
+def test_start_run_threads_prior_run_ids_into_the_execution_input(state_machine_arn):
+    """Same purpose as owner_sub/persona above -- agent_task.py reads this
+    straight from the execution input to re-fetch/re-authorize cross-turn
+    grounding facts (see run_reads.py)."""
+    import json
+
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(
+            body=json.dumps(
+                {"user_id": "user_demo_001", "question": "hello", "run_id": "follow-up-run", "prior_run_ids": ["earlier-run"]}
+            )
+        )
+        start_run.handler(event, None)
+
+    sfn = boto3.client("stepfunctions", region_name="us-east-1")
+    execution_arn = f"{state_machine_arn.replace(':stateMachine:', ':execution:')}:follow-up-run"
+    execution_input = json.loads(sfn.describe_execution(executionArn=execution_arn)["input"])
+    assert execution_input["prior_run_ids"] == ["earlier-run"]
+
+
+def test_start_run_invalid_prior_run_ids_type_returns_400(state_machine_arn):
+    with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
+        start_run._sfn_client = None
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "prior_run_ids": "not-a-list"}')
+        result = start_run.handler(event, None)
+    assert result["statusCode"] == 400
+
+
 def test_start_run_invalid_persona_returns_400(state_machine_arn):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
@@ -359,6 +474,7 @@ def test_start_run_handles_execution_already_exists_with_matching_input_as_idemp
             "owner_sub": _DEFAULT_CALLER_SUB,
             "persona": "patient",
             "engine": "v1",
+            "prior_run_ids": [],
         }
     )
     fake_client = MagicMock()

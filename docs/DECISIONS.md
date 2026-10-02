@@ -8,6 +8,96 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-10-03 (2) — Cross-turn grounding for conversation memory, and full end-to-end latency in the V2 trace
+
+**Context**: Live production testing (Step Functions mode, V2) surfaced a
+real false-fallback in the just-shipped orchestration-trace view: asking
+a follow-up question after an earlier turn had already discussed
+triglycerides, the narrator's draft correctly recalled "the earlier
+triglyceride result (188 mg/dL)" -- a real, previously-grounded number --
+but this turn's own tool calls never looked up triglycerides, so
+`verify_numeric_grounding` (which only ever sees the *current* turn's
+`grounded_facts`) flagged it as unverified and triggered the fallback.
+Working exactly as designed (the conversation-memory feature's own
+docstring already called this out as "a mitigation, not a guarantee"),
+but worth closing now that it was seen live. Separately, inspecting that
+same trace showed the displayed steps' durations didn't add up to the
+real ~3-4s wall-clock time: the narrator's own answer-composition call (a
+second, separate Bedrock round-trip) wasn't timed or even traced at all.
+
+**Decision**:
+
+- **Cross-turn grounding, re-verified server-side by `run_id`.** The
+  server re-fetches a referenced prior turn's `grounded_facts` itself
+  (new `infra/lambda_src/run_reads.py`, mirroring `run_writes.py`'s
+  pattern and `get_run.py`'s own ownership check) rather than trusting a
+  client-supplied fact list directly -- deliberately the more rigorous of
+  two options considered, chosen with the user because this project's
+  whole "every claim traces to a source the server itself verified"
+  stance should extend to this input channel too, not just to the
+  narrator's own output. Covers all three execution paths (`/ask` sync,
+  `/runs` Step Functions, `/jobs` SQS) -- the user's own live repro was
+  actually on the Step Functions path, so sync-only would have left the
+  exact bug unfixed. `care_agent.agent.ask()`/`ask_compound()` gained an
+  optional `prior_grounded_facts: list[GroundedFact]` parameter, merged
+  into the grounding check only (`_narrate_and_verify`) -- never into
+  `trace.grounded_facts` itself, so the Evidence panel keeps showing only
+  what this turn's own tools actually gathered, not older-turn facts
+  re-displayed as if new. The Workbench's own `buildContextualQuestion`
+  (the client-side context-folding mechanism) now also returns the same
+  `relevant` turns' `run_id`s it already folds into the question text, so
+  the grounding check covers exactly the turns the text context
+  references -- no separate window to keep in sync.
+- **Full end-to-end latency.** `AgentTrace.total_duration_ms` (ground
+  truth, set once in `_narrate_and_verify` right before every return) plus
+  two new timed trace entries per answer -- `compose_answer` (the
+  narrator's own Bedrock call, previously invisible) and
+  `verify_safety_checks` -- with `compose_fallback_answer`/
+  `verify_safety_checks_fallback` variants when the fallback path fires.
+  `TraceView.tsx`'s round-parser generalized from a single special-cased
+  `retrieval` field to `{ setup, rounds, trailing }`: `setup`
+  (classify_intent/get_user_profile/get_bloodwork) renders above Round 1,
+  `trailing` (retrieve_knowledge, compose_answer, verify_safety_checks,
+  and their fallback variants) below it, each via a small label lookup --
+  and a `Total: Xs` chip sits next to the section header, sourced from
+  `total_duration_ms` rather than summed from the parts.
+
+**Alternatives considered**: For cross-turn grounding, the simpler
+alternative -- the frontend just sends its already-in-memory
+`grounded_facts` directly, no server-side re-fetch at all -- was
+explicitly discussed and rejected: real risk to a self-service,
+single-user Q&A tool is low (the user already sees their own raw data in
+the Patient Data panel), but it would mean the server trusts a client's
+own unverified claim of "this was already grounded," undermining the
+audit story this project exists to demonstrate. The server-re-fetch
+design costs more surface (a new shared Lambda helper, `owner_sub`/
+`prior_run_ids` threaded through two async paths that didn't have reason
+to carry them before) but keeps that guarantee intact.
+
+**Consequence**: Backend verified from clean CI-matching venvs --
+`care_agent`: `ruff`/`ruff format`/`mypy` clean, full suite (`pytest
+--cov=care_agent --cov-fail-under=85`) at 277 passed, 88% coverage,
+including new tests reproducing the exact live false-fallback and
+confirming `prior_grounded_facts` fixes it for both `ask()` and
+`ask_compound()`. `infra`: `ruff check . --line-length=140`/`mypy`
+clean, full suite at 203 passed (up from 186), including a new
+`test_run_reads.py` (happy path, cross-owner rejection, missing/
+not-yet-evidenced run, the defensive run-id cap) and plumbing tests for
+all three execution paths' handlers. Frontend: `tsc -b`/`eslint`/`vitest
+run` (23 passed)/`vite build` all clean. Manually verified in the browser
+pane: submitted a real V2 question through the actual compiled UI with
+network calls intercepted (never the real Cognito token, consistent with
+this session's standing rule) and returning realistic trace payloads --
+confirmed the Setup/Round/Trailing sections and the `Total: 3.8s` chip
+all render correctly and the displayed step durations now visibly sum
+close to the real total; confirmed a follow-up question's actual network
+request carries `prior_run_ids: ["run-1"]` alongside the folded context
+text, proving the frontend wiring end-to-end without needing a live
+backend. Live production re-verification of the original false-fallback
+scenario itself is deferred to the standard post-deploy check.
+
+---
+
 ## 2026-10-03 — A cross-marker comparison tool, a V2 orchestration-trace view, and two header cleanups
 
 **Context**: Four follow-ups from the same conversation, all building on

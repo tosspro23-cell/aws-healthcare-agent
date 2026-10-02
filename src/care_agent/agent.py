@@ -18,6 +18,7 @@ Pipeline (also see ``docs/ARCHITECTURE.md``):
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -192,7 +193,15 @@ class HealthAgent:
                 )
             )
 
-    def ask(self, user_id: str, question_text: str, question_id: str | None = None, persona: str = "patient") -> AgentResponse:
+    def ask(
+        self,
+        user_id: str,
+        question_text: str,
+        question_id: str | None = None,
+        persona: str = "patient",
+        prior_grounded_facts: list[GroundedFact] | None = None,
+    ) -> AgentResponse:
+        start_time = time.monotonic()
         trace = AgentTrace(
             question_id=question_id,
             user_id=user_id,
@@ -399,7 +408,9 @@ class HealthAgent:
         trace.grounded_facts = brief.grounded_facts
         trace.limitations = brief.limitations
 
-        return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates)
+        return self._narrate_and_verify(
+            brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts
+        )
 
     def _narrate_and_verify(
         self,
@@ -408,6 +419,8 @@ class HealthAgent:
         profile,
         trace: AgentTrace,
         allowed_dates: set[str],
+        start_time: float,
+        prior_grounded_facts: list[GroundedFact] | None = None,
     ) -> AgentResponse:
         """Narrate a fully-built `Brief`, verify it, and fall back to the
         mock narrator on any check failure -- the one safety gate every
@@ -421,9 +434,46 @@ class HealthAgent:
         not a reimplementation of it. `ask()`'s own behavior is unchanged
         by this extraction: verified by the full existing test suite
         passing identically before and after.
+
+        `prior_grounded_facts` -- already independently re-verified by the
+        caller (the Lambda handler re-fetches them by `run_id`, checking
+        ownership, never trusting a client's own claim) -- widens *only*
+        the grounding check below, never `trace.grounded_facts` itself:
+        the Evidence panel must keep showing only what *this* turn's own
+        tool calls actually gathered, not an older turn's facts repeated
+        as if they were newly computed. This is what lets a genuinely
+        already-verified number from earlier in the same conversation
+        survive this turn's `numeric_grounding` check instead of being
+        treated as an invented one -- see docs/DECISIONS.md.
+
+        `start_time` is this call's entry point's own `time.monotonic()`
+        timestamp -- this is the single tail-call every return path of
+        `ask()`/`ask_compound()` goes through, so it's the one place that
+        can set `trace.total_duration_ms` for all of them.
         """
+        facts_for_grounding = brief.grounded_facts + list(prior_grounded_facts or ())
+
+        _compose_start = time.monotonic()
         answer_text = self.narrator.compose(brief, question_text, profile)
-        report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
+        trace.tool_calls.append(
+            ToolCall(
+                name="compose_answer",
+                args={"narrator_backend": self.narrator.backend_name},
+                result_summary=f"{len(answer_text)} chars",
+                duration_ms=round((time.monotonic() - _compose_start) * 1000, 1),
+            )
+        )
+        _verify_start = time.monotonic()
+        report = run_safety_checks(answer_text, facts_for_grounding, allowed_dates)
+        trace.tool_calls.append(
+            ToolCall(
+                name="verify_safety_checks",
+                args={},
+                result_summary="passed" if report.passed else f"failed: {'; '.join(c.name for c in report.failed_checks)}",
+                ok=report.passed,
+                duration_ms=round((time.monotonic() - _verify_start) * 1000, 1),
+            )
+        )
 
         used_fallback = False
         # Set from `report` (the *rejected* draft's report) below, before
@@ -446,8 +496,27 @@ class HealthAgent:
             disposition = "answered_after_hard_fallback" if report.has_hard_failure else "answered_after_soft_fallback"
             rejected_draft = answer_text
             rejected_report = report
+            _fallback_compose_start = time.monotonic()
             answer_text = self._mock_narrator.compose(brief, question_text, profile)
-            report = run_safety_checks(answer_text, brief.grounded_facts, allowed_dates)
+            trace.tool_calls.append(
+                ToolCall(
+                    name="compose_fallback_answer",
+                    args={"narrator_backend": self._mock_narrator.backend_name},
+                    result_summary=f"{len(answer_text)} chars",
+                    duration_ms=round((time.monotonic() - _fallback_compose_start) * 1000, 1),
+                )
+            )
+            _fallback_verify_start = time.monotonic()
+            report = run_safety_checks(answer_text, facts_for_grounding, allowed_dates)
+            trace.tool_calls.append(
+                ToolCall(
+                    name="verify_safety_checks_fallback",
+                    args={},
+                    result_summary="passed" if report.passed else f"failed: {'; '.join(c.name for c in report.failed_checks)}",
+                    ok=report.passed,
+                    duration_ms=round((time.monotonic() - _fallback_verify_start) * 1000, 1),
+                )
+            )
             used_fallback = True
             # trace.narrator_backend was set above to the *selected*
             # backend (e.g. "bedrock") before we knew a fallback would
@@ -475,6 +544,7 @@ class HealthAgent:
                 )
             )
 
+        trace.total_duration_ms = round((time.monotonic() - start_time) * 1000, 1)
         return AgentResponse(answer=answer_text, trace=trace, safe=report.passed)
 
     def ask_compound(
@@ -485,6 +555,7 @@ class HealthAgent:
         question_id: str | None = None,
         persona: str = "patient",
         on_stage: Callable[[str], None] | None = None,
+        prior_grounded_facts: list[GroundedFact] | None = None,
     ) -> AgentResponse:
         """V2: answer a compound, multi-hop question via tool-calling
         (`orchestrator.run_compound_reasoning`) instead of `ask()`'s fixed
@@ -504,6 +575,7 @@ class HealthAgent:
         goes through (see this project's own standing principle: emergency
         detection is never something an LLM's judgment call decides).
         """
+        start_time = time.monotonic()
         trace = AgentTrace(
             question_id=question_id,
             user_id=user_id,
@@ -517,25 +589,39 @@ class HealthAgent:
                 on_stage(message)
 
         stage("Checking for emergency phrasing...")
+        _classify_start = time.monotonic()
         intent_result = classify(question_text)
         trace.tool_calls.append(
-            ToolCall(name="classify_intent", args={"question_text": question_text}, result_summary=intent_result.intent)
+            ToolCall(
+                name="classify_intent",
+                args={"question_text": question_text},
+                result_summary=intent_result.intent,
+                duration_ms=round((time.monotonic() - _classify_start) * 1000, 1),
+            )
         )
 
         stage("Loading patient data...")
+        _profile_start = time.monotonic()
         profile = self.data_store.get_user_profile(user_id)
-        bloodwork = self.data_store.get_bloodwork(user_id)
-        questionnaire = self.data_store.get_questionnaire_context(user_id)
         trace.tool_calls.append(
-            ToolCall(name="get_user_profile", args={"user_id": user_id}, result_summary=f"display_name={profile.display_name!r}")
+            ToolCall(
+                name="get_user_profile",
+                args={"user_id": user_id},
+                result_summary=f"display_name={profile.display_name!r}",
+                duration_ms=round((time.monotonic() - _profile_start) * 1000, 1),
+            )
         )
+        _bloodwork_start = time.monotonic()
+        bloodwork = self.data_store.get_bloodwork(user_id)
         trace.tool_calls.append(
             ToolCall(
                 name="get_bloodwork",
                 args={"user_id": user_id},
                 result_summary=f"latest_panel={'present' if bloodwork.latest_panel else 'missing'}",
+                duration_ms=round((time.monotonic() - _bloodwork_start) * 1000, 1),
             )
         )
+        questionnaire = self.data_store.get_questionnaire_context(user_id)
 
         allowed_dates: set[str] = {panel.measurement_date for panel in bloodwork.all_panels_newest_first()}
 
@@ -548,7 +634,9 @@ class HealthAgent:
             trace.limitations = brief.limitations
             trace.retrieved_chunks = brief.retrieved_chunks
             stage("Emergency phrasing detected -- skipping tool planning.")
-            return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates)
+            return self._narrate_and_verify(
+                brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts
+            )
 
         ctx = ToolExecutionContext(
             profile=profile, bloodwork=bloodwork, questionnaire=questionnaire, catalog=self.catalog, retriever=self.retriever
@@ -580,4 +668,6 @@ class HealthAgent:
         # only ever fire simultaneously with the final result, not while
         # anything is actually still in progress).
         stage("Composing the answer...")
-        return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates)
+        return self._narrate_and_verify(
+            brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts
+        )

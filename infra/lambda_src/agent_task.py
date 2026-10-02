@@ -41,9 +41,12 @@ import json
 import os
 
 import boto3
+import run_reads
 import run_writes
 from agent_runtime import agent as _agent
 from agent_runtime import tool_planner as _tool_planner
+
+from care_agent.models import grounded_fact_from_dict
 
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
 
@@ -77,6 +80,14 @@ def handler(event: dict, context: object) -> dict:
     # any *new* execution's input has them.
     persona = event.get("persona", "patient")
     engine = event.get("engine", "v1")
+    # `owner_sub` is already in the state machine's own input (start_run.py
+    # puts it there); `prior_run_ids` likewise, for the same cross-turn
+    # grounding purpose as adapter.py's sync path -- see run_reads.py.
+    owner_sub = event.get("owner_sub")
+    prior_run_ids = event.get("prior_run_ids", [])
+    prior_grounded_facts = [
+        grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)
+    ]
 
     if engine == "v2":
         response = _agent.ask_compound(
@@ -86,9 +97,16 @@ def handler(event: dict, context: object) -> dict:
             question_id=run_id,
             persona=persona,
             on_stage=_make_stage_callback(run_id),
+            prior_grounded_facts=prior_grounded_facts,
         )
     else:
-        response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
+        response = _agent.ask(
+            user_id=user_id,
+            question_text=question,
+            question_id=run_id,
+            persona=persona,
+            prior_grounded_facts=prior_grounded_facts,
+        )
     trace_dict = response.trace.as_dict()
 
     if _EVIDENCE_BUCKET_NAME:

@@ -399,6 +399,17 @@ def test_unsafe_llm_output_triggers_fallback_to_mock(data_dir):
     # Diagnosis + dosing language are hard-severity violations -- this
     # must classify as a hard fallback, never a soft one.
     assert response.trace.disposition == "answered_after_hard_fallback"
+    # The fallback path composes+verifies *twice* (the rejected draft, then
+    # the mock narrator's replacement) -- both pairs of steps must be
+    # individually timed, not just the overall total.
+    tool_call_names = [c.name for c in response.trace.tool_calls]
+    for name in ("compose_answer", "verify_safety_checks", "compose_fallback_answer", "verify_safety_checks_fallback"):
+        assert name in tool_call_names
+    for call in response.trace.tool_calls:
+        if call.name in ("compose_answer", "verify_safety_checks", "compose_fallback_answer", "verify_safety_checks_fallback"):
+            assert call.duration_ms is not None
+    assert response.trace.total_duration_ms is not None
+    assert response.trace.total_duration_ms >= 0
 
 
 class _UngroundedFakeNarrator:
@@ -436,3 +447,10 @@ def test_safe_llm_output_has_answered_disposition_with_no_fallback(data_dir):
     assert response.safe is True
     assert response.trace.disposition == "answered"
     assert not [c for c in response.trace.safety_checks if c.name == "narrator_fallback"]
+    tool_call_names = [c.name for c in response.trace.tool_calls]
+    assert "compose_answer" in tool_call_names
+    assert "verify_safety_checks" in tool_call_names
+    # No fallback fired -- the *_fallback steps must not appear at all.
+    assert "compose_fallback_answer" not in tool_call_names
+    assert "verify_safety_checks_fallback" not in tool_call_names
+    assert response.trace.total_duration_ms is not None

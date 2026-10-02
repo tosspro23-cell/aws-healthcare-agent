@@ -379,3 +379,121 @@ def test_clinician_persona_changes_v1_disclaimer(aws_resources):
     result = adapter.handler(event, None)
     payload = json.loads(result["body"])
     assert "decision-support" in payload["answer"].lower()
+
+
+# -- prior_run_ids (cross-turn grounding) --------------------------------
+#
+# These verify the *plumbing* (does a prior_run_id get re-fetched,
+# re-authorized, and reach `HealthAgent.ask`/`ask_compound` as
+# `prior_grounded_facts`) -- the grounding-check behavior itself (does a
+# previously-grounded number survive numeric_grounding) is already
+# covered at the care_agent layer, in
+# tests/test_agent_prior_grounding.py.
+
+
+def test_invalid_prior_run_ids_type_returns_400(aws_resources):
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "hello", "prior_run_ids": "not-a-list"})
+    result = adapter.handler(event, None)
+    assert result["statusCode"] == 400
+
+
+class _CapturingAgent:
+    """Captures the kwargs `adapter.py` actually passes through to
+    `HealthAgent.ask`/`ask_compound`, without making a real narrator/
+    retriever/Bedrock call -- this test only cares about the Lambda's own
+    plumbing, not about producing a realistic answer."""
+
+    def __init__(self):
+        self.last_kwargs: dict | None = None
+
+    def _respond(self, **kwargs):
+        from care_agent.models import AgentResponse, AgentTrace
+
+        self.last_kwargs = kwargs
+        trace = AgentTrace(
+            question_id=kwargs.get("question_id"),
+            user_id=kwargs["user_id"],
+            intent="trend_check",
+            narrator_backend="mock",
+            retriever_backend="bm25",
+        )
+        return AgentResponse(answer="ok", trace=trace, safe=True)
+
+    def ask(self, **kwargs):
+        return self._respond(**kwargs)
+
+    def ask_compound(self, **kwargs):
+        return self._respond(**kwargs)
+
+
+def _seed_prior_run(table, run_id: str, owner_sub: str, grounded_facts: list[dict]) -> None:
+    table.put_item(Item={"run_id": run_id, "status": "SUCCEEDED", "owner_sub": owner_sub, "execution_type": "SYNC"})
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=os.environ["EVIDENCE_BUCKET_NAME"],
+        Key=f"{run_id}.json",
+        Body=json.dumps({"grounded_facts": grounded_facts}).encode("utf-8"),
+        ContentType="application/json",
+    )
+
+
+def test_prior_run_ids_reaches_the_agent_as_prior_grounded_facts(aws_resources):
+    from unittest.mock import patch
+
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(os.environ["RUNS_TABLE_NAME"])
+    fact = {
+        "claim": "HDL-C = 47 mg/dL (adequate) on 2026-05-06",
+        "source_type": "bloodwork",
+        "source_ref": "panel_2026_05_06:hdl_c_mg_dl",
+        "numeric_values": [47.0],
+        "unit": "mg/dL",
+        "display_name": "HDL-C",
+        "display_name_aliases": [],
+    }
+    _seed_prior_run(table, "prior-1", _DEFAULT_CALLER_SUB, [fact])
+
+    fake_agent = _CapturingAgent()
+    event = _api_gateway_event({"user_id": "user_demo_001", "question": "How is my LDL trending?", "prior_run_ids": ["prior-1"]})
+    with patch.object(adapter, "_agent", fake_agent):
+        result = adapter.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert len(fake_agent.last_kwargs["prior_grounded_facts"]) == 1
+    rebuilt = fake_agent.last_kwargs["prior_grounded_facts"][0]
+    assert rebuilt.claim == fact["claim"]
+    assert rebuilt.numeric_values == (47.0,)
+
+
+def test_prior_run_id_owned_by_a_different_caller_contributes_nothing(aws_resources):
+    """Regression guard for the actual security property this feature
+    rests on: a prior_run_id doesn't belong to the caller, so it must be
+    silently ignored, not read -- mirrors get_run.py's own
+    owner_sub-mismatch behavior (see test_orchestration_lambdas.py's
+    `test_get_run_owned_by_another_caller_returns_404_not_403`)."""
+    from unittest.mock import patch
+
+    table = boto3.resource("dynamodb", region_name="us-east-1").Table(os.environ["RUNS_TABLE_NAME"])
+    fact = {"claim": "secret", "source_type": "bloodwork", "source_ref": "x", "numeric_values": [999.0], "unit": "mg/dL"}
+    _seed_prior_run(table, "someone-elses-run", "a-different-owner-sub", [fact])
+
+    fake_agent = _CapturingAgent()
+    event = _api_gateway_event(
+        {"user_id": "user_demo_001", "question": "How is my LDL trending?", "prior_run_ids": ["someone-elses-run"]}
+    )
+    with patch.object(adapter, "_agent", fake_agent):
+        adapter.handler(event, None)
+
+    assert fake_agent.last_kwargs["prior_grounded_facts"] == []
+
+
+def test_unknown_prior_run_id_is_skipped_not_an_error(aws_resources):
+    from unittest.mock import patch
+
+    fake_agent = _CapturingAgent()
+    event = _api_gateway_event(
+        {"user_id": "user_demo_001", "question": "How is my LDL trending?", "prior_run_ids": ["never-existed"]}
+    )
+    with patch.object(adapter, "_agent", fake_agent):
+        result = adapter.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert fake_agent.last_kwargs["prior_grounded_facts"] == []

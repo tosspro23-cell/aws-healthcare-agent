@@ -29,12 +29,14 @@ from typing import Any
 
 import auth_context
 import boto3
+import run_reads
 from agent_runtime import agent as _agent
 from agent_runtime import tool_planner as _tool_planner
 from botocore.exceptions import ClientError
 from run_id_validation import is_valid_run_id
 
 from care_agent.data_store import UnknownUserError
+from care_agent.models import grounded_fact_from_dict
 
 _RUNS_TABLE_NAME = os.environ.get("RUNS_TABLE_NAME")
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
@@ -101,6 +103,15 @@ def handler(event: dict, context: object) -> dict:
     if persona not in ("patient", "clinician"):
         return _json_response(400, {"error": "'persona', if supplied, must be 'patient' or 'clinician'."})
 
+    # Optional: the Workbench's recent-turn window for this conversation,
+    # so a follow-up's narrator can correctly recall an already-verified
+    # number from one of these without numeric_grounding treating it as
+    # invented -- see run_reads.py. Each id is independently re-fetched
+    # and re-authorized server-side below, never trusted as-is.
+    prior_run_ids = body.get("prior_run_ids", [])
+    if not isinstance(prior_run_ids, list) or not all(isinstance(x, str) for x in prior_run_ids):
+        return _json_response(400, {"error": "'prior_run_ids', if supplied, must be a list of strings."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -139,13 +150,28 @@ def handler(event: dict, context: object) -> dict:
                 raise
             return _json_response(409, {"error": f"run_id={run_id!r} is already in use by another run."})
 
+    prior_grounded_facts = [
+        grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)
+    ]
+
     try:
         if engine == "v2":
             response = _agent.ask_compound(
-                user_id=user_id, question_text=question, planner=_tool_planner, question_id=run_id, persona=persona
+                user_id=user_id,
+                question_text=question,
+                planner=_tool_planner,
+                question_id=run_id,
+                persona=persona,
+                prior_grounded_facts=prior_grounded_facts,
             )
         else:
-            response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
+            response = _agent.ask(
+                user_id=user_id,
+                question_text=question,
+                question_id=run_id,
+                persona=persona,
+                prior_grounded_facts=prior_grounded_facts,
+            )
     except UnknownUserError:
         if table is not None:
             table.update_item(

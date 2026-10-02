@@ -155,6 +155,7 @@ describe("Workbench conversation memory", () => {
 
     // The first turn in a fresh conversation has no prior context to fold in.
     expect(vi.mocked(api.askQuestion).mock.calls[0][1]).toBe("How is my LDL trending?");
+    expect(vi.mocked(api.askQuestion).mock.calls[0][4]).toEqual([]);
 
     fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "Is that high?" } });
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
@@ -164,6 +165,10 @@ describe("Workbench conversation memory", () => {
     expect(sentFollowUp).toContain("Q: How is my LDL trending?");
     expect(sentFollowUp).toContain("A: Your LDL-C is 162 mg/dL.");
     expect(sentFollowUp).toContain("New question: Is that high?");
+    // The real point of `priorRunIds`: the first turn's own run_id rides
+    // along so the backend can re-fetch and re-verify its grounded_facts
+    // itself (see run_reads.py) -- not just fold its Q&A text in.
+    expect(vi.mocked(api.askQuestion).mock.calls[1][4]).toEqual(["run-1"]);
 
     // The turn's own question bubble stays exactly what the user typed --
     // the injected context is only ever sent to the API, never displayed.

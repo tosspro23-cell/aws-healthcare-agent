@@ -1364,8 +1364,47 @@ details summary {
   margin-bottom: 4px;
 }
 
-.orchestration h3 {
+.orchestration-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin: 0 0 10px;
+}
+
+.orchestration-header h3 {
+  margin: 0;
+}
+
+.duration-chip.total {
+  color: var(--verify);
+  background: var(--verify-soft);
+  font-weight: 700;
+}
+
+.orchestration-setup,
+.orchestration-trailing {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.orchestration-setup {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.orchestration-plain-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.orchestration-plain-step .orchestration-step-detail {
+  flex-basis: 100%;
+  margin-top: 0;
 }
 
 .orchestration-rounds {
@@ -1454,14 +1493,10 @@ details summary {
   gap: 6px;
 }
 
-.orchestration-retrieval {
+.orchestration-trailing {
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
 }
 
 .duration-chip {

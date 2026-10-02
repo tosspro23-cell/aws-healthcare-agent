@@ -44,7 +44,11 @@ describe("TraceView V1 traces (unchanged)", () => {
 describe("TraceView V2 traces (orchestration view)", () => {
   function v2Trace(): AgentTrace {
     return baseTrace({
+      total_duration_ms: 3842,
       tool_calls: [
+        { name: "classify_intent", args: { question_text: "..." }, result_summary: "compound_reasoning", ok: true, duration_ms: 0.2 },
+        { name: "get_user_profile", args: { user_id: "user_demo_001" }, result_summary: "display_name='Alex'", ok: true, duration_ms: 0.1 },
+        { name: "get_bloodwork", args: { user_id: "user_demo_001" }, result_summary: "latest_panel=present", ok: true, duration_ms: 0.1 },
         { name: "propose_plan", args: {}, result_summary: "2 call(s) proposed: ['get_marker_trend', 'made_up_tool']", ok: true, duration_ms: 420 },
         { name: "capability_gate", args: { tool_name: "get_marker_trend", concept_id: "ldl_c_mg_dl" }, result_summary: "accepted", ok: true, duration_ms: 0.1 },
         { name: "capability_gate", args: { tool_name: "made_up_tool" }, result_summary: "rejected: Unknown tool 'made_up_tool'.", ok: false, duration_ms: 0.1 },
@@ -65,6 +69,8 @@ describe("TraceView V2 traces (orchestration view)", () => {
           ok: true,
           duration_ms: 5.0,
         },
+        { name: "compose_answer", args: { narrator_backend: "bedrock" }, result_summary: "412 chars", ok: true, duration_ms: 1850.4 },
+        { name: "verify_safety_checks", args: {}, result_summary: "passed", ok: true, duration_ms: 0.4 },
       ],
     });
   }
@@ -105,5 +111,36 @@ describe("TraceView V2 traces (orchestration view)", () => {
 
     expect(screen.getByText("420ms")).toBeInTheDocument();
     expect(screen.getByText("5ms")).toBeInTheDocument();
+  });
+
+  it("renders a Setup section for the pre-planning steps, above Round 1", () => {
+    render(<TraceView trace={v2Trace()} />);
+
+    expect(screen.getByText("Classify intent")).toBeInTheDocument();
+    expect(screen.getByText("Load user profile")).toBeInTheDocument();
+    expect(screen.getByText("Load bloodwork")).toBeInTheDocument();
+    expect(screen.getByText("display_name='Alex'")).toBeInTheDocument();
+  });
+
+  it("renders the composition/verification steps in the trailing section, after retrieval", () => {
+    render(<TraceView trace={v2Trace()} />);
+
+    expect(screen.getByText("Compose answer")).toBeInTheDocument();
+    expect(screen.getByText("412 chars")).toBeInTheDocument();
+    expect(screen.getByText("1.9s")).toBeInTheDocument();
+    expect(screen.getByText("Verify safety checks")).toBeInTheDocument();
+    expect(screen.getByText("passed")).toBeInTheDocument();
+  });
+
+  it("shows the ground-truth total latency next to the section header", () => {
+    render(<TraceView trace={v2Trace()} />);
+    expect(screen.getByText("Total: 3.8s")).toBeInTheDocument();
+  });
+
+  it("omits the total-latency chip when total_duration_ms is absent (an older trace)", () => {
+    const trace = v2Trace();
+    delete trace.total_duration_ms;
+    render(<TraceView trace={trace} />);
+    expect(screen.queryByText(/^Total:/)).not.toBeInTheDocument();
   });
 });

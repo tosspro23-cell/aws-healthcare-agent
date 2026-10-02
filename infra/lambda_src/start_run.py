@@ -94,6 +94,13 @@ def handler(event: dict, context: object) -> dict:
     if engine not in ("v1", "v2"):
         return _json_response(400, {"error": "'engine', if supplied, must be 'v1' or 'v2'."})
 
+    # See adapter.py's identical validation/docstring -- threaded into the
+    # Step Functions input below so agent_task.py can re-fetch and
+    # re-authorize each one itself (see run_reads.py).
+    prior_run_ids = body.get("prior_run_ids", [])
+    if not isinstance(prior_run_ids, list) or not all(isinstance(x, str) for x in prior_run_ids):
+        return _json_response(400, {"error": "'prior_run_ids', if supplied, must be a list of strings."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         # `start_execution`'s `name` param must be a string; an
@@ -112,6 +119,7 @@ def handler(event: dict, context: object) -> dict:
         "owner_sub": owner_sub,
         "persona": persona,
         "engine": engine,
+        "prior_run_ids": prior_run_ids,
     }
 
     try:

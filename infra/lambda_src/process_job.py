@@ -43,12 +43,14 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import boto3
+import run_reads
 import run_writes
 from agent_runtime import agent as _agent
 from agent_runtime import tool_planner as _tool_planner
 from botocore.exceptions import ClientError
 
 from care_agent.data_store import UnknownUserError
+from care_agent.models import grounded_fact_from_dict
 
 _RUNS_TABLE_NAME = os.environ["RUNS_TABLE_NAME"]
 _EVIDENCE_BUCKET_NAME = os.environ.get("EVIDENCE_BUCKET_NAME")
@@ -133,6 +135,11 @@ def handler(event: dict, context: object) -> None:
         # message has them.
         persona = message.get("persona", "patient")
         engine = message.get("engine", "v1")
+        # See agent_task.py's identical note -- `owner_sub`/`prior_run_ids`
+        # are both already in the message (enqueue_job.py puts them
+        # there) for the same cross-turn grounding purpose.
+        owner_sub = message.get("owner_sub")
+        prior_run_ids = message.get("prior_run_ids", [])
 
         now = datetime.now(timezone.utc)
         entered_running = _claim_for_processing(
@@ -143,6 +150,10 @@ def handler(event: dict, context: object) -> None:
         if not entered_running:
             continue
 
+        prior_grounded_facts = [
+            grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)
+        ]
+
         try:
             if engine == "v2":
                 response = _agent.ask_compound(
@@ -152,9 +163,16 @@ def handler(event: dict, context: object) -> None:
                     question_id=run_id,
                     persona=persona,
                     on_stage=_make_stage_callback(run_id),
+                    prior_grounded_facts=prior_grounded_facts,
                 )
             else:
-                response = _agent.ask(user_id=user_id, question_text=question, question_id=run_id, persona=persona)
+                response = _agent.ask(
+                    user_id=user_id,
+                    question_text=question,
+                    question_id=run_id,
+                    persona=persona,
+                    prior_grounded_facts=prior_grounded_facts,
+                )
         except UnknownUserError as exc:
             run_writes.conditional_status_write(
                 run_id,

@@ -28,6 +28,21 @@ interface OrchestrationRound {
   steps: OrchestrationStep[];
 }
 
+// Human labels for the generic `setup`/`trailing` steps (everything
+// outside the planner/gate/execution round structure) -- falls back to
+// the raw tool_call name for anything not listed here, so a future new
+// step still renders instead of being silently dropped.
+const STEP_LABELS: Record<string, string> = {
+  classify_intent: "Classify intent",
+  get_user_profile: "Load user profile",
+  get_bloodwork: "Load bloodwork",
+  retrieve_knowledge: "Automatic knowledge retrieval",
+  compose_answer: "Compose answer",
+  compose_fallback_answer: "Compose fallback answer",
+  verify_safety_checks: "Verify safety checks",
+  verify_safety_checks_fallback: "Verify safety checks (fallback)",
+};
+
 function argsSignature(name: string, args: Record<string, unknown>): string {
   const entries = Object.entries(args).sort(([a], [b]) => a.localeCompare(b));
   return `${name}|${entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(",")}`;
@@ -39,10 +54,19 @@ function argsSignature(name: string, args: Record<string, unknown>): string {
  * followed by the execution entries for calls newly run this round (a repair
  * round's re-proposed-but-already-executed calls get a gate entry but no new
  * execution entry). This is a pure frontend parse of data the backend already
- * produces -- no new fields needed beyond `duration_ms`. */
-function parseOrchestration(toolCalls: ToolCall[]): { rounds: OrchestrationRound[]; retrieval?: ToolCall } {
+ * produces -- no new fields needed beyond `duration_ms`.
+ *
+ * `setup` (classify_intent/get_user_profile/get_bloodwork) is everything
+ * before the first `propose_plan`; `trailing` (retrieve_knowledge,
+ * compose_answer, verify_safety_checks, and their fallback variants) is
+ * everything after round-parsing is exhausted, in the order the backend
+ * actually ran them -- together these are what let the panel's displayed
+ * steps add up close to the real wall-clock time, instead of only ever
+ * showing the planner/gate/tool-execution slice of it. */
+function parseOrchestration(toolCalls: ToolCall[]): { setup: ToolCall[]; rounds: OrchestrationRound[]; trailing: ToolCall[] } {
+  const setup: ToolCall[] = [];
   const rounds: OrchestrationRound[] = [];
-  let retrieval: ToolCall | undefined;
+  const trailing: ToolCall[] = [];
   let current: OrchestrationRound | null = null;
 
   for (const call of toolCalls) {
@@ -57,12 +81,11 @@ function parseOrchestration(toolCalls: ToolCall[]): { rounds: OrchestrationRound
       rounds.push(current);
       continue;
     }
-    if (call.name === "retrieve_knowledge") {
-      retrieval = call;
+    if (current === null) {
+      setup.push(call);
       continue;
     }
     if (call.name === "capability_gate") {
-      if (!current) continue;
       const { tool_name, ...rest } = call.args;
       current.steps.push({
         toolName: typeof tool_name === "string" ? tool_name : "unknown",
@@ -73,19 +96,52 @@ function parseOrchestration(toolCalls: ToolCall[]): { rounds: OrchestrationRound
       });
       continue;
     }
-    if (!current) continue;
     const sig = argsSignature(call.name, call.args);
     const step = current.steps.find((s) => s.accepted && !s.execution && argsSignature(s.toolName, s.args) === sig);
-    if (step) step.execution = call;
+    if (step) {
+      step.execution = call;
+    } else {
+      trailing.push(call);
+    }
   }
 
-  return { rounds, retrieval };
+  return { setup, rounds, trailing };
 }
 
-function OrchestrationView({ rounds, retrieval }: { rounds: OrchestrationRound[]; retrieval?: ToolCall }) {
+function OrchestrationStepRow({ call }: { call: ToolCall }) {
+  return (
+    <div className="orchestration-plain-step">
+      <span className="orchestration-round-title">{STEP_LABELS[call.name] ?? call.name}</span>
+      {formatDuration(call.duration_ms) && <span className="duration-chip">{formatDuration(call.duration_ms)}</span>}
+      <div className="orchestration-step-detail">{call.result_summary}</div>
+    </div>
+  );
+}
+
+function OrchestrationView({
+  setup,
+  rounds,
+  trailing,
+  totalDurationMs,
+}: {
+  setup: ToolCall[];
+  rounds: OrchestrationRound[];
+  trailing: ToolCall[];
+  totalDurationMs?: number;
+}) {
   return (
     <section className="orchestration">
-      <h3>How this was computed (V2)</h3>
+      <div className="orchestration-header">
+        <h3>How this was computed (V2)</h3>
+        {formatDuration(totalDurationMs) && <span className="duration-chip total">Total: {formatDuration(totalDurationMs)}</span>}
+      </div>
+      {setup.length > 0 && (
+        <div className="orchestration-setup">
+          {setup.map((call, i) => (
+            <OrchestrationStepRow key={i} call={call} />
+          ))}
+        </div>
+      )}
       <ol className="orchestration-rounds">
         {rounds.map((round) => (
           <li key={round.index} className="orchestration-round">
@@ -134,11 +190,11 @@ function OrchestrationView({ rounds, retrieval }: { rounds: OrchestrationRound[]
           </li>
         ))}
       </ol>
-      {retrieval && (
-        <div className="orchestration-retrieval">
-          <span className="orchestration-round-title">Automatic knowledge retrieval</span>
-          {formatDuration(retrieval.duration_ms) && <span className="duration-chip">{formatDuration(retrieval.duration_ms)}</span>}
-          <div className="orchestration-step-detail">{retrieval.result_summary}</div>
+      {trailing.length > 0 && (
+        <div className="orchestration-trailing">
+          {trailing.map((call, i) => (
+            <OrchestrationStepRow key={i} call={call} />
+          ))}
         </div>
       )}
     </section>
@@ -148,11 +204,13 @@ function OrchestrationView({ rounds, retrieval }: { rounds: OrchestrationRound[]
 export function TraceView({ trace }: { trace: AgentTrace }) {
   const fallback = trace.safety_checks.find((c) => c.name === "narrator_fallback");
   const isV2 = trace.tool_calls.some((c) => c.name === "propose_plan");
-  const { rounds, retrieval } = isV2 ? parseOrchestration(trace.tool_calls) : { rounds: [], retrieval: undefined };
+  const { setup, rounds, trailing } = isV2 ? parseOrchestration(trace.tool_calls) : { setup: [], rounds: [], trailing: [] };
 
   return (
     <div className="trace">
-      {isV2 && rounds.length > 0 && <OrchestrationView rounds={rounds} retrieval={retrieval} />}
+      {isV2 && rounds.length > 0 && (
+        <OrchestrationView setup={setup} rounds={rounds} trailing={trailing} totalDurationMs={trace.total_duration_ms} />
+      )}
 
       <section>
         {/* Disposition is set once the fallback decision is final (see

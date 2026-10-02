@@ -157,24 +157,28 @@ const MAX_CONTEXT_TURNS = 4;
  * looks like a conversation while every call stays independent. Chosen
  * over a backend session (a new DynamoDB table + API surface) because
  * every execution path here is already stateless per-call; this works
- * within that without any infra change. The explicit instruction not to
- * restate old figures is a mitigation, not a guarantee -- if the model
- * does repeat an earlier number without this turn's own tool calls
- * re-grounding it, `numeric_grounding` won't recognize it and the answer
- * falls back to the deterministic template, exactly like any other
- * ungrounded claim. That's an accepted tradeoff (see docs/DECISIONS.md),
- * not a gap nobody noticed. `Turn.question` itself is never touched --
- * only the text actually sent to the API includes this context, so the
- * question bubble in the UI keeps showing exactly what the user typed. */
-function buildContextualQuestion(priorTurns: Turn[], newQuestion: string): string {
+ * within that without any infra change.
+ *
+ * The explicit instruction not to restate old figures is a mitigation,
+ * not the real guarantee -- that's `priorRunIds`: the same `relevant`
+ * turns folded into the text below also get their `run_id`s returned
+ * here, so the backend can re-fetch and re-verify each one's own
+ * `grounded_facts` itself (see `run_reads.py`/`docs/DECISIONS.md`) and
+ * let numeric_grounding recognize a genuinely-already-verified number
+ * from one of them, instead of only ever trusting this turn's own fresh
+ * tool calls. `Turn.question` itself is never touched -- only the text
+ * actually sent to the API includes this context, so the question
+ * bubble in the UI keeps showing exactly what the user typed. */
+function buildContextualQuestion(priorTurns: Turn[], newQuestion: string): { questionText: string; priorRunIds: string[] } {
   const relevant = priorTurns.filter((t) => t.status === "succeeded" && t.answer).slice(-MAX_CONTEXT_TURNS);
-  if (relevant.length === 0) return newQuestion;
+  const priorRunIds = relevant.map((t) => t.runId).filter((id): id is string => Boolean(id));
+  if (relevant.length === 0) return { questionText: newQuestion, priorRunIds };
   const transcript = relevant.map((t) => `Q: ${t.question}\nA: ${t.answer}`).join("\n\n");
-  return (
+  const questionText =
     "Context from earlier in this conversation, for continuity only -- base any new numeric claims on your own " +
     "fresh data lookups for this question, not by repeating earlier figures unless they're reconfirmed now:\n\n" +
-    `${transcript}\n\nNew question: ${newQuestion}`
-  );
+    `${transcript}\n\nNew question: ${newQuestion}`;
+  return { questionText, priorRunIds };
 }
 
 /** The Workbench redesign's real point: a three-zone layout (control
@@ -316,7 +320,7 @@ export function Workbench({
     const conversationId = activeConversationId ?? startConversation(q).id;
     if (!activeConversationId) setActiveConversationId(conversationId);
 
-    const sentQuestion = buildContextualQuestion(turns, q);
+    const { questionText: sentQuestion, priorRunIds } = buildContextualQuestion(turns, q);
 
     const id = crypto.randomUUID();
     const turn: Turn = { id, question: q, engine, persona, mode, status: "pending" };
@@ -325,12 +329,12 @@ export function Workbench({
 
     try {
       if (mode === "sync") {
-        const result = await askQuestion(userId, sentQuestion, engine, persona);
+        const result = await askQuestion(userId, sentQuestion, engine, persona, priorRunIds);
         updateTurn(id, { status: "succeeded", runId: result.run_id, answer: result.answer, safe: result.safe, trace: result.trace });
         addEntryToConversation(conversationId, { run_id: result.run_id, question: q, execution_type: "SYNC", submitted_at: new Date().toISOString(), engine, persona });
       } else {
         const starter = mode === "step_functions" ? startRun : enqueueJob;
-        const started = await starter(userId, sentQuestion, undefined, persona, engine);
+        const started = await starter(userId, sentQuestion, undefined, persona, engine, priorRunIds);
         updateTurn(id, { runId: started.run_id });
         addEntryToConversation(conversationId, {
           run_id: started.run_id,

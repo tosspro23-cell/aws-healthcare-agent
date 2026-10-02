@@ -254,6 +254,24 @@ class GroundedFact(DictMixin):
     display_name_aliases: tuple[str, ...] = field(default_factory=tuple)
 
 
+def grounded_fact_from_dict(d: dict[str, Any]) -> GroundedFact:
+    """The missing reverse of `GroundedFact.as_dict()` -- reconstructs a
+    real `GroundedFact` from the JSON shape a prior run's evidence was
+    serialized as (`{run_id}.json` in S3, or any other `as_dict()`
+    output). `numeric_values`/`display_name_aliases` round-trip through
+    JSON as lists, not tuples; everything else passes through by field
+    name unchanged."""
+    return GroundedFact(
+        claim=d["claim"],
+        source_type=d["source_type"],
+        source_ref=d["source_ref"],
+        numeric_values=tuple(d.get("numeric_values") or ()),
+        unit=d.get("unit"),
+        display_name=d.get("display_name"),
+        display_name_aliases=tuple(d.get("display_name_aliases") or ()),
+    )
+
+
 @dataclass(frozen=True)
 class Limitation(DictMixin):
     kind: str
@@ -326,6 +344,13 @@ class AgentTrace(DictMixin):
     #   least one "hard" check (diagnosis, dosing, empty answer) -- an
     #   unambiguous narrator failure, never the check's fault.
     disposition: Literal["answered", "answered_after_soft_fallback", "answered_after_hard_fallback"] = "answered"
+    # Ground-truth wall-clock time for the whole `ask()`/`ask_compound()`
+    # call, in milliseconds -- set once, right before returning, in
+    # `_narrate_and_verify` (the single tail-call every return path goes
+    # through). Independent of summing individual `ToolCall.duration_ms`
+    # entries, which is useful precisely because those don't (and aren't
+    # meant to) account for every microsecond of overhead between them.
+    total_duration_ms: float | None = None
 
 
 @dataclass
