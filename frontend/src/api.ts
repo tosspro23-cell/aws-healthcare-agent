@@ -29,6 +29,9 @@ export interface ToolCall {
   args: Record<string, unknown>;
   result_summary: string;
   ok: boolean;
+  // V2 (compound-reasoning) only -- wall-clock time this one step took, in
+  // milliseconds. V1's fixed-pipeline trace entries leave this undefined.
+  duration_ms?: number;
 }
 
 export interface RetrievedChunk {

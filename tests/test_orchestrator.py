@@ -14,6 +14,7 @@ from __future__ import annotations
 from care_agent.agent import HealthAgent
 from care_agent.catalog import DEFAULT_CATALOG_PATH, BiomarkerCatalog
 from care_agent.data_store import DEFAULT_DATA_DIR, DataStore
+from care_agent.models import Biomarker, Bloodwork, Panel
 from care_agent.orchestrator import (
     PlannedToolCall,
     ToolExecutionContext,
@@ -37,6 +38,20 @@ def _real_ctx(user_id: str = "user_demo_001") -> ToolExecutionContext:
     )
 
 
+def _biomarker(concept_id: str, value: float, unit: str = "mg/dL") -> Biomarker:
+    return Biomarker(concept_id=concept_id, display_name=concept_id, value=value, unit=unit)
+
+
+def _ctx_with_bloodwork(bloodwork: Bloodwork) -> ToolExecutionContext:
+    """A real context with everything but `bloodwork` swapped out -- for the
+    `compare_marker_trends` cases the shipped sample data can't exercise on
+    its own (every marker with two panels happens to trend up in the real
+    dataset; testing "opposite directions" needs one that goes down)."""
+    ctx = _real_ctx()
+    ctx.bloodwork = bloodwork
+    return ctx
+
+
 # -- capability_gate ---------------------------------------------------------
 
 
@@ -58,6 +73,24 @@ def test_capability_gate_rejects_out_of_vocabulary_concept_id():
     allowed, reason = capability_gate(PlannedToolCall("get_marker_trend", {"concept_id": "made_up_marker_xyz"}))
     assert allowed is False
     assert "Unsupported concept_id" in reason
+
+
+def test_capability_gate_rejects_out_of_vocabulary_concept_id_in_compare_marker_trends():
+    for args in (
+        {"concept_id_a": "made_up_marker_xyz", "concept_id_b": "hba1c_percent"},
+        {"concept_id_a": "ldl_c_mg_dl", "concept_id_b": "made_up_marker_xyz"},
+    ):
+        allowed, reason = capability_gate(PlannedToolCall("compare_marker_trends", args))
+        assert allowed is False, args
+        assert "Unsupported concept_id" in reason
+
+
+def test_capability_gate_rejects_self_comparison_in_compare_marker_trends():
+    allowed, reason = capability_gate(
+        PlannedToolCall("compare_marker_trends", {"concept_id_a": "ldl_c_mg_dl", "concept_id_b": "ldl_c_mg_dl"})
+    )
+    assert allowed is False
+    assert "two different concept_ids" in reason
 
 
 def test_capability_gate_rejects_empty_search_query():
@@ -99,6 +132,75 @@ def test_execute_get_marker_snapshot_grounds_the_real_value():
     result = execute_tool_call(PlannedToolCall("get_marker_snapshot", {"concept_id": "hba1c_percent"}), _real_ctx())
     assert result.grounded_facts[0].numeric_values == (6.1,)
     assert "hba1c_percent" in result.mentioned_markers
+
+
+def test_execute_compare_marker_trends_reports_co_moving_direction():
+    """Real sample data: LDL-C and HbA1c both really trend 'up' between the
+    two shipped panels (see module docstring) -- the flagship compound
+    question's own comparison, exercised against real data, not synthetic."""
+    result = execute_tool_call(
+        PlannedToolCall("compare_marker_trends", {"concept_id_a": "ldl_c_mg_dl", "concept_id_b": "hba1c_percent"}),
+        _real_ctx(),
+    )
+    assert result.ok is True
+    assert len(result.grounded_facts) == 3
+    trend_fact_a, trend_fact_b, relationship_fact = result.grounded_facts
+    assert 162.0 in trend_fact_a.numeric_values and 148.0 in trend_fact_a.numeric_values
+    assert 6.1 in trend_fact_b.numeric_values and 5.8 in trend_fact_b.numeric_values
+    assert relationship_fact.numeric_values == ()
+    assert "both trending up" in relationship_fact.claim
+    assert "co-moving" in result.result_summary
+
+
+def test_execute_compare_marker_trends_reports_opposite_directions():
+    """The real shipped dataset has no down-trending marker (see module
+    docstring), so the "opposite directions" branch needs synthetic data,
+    built directly as dataclasses the way `tests/test_trend.py` does --
+    `ToolExecutionContext` only needs a `Bloodwork` object, no `DataStore`."""
+    bloodwork = Bloodwork(
+        user_id="user_demo_001",
+        latest_panel=Panel(
+            panel_id="p2",
+            measurement_date="2026-05-06",
+            biomarkers=(_biomarker("ldl_c_mg_dl", 162.0), _biomarker("hdl_c_mg_dl", 40.0)),
+        ),
+        previous_panels=(
+            Panel(
+                panel_id="p1",
+                measurement_date="2026-02-06",
+                biomarkers=(_biomarker("ldl_c_mg_dl", 148.0), _biomarker("hdl_c_mg_dl", 55.0)),
+            ),
+        ),
+    )
+    result = execute_tool_call(
+        PlannedToolCall("compare_marker_trends", {"concept_id_a": "ldl_c_mg_dl", "concept_id_b": "hdl_c_mg_dl"}),
+        _ctx_with_bloodwork(bloodwork),
+    )
+    assert result.ok is True
+    relationship_fact = result.grounded_facts[-1]
+    assert relationship_fact.numeric_values == ()
+    assert "opposite directions" in relationship_fact.claim
+    assert "opposite" in result.result_summary
+
+
+def test_execute_compare_marker_trends_discloses_unavailable_marker_as_limitation():
+    """ldl_c_mg_dl has a real two-point trend; hba1c_percent has no data at
+    all -- only one side of the comparison is unavailable, so the
+    Limitation must name specifically that marker, not both."""
+    bloodwork = Bloodwork(
+        user_id="user_demo_001",
+        latest_panel=Panel(panel_id="p2", measurement_date="2026-05-06", biomarkers=(_biomarker("ldl_c_mg_dl", 162.0),)),
+        previous_panels=(Panel(panel_id="p1", measurement_date="2026-02-06", biomarkers=(_biomarker("ldl_c_mg_dl", 148.0),)),),
+    )
+    result = execute_tool_call(
+        PlannedToolCall("compare_marker_trends", {"concept_id_a": "ldl_c_mg_dl", "concept_id_b": "hba1c_percent"}),
+        _ctx_with_bloodwork(bloodwork),
+    )
+    assert result.ok is True
+    assert not result.grounded_facts
+    assert result.limitations
+    assert "HbA1c" in result.limitations[0].detail
+    assert "LDL-C" not in result.limitations[0].detail
 
 
 def test_execute_get_questionnaire_fact_real_field():

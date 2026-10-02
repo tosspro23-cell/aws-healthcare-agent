@@ -109,6 +109,16 @@ body {
   padding: 10px 20px;
 }
 
+/* Three-part layout once Engine/Persona/Mode moved up here from their own
+   row below (see `TopBar`'s `controls` prop in App.tsx): brand, then the
+   controls taking the freed-up middle space, then sign-out -- instead of
+   the plain two-part `space-between` used when there was nothing between
+   them. */
+.full-height .topbar-inner .control-bar {
+  flex: 1;
+  justify-content: center;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -236,16 +246,14 @@ main {
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
 }
 
-/* -- Workbench: top control bar ---------------------------------------- */
+/* -- Request-shaping controls (Engine/Persona/Mode), inline in the top
+   brand bar's `controls` slot -- see `TopBar` in App.tsx and `ControlBar`
+   in ControlBar.tsx. No longer a separate full-width row of its own. ---- */
 
 .control-bar {
   display: flex;
   align-items: center;
-  gap: 22px;
-  padding: 10px 20px;
-  background: var(--brand-800);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  flex-shrink: 0;
+  gap: 18px;
   flex-wrap: wrap;
 }
 
@@ -260,16 +268,8 @@ main {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #5b6884;
+  color: #8d9bb8;
   white-space: nowrap;
-}
-
-.control-bar-spacer {
-  flex: 1;
-}
-
-.control-bar-action {
-  width: auto;
 }
 
 /* -- Workbench: three-zone console (rail / conversation / evidence) -- */
@@ -491,20 +491,32 @@ main {
   opacity: 0.45;
 }
 
+/* A compact icon button beside the rail's tab row, not a full-width row of
+   its own -- see `ControlRail.tsx`'s docstring for why (matches the
+   ChatGPT/Claude Code "new chat" placement convention). */
+.rail-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail-tab-row .segmented {
+  flex: 1;
+  min-width: 0;
+}
+
 .new-conversation-btn {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px dashed rgba(255, 255, 255, 0.18);
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
   background: transparent;
   color: #cbd5e1;
-  font: inherit;
-  font-size: 0.82em;
-  font-weight: 600;
   min-height: unset;
   align-self: auto;
 }
@@ -1338,6 +1350,129 @@ details summary {
   margin: 10px 0;
 }
 
+/* V2-only "how this was computed" view, top of the Evidence panel -- a
+   round-grouped step list (planner -> gate verdict -> execution per call),
+   deliberately a vertical list rather than the horizontal waterfall/zoom
+   timeline a long-running, deeply-nested agent session needs: this
+   project's own execution shape tops out at two rounds with no concurrent
+   spans, so a numbered list already shows the full order + timing story. */
+.orchestration {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 4px;
+}
+
+.orchestration h3 {
+  margin: 0 0 10px;
+}
+
+.orchestration-rounds {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.orchestration-round-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.orchestration-round-title {
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.orchestration-repair-reason,
+.orchestration-plan-summary {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin: 4px 0 8px;
+}
+
+.orchestration-steps {
+  list-style: none;
+  padding: 0 0 0 4px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.orchestration-steps li {
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 14px;
+}
+
+.orchestration-steps li.rejected {
+  border-left-color: var(--danger-fg);
+}
+
+.orchestration-steps li.accepted .badge {
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.orchestration-steps li.rejected .badge {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.orchestration-step-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.85em;
+}
+
+.orchestration-step-head code {
+  color: var(--verify);
+  font-weight: 600;
+}
+
+.orchestration-args {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.orchestration-step-detail {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.orchestration-retrieval {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.duration-chip {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  color: var(--text-faint);
+  background: var(--border);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
 .tool-calls {
   list-style: none;
   padding: 0 0 0 4px;
@@ -1434,6 +1569,13 @@ details summary {
 
   .topbar-inner {
     padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+
+  .full-height .topbar-inner .control-bar {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    order: 3;
   }
 
   .view-toggle {

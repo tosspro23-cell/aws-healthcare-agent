@@ -12,11 +12,33 @@
  * superseded poll response must not overwrite the cancellation's own
  * fresh result when it finally resolves.
  */
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Workbench } from "./Workbench";
+import { ControlBar } from "./ControlBar";
 import * as api from "../api";
-import type { RunRecord } from "../api";
+import type { Engine, Persona, RunRecord } from "../api";
+import type { Mode } from "./Workbench";
+
+// `engine`/`persona`/`mode` are owned by `App.tsx` in production (lifted up
+// so `TopBar` can render the controls in the brand header row -- see
+// Workbench.tsx's own docstring) -- this harness reproduces that same
+// composition (ControlBar + Workbench sharing lifted state) so these tests
+// can still click the real Engine/Persona/Mode buttons exactly as a user
+// would, instead of reaching into Workbench's props directly.
+function WorkbenchHarness() {
+  const [engine, setEngine] = useState<Engine>("v1");
+  const [persona, setPersona] = useState<Persona>("patient");
+  const [mode, setMode] = useState<Mode>("sync");
+  const [disabled, setDisabled] = useState(false);
+  return (
+    <>
+      <ControlBar engine={engine} setEngine={setEngine} persona={persona} setPersona={setPersona} mode={mode} setMode={setMode} disabled={disabled} />
+      <Workbench engine={engine} persona={persona} mode={mode} onDisabledChange={setDisabled} />
+    </>
+  );
+}
 
 vi.mock("../api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api")>();
@@ -70,7 +92,7 @@ describe("Workbench polling supersession", () => {
     vi.mocked(api.startRun).mockResolvedValueOnce({ run_id: "run-a", status: "RUNNING" });
     vi.mocked(api.cancelRun).mockResolvedValueOnce({ run_id: "run-a", status: "CANCELLED" });
 
-    render(<Workbench />);
+    render(<WorkbenchHarness />);
 
     fireEvent.click(screen.getByRole("button", { name: /Step Fns/ }));
     fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "What should I focus on first in my results?" } });
@@ -125,7 +147,7 @@ describe("Workbench conversation memory", () => {
       .mockResolvedValueOnce({ run_id: "run-1", answer: "Your LDL-C is 162 mg/dL.", safe: true, trace: emptyTrace() })
       .mockResolvedValueOnce({ run_id: "run-2", answer: "It's considered high.", safe: true, trace: emptyTrace() });
 
-    render(<Workbench />);
+    render(<WorkbenchHarness />);
 
     fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "How is my LDL trending?" } });
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));

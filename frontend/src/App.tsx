@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { beginSignIn, completeSignIn, getAccessToken, signOut } from "./auth";
-import { Workbench } from "./components/Workbench";
+import type { Engine, Persona } from "./api";
+import { Workbench, type Mode } from "./components/Workbench";
+import { ControlBar } from "./components/ControlBar";
 import { CompoundDemo } from "./components/CompoundDemo";
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "error";
@@ -22,6 +25,16 @@ export function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [authError, setAuthError] = useState<string | null>(null);
   const [view, setView] = useState<View>("workbench");
+  // Lifted up from Workbench so `TopBar` (a sibling of `<Workbench />`, not
+  // a wrapper around it) can render the Engine/Persona/Mode controls
+  // inline in the brand header row instead of their own row below it.
+  const [engine, setEngine] = useState<Engine>("v1");
+  const [persona, setPersona] = useState<Persona>("patient");
+  const [mode, setMode] = useState<Mode>("sync");
+  // Mirrors Workbench's own in-flight state back up here, so the header
+  // controls can disable while a turn is pending even though `turns` (the
+  // source of that state) stays owned by Workbench.
+  const [controlsDisabled, setControlsDisabled] = useState(false);
   // React 18 StrictMode deliberately double-invokes effects in dev to
   // surface exactly this class of bug: the callback's authorization code
   // is single-use, so a naive `useEffect(() => { init() }, [])` exchanges
@@ -99,9 +112,27 @@ export function App() {
     );
   }
 
+  const workbenchShowing = view === "workbench" || !IS_LOCAL_DEV;
+
   return (
     <div className="app-shell full-height">
-      <TopBar signedIn onSignOut={signOut} />
+      <TopBar
+        signedIn
+        onSignOut={signOut}
+        controls={
+          workbenchShowing ? (
+            <ControlBar
+              engine={engine}
+              setEngine={setEngine}
+              persona={persona}
+              setPersona={setPersona}
+              mode={mode}
+              setMode={setMode}
+              disabled={controlsDisabled}
+            />
+          ) : undefined
+        }
+      />
       {IS_LOCAL_DEV && (
         <div className="view-toggle" role="tablist" aria-label="View">
           <button
@@ -125,8 +156,8 @@ export function App() {
         </div>
       )}
 
-      {view === "workbench" || !IS_LOCAL_DEV ? (
-        <Workbench />
+      {workbenchShowing ? (
+        <Workbench engine={engine} persona={persona} mode={mode} onDisabledChange={setControlsDisabled} />
       ) : (
         <main>
           <CompoundDemo />
@@ -136,7 +167,7 @@ export function App() {
   );
 }
 
-function TopBar({ signedIn, onSignOut }: { signedIn?: boolean; onSignOut?: () => void }) {
+function TopBar({ signedIn, onSignOut, controls }: { signedIn?: boolean; onSignOut?: () => void; controls?: ReactNode }) {
   return (
     <header className="topbar">
       <div className="topbar-inner">
@@ -149,6 +180,7 @@ function TopBar({ signedIn, onSignOut }: { signedIn?: boolean; onSignOut?: () =>
             <span className="brand-tag">Workbench</span>
           </div>
         </div>
+        {controls}
         {signedIn && (
           <button className="topbar-signout" onClick={onSignOut}>
             Sign out

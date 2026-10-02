@@ -14,15 +14,13 @@ const MODE_LABELS: Record<Mode, { label: string; title: string }> = {
   queue: { label: "Queue", title: "Queue (async)" },
 };
 
-/** The Workbench's top control bar: every request-shaping choice (which
- * engine, which persona, which of the three AWS execution paths) plus
- * "New conversation" -- moved here from the left rail (see `ControlRail`,
- * now just the conversation history list) on the user's own suggestion,
- * modeled on a reference console they pointed to that keeps this kind of
- * context-selection row along the top rather than stacked in a sidebar.
- * Frees the whole rail for a future "show the patient's own source data"
- * panel (bloodwork, questionnaire) -- not built yet, explicitly scoped
- * out of this pass, but this move is what makes room for it. */
+/** Every request-shaping choice (which engine, which persona, which of the
+ * three AWS execution paths), rendered inline in the top brand bar
+ * (`App.tsx`'s `TopBar`, via its `controls` slot) rather than as its own
+ * row below it -- freeing that row's height for the panels underneath.
+ * "New conversation" lives in the left rail now (see `ControlRail`), not
+ * here: it acts on the conversation history list right next to it, not on
+ * the request-shaping choices this bar holds. */
 export function ControlBar({
   engine,
   setEngine,
@@ -31,8 +29,6 @@ export function ControlBar({
   mode,
   setMode,
   disabled,
-  onNewConversation,
-  hasActiveConversation,
 }: {
   engine: Engine;
   setEngine: (e: Engine) => void;
@@ -41,8 +37,6 @@ export function ControlBar({
   mode: Mode;
   setMode: (m: Mode) => void;
   disabled: boolean;
-  onNewConversation: () => void;
-  hasActiveConversation: boolean;
 }) {
   return (
     <div className="control-bar">
@@ -122,15 +116,6 @@ export function ControlBar({
           ))}
         </div>
       </div>
-
-      <div className="control-bar-spacer" />
-
-      <button type="button" className="new-conversation-btn control-bar-action" onClick={onNewConversation} disabled={disabled || !hasActiveConversation}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-        New conversation
-      </button>
     </div>
   );
 }

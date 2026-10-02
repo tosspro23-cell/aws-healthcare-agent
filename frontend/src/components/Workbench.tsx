@@ -13,7 +13,6 @@ import {
   type Engine,
   type Persona,
 } from "../api";
-import { ControlBar } from "./ControlBar";
 import { ControlRail } from "./ControlRail";
 import { ConversationPanel } from "./ConversationPanel";
 import { EvidencePanel } from "./EvidencePanel";
@@ -203,11 +202,27 @@ function buildContextualQuestion(priorTurns: Turn[], newQuestion: string): strin
  * model exactly as simple as `AskForm.tsx`'s already-twice-reviewed one
  * (a single generation counter + self-scheduling `setTimeout`, ported
  * here almost unchanged) -- true concurrent turns would need a
- * generation counter *per turn id* instead of one global one. */
-export function Workbench() {
-  const [engine, setEngine] = useState<Engine>("v1");
-  const [persona, setPersona] = useState<Persona>("patient");
-  const [mode, setMode] = useState<Mode>("sync");
+ * generation counter *per turn id* instead of one global one.
+ *
+ * `engine`/`persona`/`mode` are read-only props here, not local state:
+ * `App.tsx` owns them (and their setters) now so its `TopBar` (a sibling
+ * of this component, not a wrapper around it) can render the
+ * Engine/Persona/Mode controls inline in the brand header row.
+ * `onDisabledChange` mirrors this component's own in-flight state back up
+ * to `App.tsx` for the same reason -- those header controls need to
+ * disable while a turn is pending, but `pendingTurn` is derived from
+ * `turns`, which stays owned here. */
+export function Workbench({
+  engine,
+  persona,
+  mode,
+  onDisabledChange,
+}: {
+  engine: Engine;
+  persona: Persona;
+  mode: Mode;
+  onDisabledChange: (disabled: boolean) => void;
+}) {
   const [userId] = useState(config.demoUserId);
   const [question, setQuestion] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -415,46 +430,39 @@ export function Workbench() {
   const disabled = pendingTurn !== undefined;
   const selectedTurn = turns.find((t) => t.id === selectedTurnId);
 
+  useEffect(() => {
+    onDisabledChange(disabled);
+  }, [disabled, onDisabledChange]);
+
   return (
-    <>
-      <ControlBar
-        engine={engine}
-        setEngine={setEngine}
-        persona={persona}
-        setPersona={setPersona}
-        mode={mode}
-        setMode={setMode}
+    <div
+      className="workspace"
+      style={{ "--rail-w": `${railWidth}px`, "--evidence-w": `${evidenceWidth}px` } as React.CSSProperties}
+    >
+      <ControlRail
         disabled={disabled}
+        historyVersion={historyVersion}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
         hasActiveConversation={turns.length > 0}
       />
-      <div
-        className="workspace"
-        style={{ "--rail-w": `${railWidth}px`, "--evidence-w": `${evidenceWidth}px` } as React.CSSProperties}
-      >
-        <ControlRail
-          disabled={disabled}
-          historyVersion={historyVersion}
-          activeConversationId={activeConversationId}
-          onSelectConversation={handleSelectConversation}
-        />
-        <ColumnResizeHandle label="Resize control rail" onDrag={(dx) => setRailWidth((w) => clamp(w + dx, RAIL_MIN, RAIL_MAX))} />
-        <ConversationPanel
-          turns={turns}
-          selectedTurnId={selectedTurnId}
-          onSelectTurn={setSelectedTurnId}
-          question={question}
-          setQuestion={setQuestion}
-          onSubmit={handleSubmit}
-          disabled={disabled}
-          pendingTurn={pendingTurn}
-          onCancel={handleCancel}
-          cancelling={cancelling}
-          error={error}
-        />
-        <ColumnResizeHandle label="Resize evidence panel" onDrag={(dx) => setEvidenceWidth((w) => clamp(w - dx, EVIDENCE_MIN, EVIDENCE_MAX))} />
-        <EvidencePanel turn={selectedTurn} />
-      </div>
-    </>
+      <ColumnResizeHandle label="Resize control rail" onDrag={(dx) => setRailWidth((w) => clamp(w + dx, RAIL_MIN, RAIL_MAX))} />
+      <ConversationPanel
+        turns={turns}
+        selectedTurnId={selectedTurnId}
+        onSelectTurn={setSelectedTurnId}
+        question={question}
+        setQuestion={setQuestion}
+        onSubmit={handleSubmit}
+        disabled={disabled}
+        pendingTurn={pendingTurn}
+        onCancel={handleCancel}
+        cancelling={cancelling}
+        error={error}
+      />
+      <ColumnResizeHandle label="Resize evidence panel" onDrag={(dx) => setEvidenceWidth((w) => clamp(w - dx, EVIDENCE_MIN, EVIDENCE_MAX))} />
+      <EvidencePanel turn={selectedTurn} />
+    </div>
   );
 }

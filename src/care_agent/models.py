@@ -196,6 +196,12 @@ class ToolCall(DictMixin):
     args: dict[str, Any]
     result_summary: str
     ok: bool = True
+    # Wall-clock time this one step took, in milliseconds -- only populated
+    # by `orchestrator.run_compound_reasoning` (V2's own tool-calling loop);
+    # V1's fixed-pipeline trace entries leave this None. Purely additive, so
+    # every existing call site (V1's own, and anything constructed before
+    # this field existed) keeps working with no change.
+    duration_ms: float | None = None
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,111 @@ other cloud, not just a mental note of "why we did it this way."
 
 ---
 
+## 2026-10-03 — A cross-marker comparison tool, a V2 orchestration-trace view, and two header cleanups
+
+**Context**: Four follow-ups from the same conversation, all building on
+the already-shipped V2 tool-calling architecture and the Workbench's
+phase-1/phase-2 redesign. (1) The Workbench's own flagship example
+question ("Compare my LDL and A1C trends and tell me if my reported diet
+change is helping") was answered by the narrator *freely synthesizing* a
+comparison in prose from two independently-fetched single-marker facts --
+exactly the "the model improvises between tool calls" risk this project's
+design otherwise avoids. (2) The Evidence panel's tool-call list was a
+flat, bottom-of-panel dump with no visible mechanism (round structure,
+gate verdicts, timing) -- the user asked for a dedicated view referencing
+OpenAI's own Agent-platform Sessions trace viewer as the reference point
+for detail and prominence. (3) Engine/Persona/Mode sat in their own row
+below the "Care Agent" brand logo, wasting vertical space the panels
+below could use. (4) "New conversation" was a full-width dashed button
+the user felt looked out of place next to everything else in the rail.
+
+**Decision**:
+
+- **`compare_marker_trends`** (`src/care_agent/orchestrator.py`): a new
+  tool following the exact three-part extension pattern every other tool
+  here already uses (`TOOL_SPECS` entry, `_execute_*` function,
+  `_DISPATCH` entry) -- the explicit template for any future tool
+  addition. Comparison is **direction-based, not a raw numeric
+  difference**: `SUPPORTED_CONCEPT_IDS` spans incompatible units (mg/dL,
+  %, mIU/L, U/L -- see `plausibility.py`), so subtracting two markers'
+  raw values is meaningless, while direction (reusing the already-proven
+  `compute_trend`) is exactly what the flagship question actually needs.
+  The relationship claim ("X and Y are both trending up...") carries
+  **zero new numbers** -- both underlying trend facts are grounded via a
+  shared `_build_trend_fact` helper (extracted from the existing
+  `_execute_get_marker_trend`), so there is nothing new for
+  `numeric_grounding` to verify. `capability_gate` rejects an
+  out-of-vocabulary concept_id on either argument (same as every other
+  marker tool) and a degenerate `concept_id_a == concept_id_b`
+  self-comparison.
+- **Per-step timing** (`ToolCall.duration_ms: float | None`, additive):
+  `run_compound_reasoning` now wraps each planner call, `capability_gate`
+  check, tool execution, and the automatic retrieval fallback in
+  `time.monotonic()` and records the elapsed milliseconds. V1 trace
+  entries simply leave this `None`.
+- **V2 orchestration-trace view** (`TraceView.tsx`): a frontend-only
+  parse of data the backend already produced -- `run_compound_reasoning`'s
+  flat `trace.tool_calls` array already has an implicit round structure
+  (`propose_plan` marks a round's start, followed by one `capability_gate`
+  per proposed call, followed by execution entries for calls newly run
+  that round), so no new backend fields beyond `duration_ms` were needed.
+  Rendered first in the Evidence panel, above disposition/safety-checks,
+  **only when `trace.tool_calls` contains a `propose_plan` entry** (the
+  V2 signature) -- a V1 trace keeps rendering the old flat "Tool calls"
+  `<details>` list completely unchanged, never both. Deliberately a
+  vertical, numbered step list, not the referenced screenshot's
+  draggable horizontal waterfall/zoom timeline: this project's actual
+  execution shape tops out at two rounds with no concurrent/nested spans,
+  so a timeline widget built for a long-running, deeply-nested SRE
+  session would add visual complexity this data doesn't have.
+- **Header merge**: `engine`/`persona`/`mode` state moved from
+  `Workbench.tsx` up to `App.tsx` (the only common ancestor of `TopBar`
+  and `Workbench`, since `TopBar` is a sibling of `<Workbench />`, not a
+  wrapper around it). `TopBar` gained an optional `controls?: ReactNode`
+  slot rendered between the brand block and the sign-out button; `App.tsx`
+  passes the Engine/Persona/Mode segmented controls there, only when the
+  Workbench view is actually showing (not the local-only `CompoundDemo`).
+  A new `onDisabledChange` callback prop mirrors `Workbench`'s own
+  in-flight (`pendingTurn`) state back up to `App.tsx`, since the header
+  controls need to disable mid-run but `turns` stays owned by `Workbench`.
+- **Compact "New conversation"**: dropped the full-width dashed button in
+  favor of a small icon-only button beside `ControlRail`'s own
+  Conversations/Patient Data tab row -- the same placement convention
+  ChatGPT/Claude Code use for their own "new chat" affordance. Same
+  `onNewConversation`/`disabled`/`hasActiveConversation` wiring as before,
+  purely relocated and restyled.
+
+**Alternatives considered**: A raw numeric delta between the two markers'
+latest values was rejected outright for `compare_marker_trends` -- most
+pairs don't even share a unit, and even same-unit pairs (e.g. LDL-C vs
+HDL-C, both mg/dL) have no clinically meaningful "difference" the way
+two measurements of the *same* marker over time do. The full
+waterfall/zoom timeline widget from the referenced screenshot was
+considered and explicitly set aside (see Decision above) as a
+complexity mismatch for this project's shallow, non-concurrent execution
+shape -- flagged to the user as a simplification, not silently dropped.
+
+**Consequence**: Backend verified from a clean CI-matching venv --
+`ruff check`/`ruff format --check`/`mypy src` clean, and the full suite
+(`pytest --cov=care_agent --cov-fail-under=85`, including five new tests
+for `compare_marker_trends`'s co-moving/opposite-direction/unavailable-
+marker/self-comparison/out-of-vocabulary cases) at 270 passed, 88%
+coverage. Frontend verified with `tsc -b`, `eslint .`, `vitest run`
+(19 passed, including a new `TraceView.test.tsx` proving the V1/V2
+rendering split and a `WorkbenchHarness` test fixture reproducing
+`App.tsx`'s real ControlBar+Workbench composition so existing tests could
+still click the real Engine/Mode buttons after the state lift), and
+`vite build`. Manually verified in the browser pane (local dev server,
+desktop and mobile widths): the merged header row renders correctly, the
+compact "New conversation" button is correctly enabled/disabled by
+`hasActiveConversation`, and the responsive layout wraps the controls
+onto their own row below the brand/sign-out row on narrow viewports.
+Submitting a real question and inspecting a live V2 trace needs a real
+Cognito-authenticated session against the deployed API, so that part is
+deferred to the standard post-deploy production verification pass.
+
+---
+
 ## 2026-09-07 — Stage B (pgvector on Aurora) stopped deliberately at a real account-level wall, not completed
 
 **Context**: Stage A (local Chroma retrieval) shipped; Stage B was

@@ -38,7 +38,16 @@ describe("ControlRail tab switcher", () => {
     });
 
     const onSelectConversation = vi.fn();
-    render(<ControlRail disabled={false} historyVersion={0} activeConversationId={null} onSelectConversation={onSelectConversation} />);
+    render(
+      <ControlRail
+        disabled={false}
+        historyVersion={0}
+        activeConversationId={null}
+        onSelectConversation={onSelectConversation}
+        onNewConversation={vi.fn()}
+        hasActiveConversation={true}
+      />,
+    );
 
     expect(screen.getByText("How is my LDL trending?")).toBeInTheDocument();
 
@@ -53,5 +62,39 @@ describe("ControlRail tab switcher", () => {
 
     fireEvent.click(conversationRow);
     expect(onSelectConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a compact 'New conversation' button beside the tab row, wired the same as before relocation", () => {
+    const onNewConversation = vi.fn();
+    render(
+      <ControlRail
+        disabled={false}
+        historyVersion={0}
+        activeConversationId={null}
+        onSelectConversation={vi.fn()}
+        onNewConversation={onNewConversation}
+        hasActiveConversation={true}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "New conversation" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onNewConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables 'New conversation' when there is no active conversation to replace", () => {
+    render(
+      <ControlRail
+        disabled={false}
+        historyVersion={0}
+        activeConversationId={null}
+        onSelectConversation={vi.fn()}
+        onNewConversation={vi.fn()}
+        hasActiveConversation={false}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
   });
 });
