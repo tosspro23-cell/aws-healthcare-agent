@@ -115,7 +115,24 @@ class OrchestrationStack(Stack):
         # previously had no DynamoDB access at all. `UpdateItem` only:
         # matches every other handler's exact-action-grant style in this
         # file, and this handler never reads or deletes a record.
-        runs_table.grant(agent_task_handler, "dynamodb:UpdateItem")
+        #
+        # `GetItem` was added alongside -- a real production run found
+        # this missing: a follow-up question's `prior_run_ids` (see
+        # run_reads.py) made this handler call `table.get_item` on a
+        # referenced earlier run, which silently crashed with an
+        # unhandled AccessDeniedException (implicit deny, no exception
+        # handling around that specific call) the first time a request
+        # actually carried a non-empty `prior_run_ids`. See
+        # docs/DECISIONS.md.
+        runs_table.grant(agent_task_handler, "dynamodb:UpdateItem", "dynamodb:GetItem")
+        # Same `run_reads.py` need, for the evidence bucket -- only ever
+        # `get_object` by exact key, never lists or reads bucket-level
+        # metadata, so a precise `s3:GetObject` statement (matching
+        # `get_run_handler`'s own pattern below) is the exact permission
+        # this needs, not the broader `grant_read`.
+        agent_task_handler.add_to_role_policy(
+            iam.PolicyStatement(actions=["s3:GetObject"], resources=[evidence_bucket.arn_for_objects("*")])
+        )
 
         record_result_handler = _lambda.Function(
             self,
@@ -238,6 +255,22 @@ class OrchestrationStack(Stack):
                     # agent_task.py never sees it, exactly as happened
                     # with `persona` above.
                     "engine": sfn.JsonPath.string_at("$.engine"),
+                    # Same whitelist, same lesson yet again: added to
+                    # start_run.py's execution input for cross-turn
+                    # grounding (see run_reads.py), and forgotten here on
+                    # the first attempt -- agent_task.py's own
+                    # `event.get("owner_sub")`/`event.get("prior_run_ids",
+                    # [])` silently defaulted to None/[] with no error at
+                    # all, so the feature appeared to work (no crash) while
+                    # never actually running. Found via a real Step
+                    # Functions execution whose own input clearly showed
+                    # `prior_run_ids` populated, yet the handler's behavior
+                    # proved (via the real IAM policy simulator, since
+                    # CloudTrail doesn't log DynamoDB data events by
+                    # default) that `table.get_item` was never called.
+                    # See docs/DECISIONS.md.
+                    "owner_sub": sfn.JsonPath.string_at("$.owner_sub"),
+                    "prior_run_ids": sfn.JsonPath.list_at("$.prior_run_ids"),
                 }
             ),
             result_path="$.agent_result",

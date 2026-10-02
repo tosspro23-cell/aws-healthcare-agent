@@ -14,7 +14,7 @@ from stacks.data_stack import DataStack
 from stacks.orchestration_stack import OrchestrationStack
 from stacks.queue_stack import QueueStack
 
-from tests.iam_assertions import assert_no_overly_broad_iam_policy
+from tests.iam_assertions import assert_handler_has_iam_actions, assert_no_overly_broad_iam_policy
 
 _LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 
@@ -215,6 +215,17 @@ def test_no_iam_policy_uses_wildcard_resource():
     """
     _, _, api_template = _synth_stacks()
     assert_no_overly_broad_iam_policy(api_template)
+
+
+def test_ask_handler_can_read_a_prior_runs_record_and_evidence():
+    """Regression test for a real production incident: a real sync `/ask`
+    follow-up question (carrying non-empty `prior_run_ids`, see
+    run_reads.py) would crash with an unhandled AccessDeniedException --
+    this handler had `PutItem`/`UpdateItem`/`PutObject` for writing its
+    own run, but never `GetItem`/`GetObject` for re-verifying a *prior*
+    run's record and evidence. See docs/DECISIONS.md."""
+    _, _, api_template = _synth_stacks()
+    assert_handler_has_iam_actions(api_template, "AskHandler", ["dynamodb:GetItem", "s3:GetObject"])
 
 
 def test_user_pool_client_is_public_no_secret_pkce_shaped():

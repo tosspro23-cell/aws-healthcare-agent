@@ -34,6 +34,7 @@ from pathlib import Path
 
 from aws_cdk import CfnOutput, Duration, Stack
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_lambda_event_sources as lambda_event_sources
 from aws_cdk import aws_s3 as s3
@@ -119,11 +120,32 @@ class QueueStack(Stack):
         )
         # `process_job.py` only ever `update_item`s (conditional writes for
         # the RUNNING/terminal transitions).
-        runs_table.grant(process_job_handler, "dynamodb:UpdateItem")
+        #
+        # `GetItem` was added alongside -- a real production run found
+        # this missing: a follow-up question's `prior_run_ids` (see
+        # run_reads.py) made this handler call `table.get_item` on a
+        # referenced earlier run, which crashed with an unhandled
+        # AccessDeniedException (implicit deny, no exception handling
+        # around that specific call) every delivery attempt, until SQS
+        # gave up and moved the job to the dead-letter queue. Unlike the
+        # Step Functions path (where a forgotten `Payload` whitelist entry
+        # masked this same gap by never actually populating
+        # `prior_run_ids`), this path constructs its message body directly
+        # in Python, so the gap was reachable immediately. See
+        # docs/DECISIONS.md.
+        runs_table.grant(process_job_handler, "dynamodb:UpdateItem", "dynamodb:GetItem")
         # Writes the full grounding trace to S3 (same {run_id}.json key
         # adapter.py's synchronous path already uses) so GET /runs/{run_id}
         # can show one for this path too.
         evidence_bucket.grant_put(process_job_handler)
+        # Same `run_reads.py` need, for reading a *prior* run's evidence --
+        # only ever `get_object` by exact key, so a precise `s3:GetObject`
+        # statement (matching `get_run_handler`'s own pattern in
+        # orchestration_stack.py) is the exact permission this needs, not
+        # the broader `grant_read`.
+        process_job_handler.add_to_role_policy(
+            iam.PolicyStatement(actions=["s3:GetObject"], resources=[evidence_bucket.arn_for_objects("*")])
+        )
         grant_bedrock_invoke(process_job_handler)
         process_job_handler.add_event_source(
             lambda_event_sources.SqsEventSource(self.queue, batch_size=1, max_concurrency=_MAX_CONCURRENT_CONSUMERS)

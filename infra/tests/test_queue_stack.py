@@ -11,7 +11,7 @@ from aws_cdk.assertions import Match, Template
 from stacks.data_stack import DataStack
 from stacks.queue_stack import QueueStack
 
-from tests.iam_assertions import assert_no_overly_broad_iam_policy
+from tests.iam_assertions import assert_handler_has_iam_actions, assert_no_overly_broad_iam_policy
 
 _LAMBDA_ASSET_DIR = Path(__file__).resolve().parent.parent / "lambda_src"
 
@@ -87,6 +87,18 @@ def test_enqueue_lambda_uses_python313_runtime_and_expected_handler():
 
 def test_no_iam_policy_uses_wildcard_resource():
     assert_no_overly_broad_iam_policy(_synth_queue_stack())
+
+
+def test_process_job_handler_can_read_a_prior_runs_record_and_evidence():
+    """Regression test for a real production incident: a real queue-mode
+    follow-up question (carrying non-empty `prior_run_ids`, see
+    run_reads.py) crashed every delivery attempt with an unhandled
+    AccessDeniedException -- this handler had `UpdateItem`/`PutObject` for
+    writing its own run, but never `GetItem`/`GetObject` for re-verifying
+    a *prior* run's record and evidence -- until SQS gave up and moved the
+    job to the dead-letter queue. See docs/DECISIONS.md."""
+    template = _synth_queue_stack()
+    assert_handler_has_iam_actions(template, "ProcessJobHandler", ["dynamodb:GetItem", "s3:GetObject"])
 
 
 def test_reconcile_dlq_lambda_uses_python313_runtime_and_expected_handler():

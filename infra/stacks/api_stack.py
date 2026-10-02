@@ -22,6 +22,7 @@ from aws_cdk import aws_apigatewayv2_authorizers as apigwv2_authorizers
 from aws_cdk import aws_apigatewayv2_integrations as apigwv2_integrations
 from aws_cdk import aws_cognito as cognito
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
@@ -84,8 +85,24 @@ class ApiStack(Stack):
         # BatchWriteItem, neither of which this handler calls. Enumerating
         # exactly the two actions used keeps the grant tied to actual
         # behavior instead of a broader convenience bucket.
-        runs_table.grant(ask_handler, "dynamodb:PutItem", "dynamodb:UpdateItem")
+        #
+        # `GetItem` was added alongside -- a real production run found
+        # this missing: a follow-up question's `prior_run_ids` (see
+        # run_reads.py) makes this handler call `table.get_item` on a
+        # referenced earlier run, which crashes with an unhandled
+        # AccessDeniedException (implicit deny, no exception handling
+        # around that specific call) the first time a request actually
+        # carries a non-empty `prior_run_ids`. See docs/DECISIONS.md.
+        runs_table.grant(ask_handler, "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem")
         evidence_bucket.grant_put(ask_handler)
+        # Same `run_reads.py` need, for reading a *prior* run's evidence --
+        # only ever `get_object` by exact key, so a precise `s3:GetObject`
+        # statement (matching `get_run_handler`'s own pattern in
+        # orchestration_stack.py) is the exact permission this needs, not
+        # the broader `grant_read`.
+        ask_handler.add_to_role_policy(
+            iam.PolicyStatement(actions=["s3:GetObject"], resources=[evidence_bucket.arn_for_objects("*")])
+        )
         grant_bedrock_invoke(ask_handler)
 
         # Read-only access to the sample dataset bundle (profile, bloodwork,

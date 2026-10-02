@@ -46,6 +46,39 @@ _RESOURCE_WILDCARD_REQUIRED_ACTIONS = {
 }
 
 
+def assert_handler_has_iam_actions(template: Template, handler_logical_id_fragment: str, expected_actions: list[str]) -> None:
+    """Asserts the *specific* role attached to the Lambda function whose
+    logical id contains `handler_logical_id_fragment` (e.g. "AgentTaskHandler")
+    has every action in `expected_actions` somewhere in its own policy --
+    not "this action exists somewhere in the stack," which would pass even
+    if it were accidentally granted to a different handler entirely.
+
+    Mirrors the pattern independently proven in
+    `test_orchestration_stack.py::test_start_run_handler_can_describe_executions`
+    -- factored out here once it was needed a third time (AgentTaskHandler,
+    ProcessJobHandler, AskHandler all needed the identical shape of check
+    for the same real regression: a missing `dynamodb:GetItem`/
+    `s3:GetObject` grant that crashed each handler the first time it
+    actually tried to read a prior run's evidence). See docs/DECISIONS.md.
+    """
+    functions = template.find_resources("AWS::Lambda::Function")
+    (logical_id,) = (lid for lid in functions if handler_logical_id_fragment in lid)
+    role_ref = functions[logical_id]["Properties"]["Role"]["Fn::GetAtt"][0]
+
+    policies = template.find_resources("AWS::IAM::Policy")
+    matching_actions: list[str] = []
+    for policy in policies.values():
+        roles = policy["Properties"].get("Roles", [])
+        if not any(isinstance(r, dict) and r.get("Ref") == role_ref for r in roles):
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            matching_actions.extend(action if isinstance(action, list) else [action])
+
+    for expected in expected_actions:
+        assert expected in matching_actions, f"{handler_logical_id_fragment} is missing {expected!r}: has {matching_actions}"
+
+
 def assert_no_overly_broad_iam_policy(template: Template) -> None:
     policies = template.find_resources("AWS::IAM::Policy")
     for logical_id, policy in policies.items():

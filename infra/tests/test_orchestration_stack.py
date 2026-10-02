@@ -10,7 +10,7 @@ from aws_cdk.assertions import Template
 from stacks.data_stack import DataStack
 from stacks.orchestration_stack import OrchestrationStack
 
-from tests.iam_assertions import assert_no_overly_broad_iam_policy
+from tests.iam_assertions import assert_handler_has_iam_actions, assert_no_overly_broad_iam_policy
 
 
 def _synth_stacks():
@@ -94,6 +94,42 @@ def test_engine_flows_through_invoke_agent_payload():
     definition = _asl_definition(_synth_stacks())
     invoke_agent_params = definition["States"]["InvokeAgent"]["Parameters"]
     assert "engine.$" in invoke_agent_params["Payload"]
+
+
+def test_owner_sub_flows_through_invoke_agent_payload():
+    """Same class of bug as `test_persona_flows_through_invoke_agent_payload`
+    above, for the cross-turn grounding feature (`run_reads.py`): added to
+    start_run.py's execution input and to agent_task.py's own code, but
+    initially forgotten in this whitelist too -- `event.get("owner_sub")`
+    silently defaulted to `None` with no error at all, so a real Step
+    Functions execution carrying a real `prior_run_ids` appeared to
+    succeed normally while the feature never actually ran (confirmed via
+    the real IAM policy simulator, since CloudTrail doesn't log DynamoDB
+    data events by default -- a unit test calling agent_task.handler
+    directly with a hand-built event couldn't catch this either, same
+    reason as every other regression in this file). See docs/DECISIONS.md."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent_params = definition["States"]["InvokeAgent"]["Parameters"]
+    assert "owner_sub.$" in invoke_agent_params["Payload"]
+
+
+def test_prior_run_ids_flows_through_invoke_agent_payload():
+    """Same bug, same fix, for `prior_run_ids` itself."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent_params = definition["States"]["InvokeAgent"]["Parameters"]
+    assert "prior_run_ids.$" in invoke_agent_params["Payload"]
+
+
+def test_agent_task_handler_can_read_a_prior_runs_record_and_evidence():
+    """Regression test for the real production incident: `run_reads.py`'s
+    `fetch_prior_grounded_facts` calls `table.get_item` (DynamoDB) and
+    `s3.get_object` (the evidence bucket) to re-verify a referenced prior
+    run before trusting its grounded_facts -- this handler's role needs
+    both, not just the `UpdateItem`/`PutObject` it already had for writing
+    its own run's record and evidence. Caught live: a real deployed
+    request without these crashed with an unhandled AccessDeniedException."""
+    template = _synth_stacks()
+    assert_handler_has_iam_actions(template, "AgentTaskHandler", ["dynamodb:GetItem", "s3:GetObject"])
 
 
 def test_narrator_backend_flows_through_invoke_agent_and_into_record_success():

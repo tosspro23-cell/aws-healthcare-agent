@@ -86,7 +86,21 @@ def fetch_prior_grounded_facts(run_ids: list[str], owner_sub: str | None) -> lis
     table = _dynamodb().Table(_RUNS_TABLE_NAME)
     facts: list[dict] = []
     for run_id in run_ids[:_MAX_PRIOR_RUN_IDS]:
-        item = table.get_item(Key={"run_id": run_id}).get("Item")
+        try:
+            item = table.get_item(Key={"run_id": run_id}).get("Item")
+        except (ClientError, BotoCoreError) as exc:
+            # Real production incident, not hypothetical: an IAM
+            # misconfiguration once left this call denied, and because it
+            # wasn't wrapped the way the S3 fetch below already was, the
+            # exception propagated out of this best-effort helper and
+            # crashed the whole Lambda invocation -- on the SQS path that
+            # meant every delivery attempt failed until the message moved
+            # to the dead-letter queue. This is still best-effort
+            # conversational context, same posture as every other failure
+            # mode here: skip this one id, never take down the actual
+            # answer over it. See docs/DECISIONS.md.
+            logger.info("Could not read prior_run_id=%r (%s)", run_id, exc)
+            continue
         if item is None or item.get("owner_sub") != owner_sub:
             continue
         try:
