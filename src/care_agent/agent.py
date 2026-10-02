@@ -408,9 +408,7 @@ class HealthAgent:
         trace.grounded_facts = brief.grounded_facts
         trace.limitations = brief.limitations
 
-        return self._narrate_and_verify(
-            brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts
-        )
+        return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts)
 
     def _narrate_and_verify(
         self,
@@ -634,9 +632,7 @@ class HealthAgent:
             trace.limitations = brief.limitations
             trace.retrieved_chunks = brief.retrieved_chunks
             stage("Emergency phrasing detected -- skipping tool planning.")
-            return self._narrate_and_verify(
-                brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts
-            )
+            return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts)
 
         ctx = ToolExecutionContext(
             profile=profile, bloodwork=bloodwork, questionnaire=questionnaire, catalog=self.catalog, retriever=self.retriever
@@ -668,6 +664,4 @@ class HealthAgent:
         # only ever fire simultaneously with the final result, not while
         # anything is actually still in progress).
         stage("Composing the answer...")
-        return self._narrate_and_verify(
-            brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts
-        )
+        return self._narrate_and_verify(brief, question_text, profile, trace, allowed_dates, start_time, prior_grounded_facts)
