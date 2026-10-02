@@ -88,6 +88,21 @@ class ApiStack(Stack):
         evidence_bucket.grant_put(ask_handler)
         grant_bedrock_invoke(ask_handler)
 
+        # Read-only access to the sample dataset bundle (profile, bloodwork,
+        # questionnaire) for the Workbench's "Patient Data" rail tab -- no
+        # DynamoDB/S3/Bedrock grants needed, `care_agent.data_store.DataStore`
+        # only reads local JSON files bundled into this same deployment
+        # package (see `build_lambda_asset.py`).
+        patient_data_handler = _lambda.Function(
+            self,
+            "PatientDataHandler",
+            runtime=_lambda.Runtime.PYTHON_3_13,
+            handler="patient_data.handler",
+            code=_lambda.Code.from_asset(str(lambda_asset_dir)),
+            timeout=Duration.seconds(10),
+            memory_size=256,
+        )
+
         http_api = apigwv2.HttpApi(
             self,
             "CareAgentApi",
@@ -189,6 +204,12 @@ class ApiStack(Stack):
             path="/jobs",
             methods=[apigwv2.HttpMethod.POST],
             integration=apigwv2_integrations.HttpLambdaIntegration("EnqueueJobIntegration", enqueue_job_handler),
+            authorizer=authorizer,
+        )
+        http_api.add_routes(
+            path="/patient-data/{user_id}",
+            methods=[apigwv2.HttpMethod.GET],
+            integration=apigwv2_integrations.HttpLambdaIntegration("PatientDataIntegration", patient_data_handler),
             authorizer=authorizer,
         )
 

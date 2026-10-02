@@ -4244,6 +4244,95 @@ summary with `disposition: "answered"` (no fallback needed).
 
 ---
 
+## 2026-10-02 (5) — Workbench phase 2: a patient source-data viewer in the left rail
+
+**Context**: Phase 1 (previous entry) deliberately freed the left rail
+down to just conversation history, moving Engine/Persona/Mode out to a
+new top `ControlBar` -- both components' own docstrings already named
+this as groundwork for "a later, separately-scoped 'show the patient's
+own source data' panel." This entry builds that panel: a second rail tab
+showing the real bloodwork panel and questionnaire responses an answer's
+`grounded_facts` cite, so a reviewer can check a claim against the actual
+source record, not just the citation of it -- reinforcing the project's
+own stated differentiator ("every claim traces back to its exact
+source") with something concrete to look at, not just a list of
+citations.
+
+Planned via `EnterPlanMode` given the scope (new backend route + new
+frontend panel) -- the plan was grounded by reading the actual code
+first (confirmed the current API surface is only `/ask`/`/runs`/`/jobs`,
+with nothing exposing patient data), then validated by a Plan subagent
+before implementation. That validation caught one real, non-obvious bug
+before it shipped: `DataStore`'s own `DEFAULT_DATA_DIR` resolves three
+parents up from `data_store.py`'s location, correct for this repo's
+`src/care_agent/` layout but wrong once flattened into the deployed
+Lambda package (`build_lambda_asset.py` copies `care_agent/` and `data/`
+as siblings at the package root) -- calling `DataStore()` with no args in
+the new handler would have passed every local/CI test and 500'd only in
+production. `agent_runtime.py` already solves this correctly for the
+existing `/ask` handler; the new handler copies that exact pattern
+instead of rediscovering it.
+
+**Decision**:
+- New `infra/lambda_src/patient_data.py` (`GET /patient-data/{user_id}`):
+  a thin wrapper around `DataStore.get_user_profile`/`get_bloodwork`/
+  `get_questionnaire_context`, returning each via its existing
+  `.as_dict()`. No new IAM grants, no new DynamoDB/S3 resources, no
+  build-script changes -- `DataStore` only does local file reads, and
+  `build_lambda_asset.py` already globs every `*.py` in `lambda_src/`
+  into the one shared deployment package every handler uses. Auth
+  matches `/ask` (`adapter.py`), not `/runs/{run_id}` (`get_run.py`):
+  the JWT authorizer every route already has proves a genuine
+  authenticated caller, but `user_id` names *whose* demo profile to
+  read, not an identity/ownership claim (per `auth_context.py`'s own
+  documented reasoning) -- there's exactly one demo user_id in this
+  project and `/ask` already lets any authenticated caller query it with
+  no stricter check, so this handler doesn't invent a new one.
+- `infra/stacks/api_stack.py`: new `PatientDataHandler` defined directly
+  in `ApiStack.__init__` (mirroring `AskHandler`'s own pattern, since it
+  has even fewer dependencies -- no grants at all) plus one new
+  JWT-protected route.
+- `frontend/src/components/ControlRail.tsx` gains a `.segmented` tab
+  switcher (the same pattern `ControlBar.tsx` already uses) between
+  "Conversations" (unchanged) and the new `PatientDataPanel.tsx`. A plain
+  conditional mount, not a cached/dual-mount -- switching tabs re-fetches,
+  which is fine for one cheap Lambda call reading small local JSON files.
+- `PatientDataPanel.tsx` shows: a profile summary (name/age/sex,
+  medications, allergies); the latest bloodwork panel as a compact list
+  with classification badges reusing the **existing** generic
+  `badge-pill` variants (`.safe`/`.unsafe`/`.pending`/`.neutral` --
+  already used for run status/engine/persona/mode elsewhere, not new
+  colors) via a fixed classification->variant lookup; previous panel(s)
+  behind a `<details>` disclosure (no date-picker, no trend chart --
+  deliberately not over-built); questionnaire facts grouped by category
+  prefix (`nutrition.*`/`exercise.*`/`mind.*`) with humanized values
+  (`3_4_days_per_week` -> `3-4 days/week`) instead of a raw dump, plus a
+  cautions list. Questionnaire preferences/unknowns/declined are fetched
+  but not rendered in this pass -- flagged as an explicit scope cut, not
+  a silent omission, in case the user wants them surfaced later.
+
+**Consequence**: Verified with the full static suite on both sides --
+backend: `ruff`/`mypy`/`pytest` for `care_agent` (zero changes needed,
+confirms nothing broke) and for `infra/` (5 new handler tests, 1 new
+route-synth assertion), plus `cdk synth` with a direct check of the
+synthesized template confirming the new `AWS::Lambda::Function` and the
+`GET /patient-data/{user_id}` route with `AuthorizationType: JWT`;
+frontend: `tsc -b`/`eslint`/`vitest run` (12 tests, including a new
+regression guard proving the tab switch doesn't break "click a past
+conversation restores it")/`vite build`. Manually verified in the browser
+pane against the real sample dataset's actual values (mocked at the
+fetch layer pre-deploy, the same technique used throughout this
+project): every biomarker's classification badge color matches
+expectations (LDL-C "high"->danger, HbA1c "elevated"->warning, HDL-C
+"adequate"->success, etc.), the previous panel disclosure expands
+correctly, questionnaire groups and humanized values render correctly,
+switching back to Conversations leaves history and the restore-a-past-
+conversation flow intact, and the narrow-viewport layout stacks
+correctly. Live production verification (real deployed route, fresh
+Cognito token) follows this entry once deployed.
+
+---
+
 ## 2026-10-02 (4) — Workbench phase 1: full dark theme, controls moved to a top bar, cancel button repositioned
 
 **Context**: The user pointed to a different project's console UI they

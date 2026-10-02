@@ -211,3 +211,89 @@ export async function cancelRun(runId: string): Promise<{ run_id: string; status
     message?: string;
   };
 }
+
+// -- Patient data (the Workbench's "Patient Data" rail tab) ---------------
+// Field names mirror `src/care_agent/models.py`'s dataclasses exactly --
+// the wire format is each dataclass's own `.as_dict()` output, serialized
+// as-is by `infra/lambda_src/patient_data.py`, not a separate DTO shape.
+
+export interface Biomarker {
+  concept_id: string;
+  display_name: string;
+  value: number;
+  unit: string;
+  classification: string | null;
+  classification_basis: string | null;
+  action_fields: string[];
+  source: string | null;
+}
+
+export interface Panel {
+  panel_id: string;
+  measurement_date: string;
+  biomarkers: Biomarker[];
+  overall_flags: string[];
+}
+
+export interface Bloodwork {
+  user_id: string;
+  latest_panel: Panel | null;
+  previous_panels: Panel[];
+}
+
+export interface Medication {
+  name: string;
+  source: string;
+  confidence: string;
+}
+
+export interface Allergy {
+  name: string;
+  source: string;
+  confidence: string;
+}
+
+export interface UserProfile {
+  user_id: string;
+  display_name: string;
+  age: number | null;
+  sex: string | null;
+  country: string | null;
+  height_cm: number | null;
+  weight_kg: number | null;
+  known_conditions: string[];
+  medications: Medication[];
+  allergies: Allergy[];
+}
+
+export interface QuestionnaireFact {
+  field: string;
+  value: string;
+  state: string | null;
+  source: string | null;
+}
+
+export interface QuestionnaireCaution {
+  kind: string;
+  detail: string;
+  source: string | null;
+}
+
+export interface QuestionnaireContext {
+  user_id: string;
+  completed_at: string | null;
+  facts: QuestionnaireFact[];
+  cautions: QuestionnaireCaution[];
+  style_hint: string | null;
+}
+
+export interface PatientData {
+  user_id: string;
+  profile: UserProfile;
+  bloodwork: Bloodwork;
+  questionnaire: QuestionnaireContext;
+}
+
+export async function getPatientData(userId: string): Promise<PatientData> {
+  return (await authedFetch(`/patient-data/${encodeURIComponent(userId)}`)) as PatientData;
+}

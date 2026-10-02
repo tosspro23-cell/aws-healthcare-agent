@@ -152,6 +152,19 @@ def test_jobs_route_exists_and_requires_jwt_authorization():
     )
 
 
+def test_patient_data_route_exists_and_requires_jwt_authorization():
+    """The Workbench's "Patient Data" rail tab's entrypoint: same JWT
+    authorizer as every other route -- `user_id` names whose demo profile
+    to read, not an identity claim (see patient_data.py's own docstring),
+    so this intentionally has no *additional* ownership check beyond the
+    authorizer every route already has."""
+    _, _, api_template = _synth_stacks()
+    api_template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route",
+        {"RouteKey": "GET /patient-data/{user_id}", "AuthorizationType": "JWT"},
+    )
+
+
 def test_jwt_authorizer_uses_identity_source_authorization_header():
     _, _, api_template = _synth_stacks()
     api_template.has_resource_properties(
