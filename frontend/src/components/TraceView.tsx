@@ -279,6 +279,38 @@ export function TraceView({ trace }: { trace: AgentTrace }) {
         </ul>
       </section>
 
+      {/* Facts re-fetched from an *earlier* turn that widened this
+          turn's own grounding check (cross-turn grounding, see
+          run_reads.py) -- kept visually separate from "Grounded facts"
+          above (this turn's own tools only), so it's clear at a glance
+          which facts were freshly gathered vs. carried over. */}
+      {trace.prior_evidence && trace.prior_evidence.length > 0 && (
+        <section>
+          <h3>Carried over from earlier turns ({trace.prior_evidence.length})</h3>
+          <ul className="facts">
+            {trace.prior_evidence.map((fact, i) => (
+              <li key={i}>
+                <span className="citation-mark">[{i + 1}]</span>
+                <div>
+                  <div className="claim">{fact.claim}</div>
+                  <div className="meta">
+                    source: {fact.source_type} / {fact.source_ref}
+                    {fact.source_run_id && <> &middot; from run {fact.source_run_id}</>}
+                    {fact.numeric_values.length > 0 && (
+                      <>
+                        {" "}
+                        &middot; values: {fact.numeric_values.join(", ")}
+                        {fact.unit ? ` ${fact.unit}` : ""}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {trace.limitations.length > 0 && (
         <section>
           <h3>Limitations</h3>

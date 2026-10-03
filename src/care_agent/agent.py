@@ -200,7 +200,26 @@ class HealthAgent:
         question_id: str | None = None,
         persona: str = "patient",
         prior_grounded_facts: list[GroundedFact] | None = None,
+        current_question: str | None = None,
     ) -> AgentResponse:
+        """`current_question`, if given, is the bare live question with no
+        prior-turn Q&A folded in -- used *only* for `classify()` below,
+        never for narration (which keeps reading `question_text`, since a
+        non-mock narrator benefits from seeing conversational context on
+        purpose). Defaults to `question_text` when omitted, reproducing
+        today's behavior for any caller that doesn't send it.
+
+        An independent review found that `Workbench.tsx`'s client-side
+        conversation-memory feature (folding prior Q&A into `question_text`
+        for continuity) could hijack this keyword classifier's routing:
+        "Is my LDL getting worse?" alone classifies as `trend_check`, but
+        wrapped with a prior turn's "What should I focus on first"
+        answer, keywords from that *old* answer routed the *new* question
+        to `priority_focus` instead. `classify()` has no notion of a
+        "New question:" boundary inside a blob of text -- the fix is to
+        never hand it one, not to teach it to find one. See
+        docs/DECISIONS.md.
+        """
         start_time = time.monotonic()
         trace = AgentTrace(
             question_id=question_id,
@@ -210,10 +229,11 @@ class HealthAgent:
             retriever_backend=self.retriever.backend_name,
         )
 
-        intent_result = classify(question_text)
+        effective_current = current_question or question_text
+        intent_result = classify(effective_current)
         trace.intent = intent_result.intent
         trace.tool_calls.append(
-            ToolCall(name="classify_intent", args={"question_text": question_text}, result_summary=intent_result.intent)
+            ToolCall(name="classify_intent", args={"question_text": effective_current}, result_summary=intent_result.intent)
         )
 
         profile = self.data_store.get_user_profile(user_id)
@@ -450,6 +470,12 @@ class HealthAgent:
         can set `trace.total_duration_ms` for all of them.
         """
         facts_for_grounding = brief.grounded_facts + list(prior_grounded_facts or ())
+        # Record exactly what cross-turn evidence widened this turn's own
+        # grounding check -- kept separate from `trace.grounded_facts`
+        # (this turn's own tools only) so the trace stays self-sufficient
+        # to replay the safety decision later. See
+        # `AgentTrace.prior_evidence`'s own docstring.
+        trace.prior_evidence = list(prior_grounded_facts or ())
 
         _compose_start = time.monotonic()
         answer_text = self.narrator.compose(brief, question_text, profile)
@@ -554,6 +580,7 @@ class HealthAgent:
         persona: str = "patient",
         on_stage: Callable[[str], None] | None = None,
         prior_grounded_facts: list[GroundedFact] | None = None,
+        current_question: str | None = None,
     ) -> AgentResponse:
         """V2: answer a compound, multi-hop question via tool-calling
         (`orchestrator.run_compound_reasoning`) instead of `ask()`'s fixed
@@ -572,6 +599,13 @@ class HealthAgent:
         at all, the same unconditional, deterministic gate either pipeline
         goes through (see this project's own standing principle: emergency
         detection is never something an LLM's judgment call decides).
+
+        `current_question` is used *only* for this red-flag `classify()`
+        call, same as `ask()`'s own use -- the tool-calling `planner`
+        itself (an LLM) keeps seeing the full, possibly context-wrapped
+        `question_text`, since it can correctly reason about a "New
+        question:" boundary the way a keyword classifier can't. See
+        `ask()`'s own docstring for the full rationale.
         """
         start_time = time.monotonic()
         trace = AgentTrace(
@@ -587,12 +621,13 @@ class HealthAgent:
                 on_stage(message)
 
         stage("Checking for emergency phrasing...")
+        effective_current = current_question or question_text
         _classify_start = time.monotonic()
-        intent_result = classify(question_text)
+        intent_result = classify(effective_current)
         trace.tool_calls.append(
             ToolCall(
                 name="classify_intent",
-                args={"question_text": question_text},
+                args={"question_text": effective_current},
                 result_summary=intent_result.intent,
                 duration_ms=round((time.monotonic() - _classify_start) * 1000, 1),
             )

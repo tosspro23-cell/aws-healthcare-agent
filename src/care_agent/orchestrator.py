@@ -31,7 +31,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol, cast
 
 from care_agent.catalog import BiomarkerCatalog
 from care_agent.intent import COMPOUND_REASONING
@@ -211,6 +211,7 @@ def _build_trend_fact(ctx: ToolExecutionContext, concept_id: str, trend: TrendRe
     marker lookup and a two-marker comparison."""
     display_name = _marker_display_name(ctx, concept_id)
     assert trend.latest_value is not None and trend.previous_value is not None  # guaranteed by TrendResult when available=True
+    assert trend.direction in ("up", "down", "flat")  # same guarantee
     return GroundedFact(
         claim=(
             f"{display_name} trend: {trend.previous_value} {trend.unit} on {trend.previous_date} -> "
@@ -222,6 +223,17 @@ def _build_trend_fact(ctx: ToolExecutionContext, concept_id: str, trend: TrendRe
         unit=trend.unit,
         display_name=display_name,
         display_name_aliases=ctx.catalog.aliases_for(concept_id),
+        # Explicit endpoints/direction -- closes a real safety gap found
+        # live: `numeric_values` alone is an unordered bare tuple, so
+        # `safety.py` had no way to verify a narrated delta/percentage
+        # claim's direction, or to stop a delta being accepted as if it
+        # were itself a literal measurement. See GroundedFact's own
+        # docstring and docs/DECISIONS.md.
+        trend_previous_value=float(trend.previous_value),
+        trend_previous_date=trend.previous_date,
+        trend_latest_value=float(trend.latest_value),
+        trend_latest_date=trend.latest_date,
+        trend_direction=cast(Literal["up", "down", "flat"], trend.direction),
     )
 
 
@@ -520,12 +532,23 @@ def run_compound_reasoning(
     executed_signatures: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
     all_executed_calls: list[PlannedToolCall] = []
     repair_reason: str | None = None
-    # The most recent round's rejections still needing a repair attempt.
-    # Only overwritten by a round that actually proposed at least one
-    # call -- an empty repair-round response (the planner effectively
-    # giving up) must not silently erase what the *previous* round
-    # already found rejected. See docs/DECISIONS.md, 2026-09-21 entry.
-    unresolved: list[str] = []
+    # Outstanding (tool_name, reason) rejections, carried across rounds by
+    # default -- only cleared for a given tool_name when a *genuinely new*
+    # execution for it happens (see `new_calls` below), never just because
+    # the round's own plan happened to contain no new rejections for it.
+    #
+    # An independent review found the previous version of this
+    # (`unresolved = rejections`, wholesale-overwritten whenever a round
+    # proposed anything at all) let a repair round silently erase
+    # disclosure of an unrelated, still-unresolved failure: round 1
+    # proposes a valid call plus an invalid one (1 succeeds, 1 rejected);
+    # round 2 re-proposes *only* the already-succeeded call, addressing
+    # nothing new. `plan.calls` is non-empty, so the old code overwrote
+    # `unresolved` with this round's rejections (empty, since nothing was
+    # rejected this round) -- the invalid-marker failure vanished with no
+    # limitation ever recorded, not because it was fixed, but because
+    # nothing in this round mentioned it again. See docs/DECISIONS.md.
+    unresolved: list[tuple[str, str]] = []
 
     for _iteration in range(MAX_ITERATIONS):
         stage("Planning which tools to call..." if repair_reason is None else "Repairing the tool plan...")
@@ -539,7 +562,7 @@ def run_compound_reasoning(
                 duration_ms=round((time.monotonic() - _plan_start) * 1000, 1),
             )
         )
-        rejections: list[str] = []
+        round_rejections: list[tuple[str, str]] = []
         round_accepted: list[PlannedToolCall] = []
         for call in plan.calls:
             _gate_start = time.monotonic()
@@ -556,7 +579,7 @@ def run_compound_reasoning(
             if allowed:
                 round_accepted.append(call)
             else:
-                rejections.append(reason or "rejected")
+                round_rejections.append((call.tool_name, reason or "rejected"))
 
         # Execute newly-accepted calls right away, this round -- a repair
         # round's plan may legitimately re-propose a call already
@@ -567,6 +590,18 @@ def run_compound_reasoning(
         if new_calls:
             stage(f"Calling tools: {', '.join(c.tool_name for c in new_calls)}...")
             for call in new_calls:
+                # A genuinely *new* execution for this tool_name is the
+                # only mechanical signal available that this round's plan
+                # actually addressed something previously broken, not
+                # just re-proposed old work -- so it retires at most one
+                # outstanding rejection sharing the tool name. A round
+                # that re-proposes an already-executed call (excluded
+                # from `new_calls` above) contributes nothing here, and
+                # so can never clear an unrelated rejection by accident.
+                for i, (unresolved_tool_name, _reason) in enumerate(unresolved):
+                    if unresolved_tool_name == call.tool_name:
+                        del unresolved[i]
+                        break
                 _exec_start = time.monotonic()
                 result = execute_tool_call(call, ctx)
                 executed_signatures.add(call_signature(call))
@@ -586,11 +621,10 @@ def run_compound_reasoning(
                 brief.mentioned_markers.update(result.mentioned_markers)
                 brief.retrieved_chunks.extend(result.retrieved_chunks)
 
-        if plan.calls:
-            unresolved = rejections
+        unresolved.extend(round_rejections)
         if not unresolved:
             break
-        repair_reason = "; ".join(unresolved)
+        repair_reason = "; ".join(reason for _, reason in unresolved)
 
     if not all_executed_calls:
         brief.limitations.append(
@@ -605,7 +639,7 @@ def run_compound_reasoning(
     # with something still rejected. Reached only when `unresolved` is
     # still non-empty after the loop -- i.e. every repair attempt within
     # `MAX_ITERATIONS` either failed again or the planner gave up on it.
-    for reason in unresolved:
+    for _, reason in unresolved:
         brief.limitations.append(Limitation(kind="partial_tool_rejection", detail=reason))
 
     accepted = all_executed_calls

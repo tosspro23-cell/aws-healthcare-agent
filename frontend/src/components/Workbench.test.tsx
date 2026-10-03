@@ -156,6 +156,7 @@ describe("Workbench conversation memory", () => {
     // The first turn in a fresh conversation has no prior context to fold in.
     expect(vi.mocked(api.askQuestion).mock.calls[0][1]).toBe("How is my LDL trending?");
     expect(vi.mocked(api.askQuestion).mock.calls[0][4]).toEqual([]);
+    expect(vi.mocked(api.askQuestion).mock.calls[0][5]).toBe("How is my LDL trending?");
 
     fireEvent.change(screen.getByPlaceholderText(/Ask a question/), { target: { value: "Is that high?" } });
     fireEvent.click(screen.getByRole("button", { name: "Ask" }));
@@ -169,10 +170,68 @@ describe("Workbench conversation memory", () => {
     // along so the backend can re-fetch and re-verify its grounded_facts
     // itself (see run_reads.py) -- not just fold its Q&A text in.
     expect(vi.mocked(api.askQuestion).mock.calls[1][4]).toEqual(["run-1"]);
+    // `currentQuestion` is the bare live question only, never the
+    // context-wrapped blob -- so the backend can route this turn's
+    // deterministic classification on it instead of on text containing
+    // an unrelated prior turn's own keywords.
+    expect(vi.mocked(api.askQuestion).mock.calls[1][5]).toBe("Is that high?");
 
     // The turn's own question bubble stays exactly what the user typed --
     // the injected context is only ever sent to the API, never displayed.
     expect(screen.getByText("Is that high?")).toBeInTheDocument();
     expect(screen.queryByText(/New question:/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Workbench conversation resume", () => {
+  it("keeps polling every non-terminal restored turn, not just the last entry", async () => {
+    const conversation: import("../history").Conversation = {
+      id: "conv-resume-1",
+      title: "Resume test conversation",
+      startedAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      entries: [
+        { run_id: "run-a", question: "First question", execution_type: "STEP_FUNCTIONS", submitted_at: new Date().toISOString(), engine: "v1", persona: "patient" },
+        { run_id: "run-b", question: "Second question", execution_type: "STEP_FUNCTIONS", submitted_at: new Date().toISOString(), engine: "v1", persona: "patient" },
+      ],
+    };
+    localStorage.setItem("care_agent_conversations", JSON.stringify([conversation]));
+
+    // Entry A (the *earlier* entry) is still non-terminal on restore --
+    // the real, already-possible counter-example to "only the last entry
+    // can still be pending" (a turn whose own live polling hit a
+    // tolerated error and got marked `pollStalled` rather than resolved
+    // to a terminal status). Entry B, the later one, is already done.
+    let runACalls = 0;
+    vi.mocked(api.getRun).mockImplementation(async (runId: string) => {
+      if (runId === "run-a") {
+        runACalls += 1;
+        return runACalls === 1
+          ? runRecord({ run_id: "run-a", status: "RUNNING" })
+          : runRecord({ run_id: "run-a", status: "SUCCEEDED", answer: "Focus on LDL-C first.", safe: true, trace: emptyTrace() });
+      }
+      return runRecord({ run_id: "run-b", status: "SUCCEEDED", answer: "Yes, still true.", safe: true, trace: emptyTrace() });
+    });
+
+    render(<WorkbenchHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Resume test conversation/ }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Entry A is still RUNNING -- the composer must stay disabled, even
+    // though it's not the conversation's last entry. The restored turn's
+    // own mode (step functions) is cancellable, so a pending composer
+    // swaps its send button for Cancel (see ConversationPanel.tsx).
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ask" })).not.toBeInTheDocument();
+    expect(runACalls).toBe(1);
+
+    // The next poll tick resolves entry A to terminal.
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(runACalls).toBe(2);
+    expect(screen.getByText("Focus on LDL-C first.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 });

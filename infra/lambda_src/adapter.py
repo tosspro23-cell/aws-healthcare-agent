@@ -112,6 +112,16 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(prior_run_ids, list) or not all(isinstance(x, str) for x in prior_run_ids):
         return _json_response(400, {"error": "'prior_run_ids', if supplied, must be a list of strings."})
 
+    # Optional: the bare, live question with no prior-turn Q&A folded in
+    # -- used only for deterministic intent/red-flag routing, never for
+    # narration (which keeps reading `question`, context and all).
+    # Defaults to `question` itself when omitted, reproducing today's
+    # behavior for any caller that doesn't send it. See
+    # `HealthAgent.ask()`'s own docstring and docs/DECISIONS.md.
+    current_question = body.get("current_question") or question
+    if not isinstance(current_question, str) or not current_question:
+        return _json_response(400, {"error": "'current_question', if supplied, must be a non-empty string."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -150,9 +160,7 @@ def handler(event: dict, context: object) -> dict:
                 raise
             return _json_response(409, {"error": f"run_id={run_id!r} is already in use by another run."})
 
-    prior_grounded_facts = [
-        grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)
-    ]
+    prior_grounded_facts = [grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)]
 
     try:
         if engine == "v2":
@@ -163,6 +171,7 @@ def handler(event: dict, context: object) -> dict:
                 question_id=run_id,
                 persona=persona,
                 prior_grounded_facts=prior_grounded_facts,
+                current_question=current_question,
             )
         else:
             response = _agent.ask(
@@ -171,6 +180,7 @@ def handler(event: dict, context: object) -> dict:
                 question_id=run_id,
                 persona=persona,
                 prior_grounded_facts=prior_grounded_facts,
+                current_question=current_question,
             )
     except UnknownUserError:
         if table is not None:

@@ -120,6 +120,19 @@ def test_prior_run_ids_flows_through_invoke_agent_payload():
     assert "prior_run_ids.$" in invoke_agent_params["Payload"]
 
 
+def test_current_question_flows_through_invoke_agent_payload():
+    """Same bug, same fix, a third time: `current_question` (added for
+    deterministic intent/red-flag routing on the bare live question, see
+    `HealthAgent.ask()`'s own docstring) was added to this whitelist in
+    the very same change that added it to `start_run.py`'s execution
+    input, specifically because `owner_sub`/`prior_run_ids` had *just*
+    been forgotten here moments earlier in this same file's own history.
+    See docs/DECISIONS.md."""
+    definition = _asl_definition(_synth_stacks())
+    invoke_agent_params = definition["States"]["InvokeAgent"]["Parameters"]
+    assert "current_question.$" in invoke_agent_params["Payload"]
+
+
 def test_agent_task_handler_can_read_a_prior_runs_record_and_evidence():
     """Regression test for the real production incident: `run_reads.py`'s
     `fetch_prior_grounded_facts` calls `table.get_item` (DynamoDB) and

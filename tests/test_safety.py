@@ -481,6 +481,11 @@ def test_grounding_survives_a_marker_name_established_one_sentence_earlier():
             numeric_values=(162.0, 148.0),
             unit="mg/dL",
             display_name="LDL-C",
+            trend_previous_value=148.0,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=162.0,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     text = "Your LDL-C has increased over the past few months. On 2025-12-08, it was 148 mg/dL, and on 2026-05-06, it rose to 162 mg/dL."
@@ -562,6 +567,11 @@ def test_grounding_accepts_the_arithmetic_difference_between_two_grounded_values
             numeric_values=(162.0, 148.0),
             unit="mg/dL",
             display_name="LDL-C",
+            trend_previous_value=148.0,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=162.0,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     check = verify_numeric_grounding("Your LDL-C increased by 14 mg/dL, from 148 mg/dL to 162 mg/dL.", facts)
@@ -585,6 +595,11 @@ def test_grounding_accepts_a_delta_that_only_matches_after_floating_point_roundi
             numeric_values=(6.1, 5.8),
             unit="%",
             display_name="HbA1c",
+            trend_previous_value=5.8,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=6.1,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     check = verify_numeric_grounding("Your HbA1c increased by 0.3%, from 5.8% to 6.1%.", facts)
@@ -603,6 +618,11 @@ def test_grounding_rejects_a_fabricated_delta_that_does_not_match_the_real_diffe
             numeric_values=(162.0, 148.0),
             unit="mg/dL",
             display_name="LDL-C",
+            trend_previous_value=148.0,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=162.0,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     check = verify_numeric_grounding("Your LDL-C increased by 20 mg/dL, from 148 mg/dL to 162 mg/dL.", facts)
@@ -623,6 +643,11 @@ def test_grounding_accepts_a_correctly_rounded_percentage_change_between_two_gro
             numeric_values=(162.0, 148.0),
             unit="mg/dL",
             display_name="LDL-C",
+            trend_previous_value=148.0,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=162.0,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     assert verify_numeric_grounding("Your LDL-C increased by about 9%, from 148 mg/dL to 162 mg/dL.", facts).passed is True
@@ -641,6 +666,11 @@ def test_grounding_rejects_a_fabricated_percentage_that_does_not_match_the_real_
             numeric_values=(162.0, 148.0),
             unit="mg/dL",
             display_name="LDL-C",
+            trend_previous_value=148.0,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=162.0,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     check = verify_numeric_grounding("Your LDL-C increased by 25%, from 148 mg/dL to 162 mg/dL.", facts)
@@ -666,6 +696,11 @@ def test_grounding_accepts_a_delta_phrased_as_percentage_points_not_a_percent_si
             numeric_values=(6.1, 5.8),
             unit="%",
             display_name="HbA1c",
+            trend_previous_value=5.8,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=6.1,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     check = verify_numeric_grounding("Your HbA1c increased from 5.8% to 6.1%, a rise of 0.3 percentage points.", facts)
@@ -685,9 +720,80 @@ def test_grounding_rejects_a_fabricated_percentage_point_delta():
             numeric_values=(6.1, 5.8),
             unit="%",
             display_name="HbA1c",
+            trend_previous_value=5.8,
+            trend_previous_date="2025-12-08",
+            trend_latest_value=6.1,
+            trend_latest_date="2026-05-06",
+            trend_direction="up",
         )
     ]
     check = verify_numeric_grounding("Your HbA1c increased from 5.8% to 6.1%, a rise of 1.2 percentage points.", facts)
+    assert check.passed is False
+
+
+# -- Structured trend-claim verification (independent review, 2026-10-03) ---
+#
+# Three real false-accepts an independent review found and reproduced
+# live: a derived delta read as if it were itself a measurement, a
+# percentage computed from the wrong baseline, and a correct magnitude
+# stated with the wrong direction. All three exploited the same root
+# cause -- `numeric_values` is a bare, unordered tuple with no direction,
+# so the old delta/percent logic folded derived values into the same
+# lookup real measurements use and tried both possible percentage
+# baselines. See `GroundedFact.trend_direction`'s own docstring.
+
+
+def _ldl_trend_fact() -> GroundedFact:
+    return GroundedFact(
+        claim="LDL-C trend",
+        source_type="bloodwork",
+        source_ref="trend:ldl_c_mg_dl",
+        numeric_values=(162.0, 148.0),
+        unit="mg/dL",
+        display_name="LDL-C",
+        trend_previous_value=148.0,
+        trend_previous_date="2025-12-08",
+        trend_latest_value=162.0,
+        trend_latest_date="2026-05-06",
+        trend_direction="up",
+    )
+
+
+def test_grounding_rejects_a_delta_stated_as_if_it_were_a_literal_measurement():
+    """148 -> 162 is a real 14-point rise, but 14 itself was never a
+    measured LDL-C value -- stating it as "your latest LDL-C is 14 mg/dL"
+    (no direction word, no delta framing at all) must not pass just
+    because 14 happens to equal the real difference between two other,
+    actually-measured values."""
+    check = verify_numeric_grounding("Your latest LDL-C is 14 mg/dL.", [_ldl_trend_fact()])
+    assert check.passed is False
+
+
+def test_grounding_rejects_a_percentage_change_computed_from_the_wrong_baseline():
+    """The true change is (162-148)/148 = ~9.46% (rounds to 9%/9.5%). The
+    *other* possible baseline, (162-148)/162 = ~8.6%, is a real arithmetic
+    result too, but not the one percentage-change actually means -- it
+    must be rejected now that the baseline is pinned to
+    `trend_previous_value`, not tried both ways."""
+    check = verify_numeric_grounding("Your LDL-C increased by 8.6%.", [_ldl_trend_fact()])
+    assert check.passed is False
+
+
+def test_grounding_rejects_a_correct_magnitude_with_the_wrong_direction():
+    """148 -> 162 is a rise, not a fall -- a claim with the exactly
+    correct delta magnitude but the opposite direction word must still
+    be rejected, not accepted on magnitude alone."""
+    check = verify_numeric_grounding("Your LDL-C decreased by 14 mg/dL.", [_ldl_trend_fact()])
+    assert check.passed is False
+
+
+def test_grounding_rejects_a_derived_claim_with_no_direction_word_at_all():
+    """Even when the fact's real direction would make the number
+    technically plausible, a sentence with no direction word at all
+    (nothing to verify against) must still be rejected -- "a change of
+    14 mg/dL" with no indication which way is exactly the ambiguous case
+    this check exists to refuse, not guess at."""
+    check = verify_numeric_grounding("Your LDL-C showed a change of 14 mg/dL.", [_ldl_trend_fact()])
     assert check.passed is False
 
 

@@ -4896,6 +4896,116 @@ open as a deliberately deferred future step.
 
 ---
 
+## 2026-10-03 — Six findings from an independent audit of the cross-turn grounding work
+
+**Context**: An independent review of the previous session's cross-turn
+grounding changes (`REVIEW.md`, 2026-10-03) found 6 real, reproducible
+issues -- 1 High, 5 Medium. Every finding was independently reproduced
+against the live codebase before any fix was planned, not taken on faith:
+(1) `verify_numeric_grounding` accepted a derived delta/percentage-change
+claim as if it were a literal measurement, and never checked direction --
+`"Your latest LDL-C is 14 mg/dL."` (a delta misread as a measurement),
+`"...increased by 8.6%."` (the true change is ~9.46%; 8.6% comes from
+dividing by the wrong baseline), and `"...decreased by 14 mg/dL."`
+(direction backwards) all passed the check; (2) the V1 keyword classifier
+ran on the whole context-injected blob, so an old answer's keywords could
+hijack routing for an unrelated new question (`"Is my LDL getting worse?"`
+classified as `priority_focus` instead of `trend_check` once wrapped in a
+prior turn's Q&A, exactly what `Workbench.tsx` sends); (3)
+`stress_test.py`'s direct Step Functions calls never got the `engine`/
+`prior_run_ids` fields `InvokeAgent`'s payload whitelist now requires,
+failing every burst-async/race run with `States.Runtime` against a real
+deployed stack; (4) a repair round that re-proposed only an
+already-succeeded tool call could silently erase disclosure of a
+different, still-unresolved rejection; (5) cross-turn grounding facts
+that widened a turn's safety check were never recorded anywhere
+retrievable, so a trace alone couldn't be replayed to reproduce why an
+answer passed; (6) restoring a conversation from history only re-polled
+its last entry, not every entry that could still be genuinely
+non-terminal (a turn marked `pollStalled` is a real, already-possible
+counter-example to "only the last entry can be pending").
+
+**Decision**: Fixed all 6, grouped by shared mechanism:
+
+- **#1 (HIGH)**: Gave `GroundedFact` explicit, optional trend-claim fields
+  (`trend_previous_value`/`_date`, `trend_latest_value`/`_date`,
+  `trend_direction`), populated only by `_build_trend_fact`. Replaced
+  `verify_numeric_grounding`'s `itertools`-based delta/percentage
+  injection (which stuffed derived numbers into the same lookup real
+  measurements use, with no ordering guarantee and no direction) with a
+  separate `derived_claims_by_value_unit` lookup built only from facts
+  carrying trend fields, using `previous_value` as the sole baseline, and
+  requiring a direction word (a new `_DIRECTION_WORDS` vocabulary) whose
+  mapped direction matches `trend_direction` exactly before accepting a
+  match. Deliberately excluded clinically-ambiguous words like
+  "improved"/"worsened" from that vocabulary -- their direction depends on
+  which marker is being discussed, not on the number itself.
+- **#2**: `Workbench.tsx`'s `buildContextualQuestion` now also returns the
+  bare live question as `currentQuestion`, threaded end-to-end (API
+  functions, all 5 Lambda handlers, `agent.py`'s `ask()`/`ask_compound()`)
+  as an optional `current_question` field used **only** for the
+  deterministic `classify()` call -- narration and the V2 planner keep
+  seeing full context on purpose, since they can correctly reason about a
+  "New question:" boundary the way a keyword classifier can't.
+- **#3**: Unified with #2's new field so the payload-whitelist mistake
+  (already recurring for `persona`, `engine`, and `owner_sub`/
+  `prior_run_ids` across this project's history) can't recur a 4th time
+  silently: added `current_question` to `InvokeAgent`'s `Payload` *and*,
+  in the same change, a new contract test
+  (`infra/tests/test_stress_test_contract.py`) that synthesizes the real
+  ASL and asserts `stress_test.py`'s own execution-input builder is a
+  superset of the payload's required keys -- so a future forgotten field
+  fails a fast unit test instead of only failing a live, costed
+  `burst-async`/`race` run.
+- **#4**: `run_compound_reasoning`'s repair loop now tracks `unresolved`
+  as `(tool_name, reason)` pairs that persist across rounds by default,
+  clearing a given tool's entry only when a *genuinely new* execution (one
+  not already in `executed_signatures`) happens for it this round --
+  closing the gap where a round re-proposing only old, already-succeeded
+  work could wipe out an unrelated rejection just because that round
+  itself raised no new rejections of its own.
+- **#5**: Added `AgentTrace.prior_evidence`, populated with exactly the
+  cross-turn facts that widened a turn's grounding check (kept separate
+  from `grounded_facts`, which stays this turn's own tools only), and
+  tagged each fact `run_reads.py` returns with its `source_run_id` so the
+  trace records *which* prior run it came from. `TraceView.tsx` renders
+  this as a distinct "Carried over from earlier turns" section.
+- **#6**: Added `pollRestoredTurns`, a multi-target sibling to
+  `pollUntilTerminal` sharing the same `pollGeneration`/`pollTimeoutHandle`
+  refs, so `handleSelectConversation` now hands every fulfilled,
+  non-terminal restored entry to ongoing polling, not just the last one.
+
+**Alternatives considered**: For #1, tried widening the existing
+`facts_by_value_unit` lookup with direction metadata attached to each
+entry instead of a separate lookup -- rejected because it conflated two
+different kinds of claim (a literal measurement vs. a computed change)
+under one data structure, which was the root cause of the bug in the
+first place. For #6, considered giving each restored turn its own
+independent poll loop (true per-turn concurrency) -- rejected as
+over-scoped for what's still a "one submission in flight at a time" app;
+a shared generation counter that can track multiple *read-only* restore
+targets is a much smaller change than real concurrent polling.
+
+**Consequence**: Verified with the full backend suite (`ruff`, `ruff
+format --check`, `mypy src`, `pytest --cov=care_agent --cov-fail-under=85`
+-- 289 passed, 88.70% coverage, including 3 new tests reproducing the
+exact false-accepts in #1, 4 new tests for the routing fix in #2, and a
+new regression test for #4), the full infra suite (`ruff`, `mypy`,
+`pytest tests/` -- 211 passed, including the new `test_stress_test_contract.py`
+and `test_current_question_flows_through_invoke_agent_payload`, plus a
+real `cdk synth --all`), and the full frontend suite (`tsc -b`, `eslint`,
+`vitest run` -- 26 passed, including a new resume test for #6, and `vite
+build`). Direct live reproduction of #1's narrator-level false-accepts
+against the real deployed Bedrock model wasn't attempted post-fix -- it
+isn't practically scriptable to force a specific wrong phrasing on demand
+-- so the unit-level proof in `tests/test_safety.py` is the real guarantee
+here, consistent with this project's existing testing philosophy for
+safety-net code. Live verification of #2 and a real `burst-async`/`race`
+stress-test run against the deployed stack are left for after the next
+deploy, since both need a fresh Cognito token the user obtains themselves.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title

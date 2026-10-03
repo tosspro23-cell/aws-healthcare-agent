@@ -40,7 +40,11 @@ def test_happy_path_returns_the_runs_grounded_facts():
     )
 
     facts = run_reads.fetch_prior_grounded_facts(["r1"], _OWNER)
-    assert facts == [_FACT]
+    # Tagged with its source run_id (see GroundedFact.source_run_id's own
+    # docstring) -- not just the bare fact dict unchanged, which would
+    # lose the ability to tell which prior run a fact actually came from
+    # once multiple runs' facts are flattened into one list.
+    assert facts == [{**_FACT, "source_run_id": "r1"}]
 
 
 @mock_aws

@@ -243,6 +243,31 @@ class GroundedFact(DictMixin):
     literal display_name. Empty by default; populated at construction
     time wherever a fact's marker is known (see `agent.py`/
     `orchestrator.py`), never guessed inside `safety.py` itself.
+
+    ``trend_previous_value``/``trend_previous_date``/``trend_latest_value``/
+    ``trend_latest_date``/``trend_direction`` are populated only for a
+    genuine two-point trend fact (see `orchestrator._build_trend_fact`) --
+    `numeric_values` alone is an unordered bare tuple with no documented
+    endpoint ordering and no direction, which let `safety.py` only ever
+    verify a derived delta/percentage-change claim's *magnitude*, never
+    whether it was being stated as a measurement vs. a change, or in the
+    correct direction. An independent review found this exact gap live: a
+    narrator's delta (the difference between two real values) was
+    accepted as if it were itself a real measured value, and a correct
+    magnitude stated with the *wrong* direction word passed too, since
+    nothing recorded which endpoint was earlier/later or which way the
+    real value actually moved. `None` for every fact that isn't a
+    two-point trend -- which makes the derived-claim check in
+    `safety.verify_numeric_grounding` inert for them, strictly more
+    conservative than before, never less. See docs/DECISIONS.md.
+
+    ``source_run_id`` is set only for a fact re-fetched from an *earlier*
+    turn's own evidence (see `run_reads.fetch_prior_grounded_facts`) --
+    `None` for a fact this turn's own tools just gathered. Exists so the
+    trace can record which prior run a cross-turn grounding fact actually
+    came from, instead of flattening multiple prior runs' facts into one
+    list with no way to tell them apart later. See
+    `AgentTrace.prior_evidence`'s own docstring.
     """
 
     claim: str
@@ -252,6 +277,12 @@ class GroundedFact(DictMixin):
     unit: str | None = None
     display_name: str | None = None
     display_name_aliases: tuple[str, ...] = field(default_factory=tuple)
+    trend_previous_value: float | None = None
+    trend_previous_date: str | None = None
+    trend_latest_value: float | None = None
+    trend_latest_date: str | None = None
+    trend_direction: Literal["up", "down", "flat"] | None = None
+    source_run_id: str | None = None
 
 
 def grounded_fact_from_dict(d: dict[str, Any]) -> GroundedFact:
@@ -269,6 +300,12 @@ def grounded_fact_from_dict(d: dict[str, Any]) -> GroundedFact:
         unit=d.get("unit"),
         display_name=d.get("display_name"),
         display_name_aliases=tuple(d.get("display_name_aliases") or ()),
+        trend_previous_value=d.get("trend_previous_value"),
+        trend_previous_date=d.get("trend_previous_date"),
+        trend_latest_value=d.get("trend_latest_value"),
+        trend_latest_date=d.get("trend_latest_date"),
+        trend_direction=d.get("trend_direction"),
+        source_run_id=d.get("source_run_id"),
     )
 
 
@@ -351,6 +388,19 @@ class AgentTrace(DictMixin):
     # entries, which is useful precisely because those don't (and aren't
     # meant to) account for every microsecond of overhead between them.
     total_duration_ms: float | None = None
+    # Facts re-fetched from an *earlier* turn in the same conversation
+    # (see `run_reads.fetch_prior_grounded_facts`) that widened THIS
+    # turn's own `numeric_grounding` check -- kept entirely separate from
+    # `grounded_facts` (which stays exactly "what this turn's own tools
+    # gathered") so the Evidence panel never conflates the two, but
+    # recorded here so the trace stays self-sufficient: an independent
+    # review found that without this, a trace alone couldn't be replayed
+    # later to reproduce why a draft referencing an older number actually
+    # passed -- that number's only grounding evidence lived in memory for
+    # the one request that used it and was never written down anywhere.
+    # Each fact's own `source_run_id` records which prior run it came
+    # from. See docs/DECISIONS.md.
+    prior_evidence: list[GroundedFact] = field(default_factory=list)
 
 
 @dataclass

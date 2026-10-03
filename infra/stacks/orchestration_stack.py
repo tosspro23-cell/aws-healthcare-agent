@@ -271,6 +271,20 @@ class OrchestrationStack(Stack):
                     # See docs/DECISIONS.md.
                     "owner_sub": sfn.JsonPath.string_at("$.owner_sub"),
                     "prior_run_ids": sfn.JsonPath.list_at("$.prior_run_ids"),
+                    # Same whitelist, same lesson a *third* time: added to
+                    # start_run.py's execution input so agent_task.py can
+                    # route on the bare live question instead of whatever
+                    # history `question` itself carries (see
+                    # `HealthAgent.ask()`'s own docstring) -- and added to
+                    # this whitelist in the very same change this time,
+                    # with its own regression test alongside it
+                    # (`test_current_question_flows_through_invoke_agent_payload`),
+                    # specifically because forgetting it here has now
+                    # happened twice before for `persona`/`engine` and a
+                    # third time, within this same file, for
+                    # `owner_sub`/`prior_run_ids` just above. See
+                    # docs/DECISIONS.md.
+                    "current_question": sfn.JsonPath.string_at("$.current_question"),
                 }
             ),
             result_path="$.agent_result",

@@ -110,6 +110,7 @@ def test_enqueue_sends_a_message_to_sqs(aws_resources):
         "engine": "v1",
         "owner_sub": _DEFAULT_CALLER_SUB,
         "prior_run_ids": [],
+        "current_question": "hello",
     }
 
 

@@ -168,17 +168,30 @@ const MAX_CONTEXT_TURNS = 4;
  * from one of them, instead of only ever trusting this turn's own fresh
  * tool calls. `Turn.question` itself is never touched -- only the text
  * actually sent to the API includes this context, so the question
- * bubble in the UI keeps showing exactly what the user typed. */
-function buildContextualQuestion(priorTurns: Turn[], newQuestion: string): { questionText: string; priorRunIds: string[] } {
+ * bubble in the UI keeps showing exactly what the user typed.
+ *
+ * `currentQuestion` (always just `newQuestion` itself, unchanged) is
+ * returned alongside `questionText` so the backend can route this turn's
+ * deterministic intent/red-flag classification on the bare live
+ * question, never on the history folded into `questionText` -- an
+ * independent review found V1's keyword classifier could be hijacked by
+ * an *old* answer's own keywords ("focus on first" from a resolved prior
+ * turn routing an unrelated new question to `priority_focus`). The
+ * narrator still sees the full `questionText`, context and all -- only
+ * routing switches to the bare question. See docs/DECISIONS.md. */
+function buildContextualQuestion(
+  priorTurns: Turn[],
+  newQuestion: string,
+): { questionText: string; priorRunIds: string[]; currentQuestion: string } {
   const relevant = priorTurns.filter((t) => t.status === "succeeded" && t.answer).slice(-MAX_CONTEXT_TURNS);
   const priorRunIds = relevant.map((t) => t.runId).filter((id): id is string => Boolean(id));
-  if (relevant.length === 0) return { questionText: newQuestion, priorRunIds };
+  if (relevant.length === 0) return { questionText: newQuestion, priorRunIds, currentQuestion: newQuestion };
   const transcript = relevant.map((t) => `Q: ${t.question}\nA: ${t.answer}`).join("\n\n");
   const questionText =
     "Context from earlier in this conversation, for continuity only -- base any new numeric claims on your own " +
     "fresh data lookups for this question, not by repeating earlier figures unless they're reconfirmed now:\n\n" +
     `${transcript}\n\nNew question: ${newQuestion}`;
-  return { questionText, priorRunIds };
+  return { questionText, priorRunIds, currentQuestion: newQuestion };
 }
 
 /** The Workbench redesign's real point: a three-zone layout (control
@@ -307,6 +320,51 @@ export function Workbench({
     pollTimeoutHandle.current = setTimeout(tick, POLL_INTERVAL_MS);
   }
 
+  /** The multi-target sibling of `pollUntilTerminal` above, for the one
+   * case where more than one turn can be genuinely non-terminal at once:
+   * restoring a conversation whose history has more than one entry still
+   * in flight (see `handleSelectConversation`'s own docstring -- a turn
+   * that hit a tolerated polling error and got marked `pollStalled`
+   * is a real, already-existing counter-example to "only the last entry
+   * can still be pending"). Shares `pollGeneration`/`pollTimeoutHandle`
+   * with `pollUntilTerminal` -- this app still only ever runs one *poll
+   * loop* at a time, it just fetches more than one target per tick. Each
+   * tick fetches every still-non-terminal target in parallel; a target
+   * that resolves terminal drops out, one that errors is marked
+   * `pollStalled` individually without aborting the others, and the loop
+   * reschedules only while targets remain. */
+  function pollRestoredTurns(targets: { id: string; runId: string }[]) {
+    stopPolling();
+    const myGeneration = pollGeneration.current;
+    let remaining = targets;
+
+    async function tick() {
+      if (pollGeneration.current !== myGeneration || remaining.length === 0) return;
+      const results = await Promise.allSettled(remaining.map((t) => getRun(t.runId)));
+      if (pollGeneration.current !== myGeneration) return;
+
+      const next: { id: string; runId: string }[] = [];
+      results.forEach((result, i) => {
+        const target = remaining[i];
+        if (result.status === "fulfilled") {
+          applyRunRecord(target.id, result.value);
+          if (!isTerminal(result.value.status)) next.push(target);
+        } else {
+          const err = result.reason as unknown;
+          updateTurn(target.id, { pollStalled: true });
+          setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
+        }
+      });
+
+      remaining = next;
+      if (remaining.length > 0) {
+        pollTimeoutHandle.current = setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    }
+
+    pollTimeoutHandle.current = setTimeout(tick, POLL_INTERVAL_MS);
+  }
+
   async function handleSubmit() {
     const q = question.trim();
     if (!q || disabled) return;
@@ -320,7 +378,7 @@ export function Workbench({
     const conversationId = activeConversationId ?? startConversation(q).id;
     if (!activeConversationId) setActiveConversationId(conversationId);
 
-    const { questionText: sentQuestion, priorRunIds } = buildContextualQuestion(turns, q);
+    const { questionText: sentQuestion, priorRunIds, currentQuestion } = buildContextualQuestion(turns, q);
 
     const id = crypto.randomUUID();
     const turn: Turn = { id, question: q, engine, persona, mode, status: "pending" };
@@ -329,12 +387,12 @@ export function Workbench({
 
     try {
       if (mode === "sync") {
-        const result = await askQuestion(userId, sentQuestion, engine, persona, priorRunIds);
+        const result = await askQuestion(userId, sentQuestion, engine, persona, priorRunIds, currentQuestion);
         updateTurn(id, { status: "succeeded", runId: result.run_id, answer: result.answer, safe: result.safe, trace: result.trace });
         addEntryToConversation(conversationId, { run_id: result.run_id, question: q, execution_type: "SYNC", submitted_at: new Date().toISOString(), engine, persona });
       } else {
         const starter = mode === "step_functions" ? startRun : enqueueJob;
-        const started = await starter(userId, sentQuestion, undefined, persona, engine, priorRunIds);
+        const started = await starter(userId, sentQuestion, undefined, persona, engine, priorRunIds, currentQuestion);
         updateTurn(id, { runId: started.run_id });
         addEntryToConversation(conversationId, {
           run_id: started.run_id,
@@ -379,10 +437,14 @@ export function Workbench({
    * thread in history re-fetches every one of its turns (in parallel;
    * they're independent reads) and rebuilds the full back-and-forth, the
    * same "pick a thread back up" pattern ChatGPT/Claude Code's own
-   * history sidebars use. Only the *last* entry can still be non-terminal
-   * when revisited: by construction only one turn is ever pending at a
-   * time, so every earlier entry in this conversation must already have
-   * finished before the next one could have been submitted. */
+   * history sidebars use. By construction only one turn is ever
+   * *submitted* pending at a time, but that doesn't mean only the last
+   * entry can still be non-terminal when revisited: an earlier entry
+   * that hit a tolerated polling error during its own live run is marked
+   * `pollStalled` rather than resolved to a terminal status (see
+   * `pollUntilTerminal`), so it can still be genuinely non-terminal here
+   * too. Every fulfilled, non-terminal entry -- not just the last -- is
+   * handed to `pollRestoredTurns` to keep tracking. */
   async function handleSelectConversation(conversation: Conversation) {
     if (disabled) return;
     setError(null);
@@ -413,10 +475,11 @@ export function Workbench({
       }),
     );
 
-    const lastIndex = conversation.entries.length - 1;
-    const lastResult = results[lastIndex];
-    if (lastResult?.status === "fulfilled" && !isTerminal(lastResult.value.status)) {
-      pollUntilTerminal(restored[lastIndex].id, conversation.entries[lastIndex].run_id);
+    const stillPending = results.flatMap((result, i) =>
+      result.status === "fulfilled" && !isTerminal(result.value.status) ? [{ id: restored[i].id, runId: conversation.entries[i].run_id }] : [],
+    );
+    if (stillPending.length > 0) {
+      pollRestoredTurns(stillPending);
     }
   }
 

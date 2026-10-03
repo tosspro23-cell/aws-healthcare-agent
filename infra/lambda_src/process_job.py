@@ -140,6 +140,10 @@ def handler(event: dict, context: object) -> None:
         # there) for the same cross-turn grounding purpose.
         owner_sub = message.get("owner_sub")
         prior_run_ids = message.get("prior_run_ids", [])
+        # Same default-for-pre-existing-messages posture as above. Used
+        # only for deterministic intent/red-flag routing -- see
+        # `HealthAgent.ask()`'s own docstring and docs/DECISIONS.md.
+        current_question = message.get("current_question") or question
 
         now = datetime.now(timezone.utc)
         entered_running = _claim_for_processing(
@@ -150,9 +154,7 @@ def handler(event: dict, context: object) -> None:
         if not entered_running:
             continue
 
-        prior_grounded_facts = [
-            grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)
-        ]
+        prior_grounded_facts = [grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)]
 
         try:
             if engine == "v2":
@@ -164,6 +166,7 @@ def handler(event: dict, context: object) -> None:
                     persona=persona,
                     on_stage=_make_stage_callback(run_id),
                     prior_grounded_facts=prior_grounded_facts,
+                    current_question=current_question,
                 )
             else:
                 response = _agent.ask(
@@ -172,6 +175,7 @@ def handler(event: dict, context: object) -> None:
                     question_id=run_id,
                     persona=persona,
                     prior_grounded_facts=prior_grounded_facts,
+                    current_question=current_question,
                 )
         except UnknownUserError as exc:
             run_writes.conditional_status_write(

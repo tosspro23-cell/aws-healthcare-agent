@@ -19,6 +19,29 @@ def test_grounded_fact_from_dict_round_trips_as_dict_output():
     assert rebuilt == original
 
 
+def test_grounded_fact_from_dict_round_trips_trend_and_source_run_id_fields():
+    """The structured trend-claim fields (added for the derived-claim
+    direction/baseline fix, see safety.py) and `source_run_id` (added for
+    cross-turn grounding evidence tracking) must round-trip through JSON
+    the same way every other field already does."""
+    original = GroundedFact(
+        claim="LDL-C trend: 148 mg/dL on 2025-12-08 -> 162 mg/dL on 2026-05-06 (up)",
+        source_type="bloodwork",
+        source_ref="trend:ldl_c_mg_dl",
+        numeric_values=(162.0, 148.0),
+        unit="mg/dL",
+        display_name="LDL-C",
+        trend_previous_value=148.0,
+        trend_previous_date="2025-12-08",
+        trend_latest_value=162.0,
+        trend_latest_date="2026-05-06",
+        trend_direction="up",
+        source_run_id="run-1",
+    )
+    rebuilt = grounded_fact_from_dict(original.as_dict())
+    assert rebuilt == original
+
+
 def test_grounded_fact_from_dict_handles_minimal_dict_with_defaults_missing():
     """A fact with no unit/display_name (e.g. a qualitative relationship
     claim like `compare_marker_trends`'s own) still round-trips -- the

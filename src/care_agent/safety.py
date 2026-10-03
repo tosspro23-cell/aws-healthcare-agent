@@ -64,9 +64,9 @@ the actual safety net.
 
 from __future__ import annotations
 
-import itertools
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from care_agent.models import GroundedFact, SafetyCheck
 
@@ -191,6 +191,66 @@ _ISO_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 # false positive is worth closing so real Bedrock answers stop being
 # needlessly discarded for this reason.
 _ORDINAL_LIST_MARKER_RE = re.compile(r"(?m)^\s*[*_]{0,2}(\d+\.)\s")
+
+# Vocabulary a narrator might use to state a trend's direction in prose --
+# mirrors mock_narrator.py's own `_DIRECTION_PHRASE` ("increased"/
+# "decreased"/"stayed about the same"), widened with synonyms a real LLM
+# narrator plausibly reaches for when instructed (see narrator/_prompt.py's
+# shared rules) to state "an increase" or "a percentage change" in its own
+# words. Used only to verify a *derived* (delta/percentage-change) claim's
+# stated direction against the fact's real one -- an independent review
+# found a magnitude-correct but direction-reversed claim ("decreased by
+# 14 mg/dL" for a marker that actually rose) previously passed outright,
+# since nothing checked which way the real value moved. See
+# `GroundedFact.trend_direction`'s own docstring and docs/DECISIONS.md.
+_DIRECTION_WORDS: dict[str, Literal["up", "down", "flat"]] = {
+    "increase": "up",
+    "increased": "up",
+    "increasing": "up",
+    "rise": "up",
+    "rises": "up",
+    "rising": "up",
+    "rose": "up",
+    "risen": "up",
+    "higher": "up",
+    "up": "up",
+    "climbed": "up",
+    "climbing": "up",
+    "gained": "up",
+    "jumped": "up",
+    "grew": "up",
+    "decrease": "down",
+    "decreased": "down",
+    "decreasing": "down",
+    "fall": "down",
+    "falls": "down",
+    "falling": "down",
+    "fell": "down",
+    "fallen": "down",
+    "lower": "down",
+    "down": "down",
+    "dropped": "down",
+    "dropping": "down",
+    "declined": "down",
+    "declining": "down",
+    "reduced": "down",
+    "unchanged": "flat",
+    "stable": "flat",
+    "steady": "flat",
+    "flat": "flat",
+}
+
+
+def _direction_nearby(window: str) -> Literal["up", "down", "flat"] | None:
+    """The first recognized direction word found in `window`, mapped to
+    up/down/flat -- or `None` if no direction word appears at all. Only
+    used to verify a *derived* (delta/percentage) claim's stated
+    direction; a literal measurement claim never needs this."""
+    for word, direction in _DIRECTION_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\b", window, re.IGNORECASE):
+            return direction
+    return None
+
 
 # Boundary characters for the marker-name proximity window used by
 # verify_numeric_grounding's cross-marker check (below): the *current
@@ -394,6 +454,26 @@ def verify_numeric_grounding(
     facts. A fact with no ``display_name`` set keeps the old,
     name-independent check -- this only tightens markers this project
     already knows how to name, never a new class of false positive.
+
+    **Derived claims (delta/percentage change)**: a trend fact's absolute
+    delta and percentage change (computed from ``trend_previous_value``/
+    ``trend_latest_value``, never from a bare, unordered ``numeric_values``
+    tuple) are matched *separately* from literal measurements, and only
+    when a recognized direction word (see ``_DIRECTION_WORDS``) appears
+    nearby whose direction matches the fact's real ``trend_direction``
+    exactly. An independent review found two real gaps this closes: a
+    narrator's delta ("Your latest LDL-C is 14 mg/dL.", 14 being
+    162-148) was previously accepted as if 14 were itself a measured
+    value, since the old code folded deltas into the *same* lookup real
+    measurements use; and a magnitude-correct claim stated with the
+    *wrong* direction ("decreased by 14 mg/dL" for a marker that actually
+    rose) also passed, since nothing verified which way the value moved,
+    and the old percentage check tried *both* possible baselines rather
+    than requiring the one real one (``trend_previous_value``). A fact
+    with no ``trend_direction`` set (anything that isn't a genuine
+    two-point trend fact) never matches a derived claim at all -- no
+    regression risk for any other kind of grounded fact. See
+    `GroundedFact`'s own docstring and docs/DECISIONS.md.
     """
     dates_in_text = set(_ISO_DATE_RE.findall(text))
     if allowed_dates is not None:
@@ -410,52 +490,43 @@ def verify_numeric_grounding(
         if fact.unit and fact.numeric_values:
             for value in fact.numeric_values:
                 facts_by_value_unit.setdefault((value, fact.unit.strip().lower()), []).append(fact)
-            # A trend fact carries both endpoint values (e.g. 148 and 162
-            # for one LDL-C fact) -- narrating "an increase of 14 mg/dL"
-            # is correct arithmetic over an already-grounded fact, but 14
-            # itself was never a literal grounded number, so it used to
-            # fail outright. Only the exact absolute difference between
-            # two values *of the same already-verified fact* is added
-            # here (never an arbitrary combination across two different
-            # facts, which would be a much weaker guarantee) -- and it's
-            # merged into the same lookup a real value uses, so it's
-            # still bound to the *same* unit and still requires the
-            # correct marker name nearby below, not a separate, weaker
-            # path. See docs/DECISIONS.md.
-            if len(fact.numeric_values) >= 2:
-                for a, b in itertools.combinations(fact.numeric_values, 2):
-                    # Rounded to 6 decimal places -- found live, not by
-                    # inspection: `6.1 - 5.8` is `0.2999999999999998` in
-                    # IEEE 754 floats, not exactly `0.3`, so a real
-                    # narrator writing the entirely correct "0.3%" was
-                    # rejected outright because the dict key stored here
-                    # (the raw subtraction result) didn't `==` the clean
-                    # `float("0.3")` parsed from that text, despite both
-                    # representing the same real-world number. No real
-                    # lab value or narrated delta in this project needs
-                    # more than a couple decimal places, so 6 is a wide
-                    # margin, not a precision compromise. See
-                    # docs/DECISIONS.md.
-                    delta = round(abs(a - b), 6)
-                    facts_by_value_unit.setdefault((delta, fact.unit.strip().lower()), []).append(fact)
-                # Percentage change is a *different* derived unit ("%")
-                # from the fact's own -- and unlike the flat delta above,
-                # needs a baseline to divide by. `GroundedFact.numeric_values`
-                # carries no documented ordering guarantee (V2's trend tool
-                # happens to write (latest, previous), but that's one call
-                # site's convention, not part of the model's own contract --
-                # see its docstring), so both possible baselines are computed
-                # and both accepted, never just one assumed to be "the"
-                # baseline. Rounded to whole and one-decimal percent -- the
-                # two precisions a narrator is actually likely to write
-                # ("9%" or "9.5%" for a true 9.46%), not left unrounded only,
-                # which would reject any real narration that rounds at all.
-                for base, other in itertools.permutations(fact.numeric_values, 2):
-                    if base == 0:
-                        continue
-                    pct_change = abs(other - base) / abs(base) * 100
-                    for rounded in (round(pct_change), round(pct_change, 1)):
-                        facts_by_value_unit.setdefault((float(rounded), "%"), []).append(fact)
+
+    # Derived (delta/percentage-change) claims are matched *separately*
+    # from literal measurements above, never folded into the same lookup
+    # -- see this function's own docstring for the two real false-accepts
+    # this separation (plus the direction check below) closes. Only a
+    # genuine two-point trend fact (`trend_direction` set -- see
+    # `GroundedFact`'s own docstring) ever contributes an entry here;
+    # anything else simply can't match a derived claim at all.
+    derived_claims_by_value_unit: dict[tuple[float, str], list[GroundedFact]] = {}
+    for fact in grounded_facts:
+        if fact.trend_direction is None or fact.trend_previous_value is None or fact.trend_latest_value is None or not fact.unit:
+            continue
+        unit_key = fact.unit.strip().lower()
+        # Rounded to 6 decimal places -- found live, not by inspection:
+        # `6.1 - 5.8` is `0.2999999999999998` in IEEE 754 floats, not
+        # exactly `0.3`, so a real narrator writing the entirely correct
+        # "0.3%" was rejected outright because the unrounded subtraction
+        # result didn't `==` the clean `float("0.3")` parsed from that
+        # text, despite both representing the same real-world number. No
+        # real lab value or narrated delta in this project needs more
+        # than a couple decimal places, so 6 is a wide margin, not a
+        # precision compromise. See docs/DECISIONS.md.
+        delta = round(abs(fact.trend_latest_value - fact.trend_previous_value), 6)
+        derived_claims_by_value_unit.setdefault((delta, unit_key), []).append(fact)
+        # Percentage change is a *different* derived unit ("%") from the
+        # fact's own, and needs a baseline to divide by -- always
+        # `trend_previous_value`, the one real baseline, never both
+        # possible orderings the way a bare, unordered `numeric_values`
+        # tuple used to force this check to guess. Rounded to whole and
+        # one-decimal percent -- the two precisions a narrator is
+        # actually likely to write ("9%" or "9.5%" for a true 9.46%), not
+        # left unrounded only, which would reject any real narration that
+        # rounds at all.
+        if fact.trend_previous_value != 0:
+            pct_change = delta / abs(fact.trend_previous_value) * 100
+            for rounded in (round(pct_change), round(pct_change, 1)):
+                derived_claims_by_value_unit.setdefault((float(rounded), "%"), []).append(fact)
 
     # Every marker name this *answer* could legitimately be talking about
     # -- not just the ones relevant to the value currently being checked.
@@ -496,9 +567,31 @@ def verify_numeric_grounding(
         unit_key = raw_unit.strip().lower()
         unit_key = _UNIT_ALIASES.get(unit_key, unit_key)
         candidates = facts_by_value_unit.get((value, unit_key), [])
+        is_derived_claim = False
+        if not candidates:
+            candidates = derived_claims_by_value_unit.get((value, unit_key), [])
+            is_derived_claim = True
         if not candidates:
             ungrounded.append(f"{raw_value}{raw_unit}")
             continue
+
+        window = _sentence_context(text_without_dates, match.start(), match.end())
+
+        if is_derived_claim:
+            # A derived claim must also state the correct direction --
+            # the magnitude alone isn't evidence enough, since the exact
+            # same magnitude reads as "correct" phrased as either an
+            # increase or a decrease; only one of those is the real
+            # claim. No recognized direction word in this sentence, or
+            # one that doesn't match the fact's real direction, means
+            # this can't be verified and must be rejected. See this
+            # function's own docstring.
+            direction = _direction_nearby(window)
+            matching_direction_facts = [c for c in candidates if c.trend_direction == direction]
+            if direction is None or not matching_direction_facts:
+                ungrounded.append(f"{raw_value}{raw_unit} (derived claim with no matching direction nearby)")
+                continue
+            candidates = matching_direction_facts
 
         # Any of the marker's *curated* names -- the exact catalog
         # display_name, or a real, already-vetted alias of it (e.g. "LDL
@@ -512,7 +605,6 @@ def verify_numeric_grounding(
         marker_names = {c.display_name for c in candidates if c.display_name}
         marker_names |= {alias for c in candidates for alias in c.display_name_aliases}
         if marker_names:
-            window = _sentence_context(text_without_dates, match.start(), match.end())
             found = _names_nearby(marker_names, window)
             if not found and not _names_nearby(all_marker_names, window):
                 # The current sentence names no marker at all -- likely an

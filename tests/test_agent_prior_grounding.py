@@ -99,6 +99,28 @@ def test_ask_prior_grounded_facts_do_not_leak_into_this_turns_grounded_facts():
     assert all(f.source_ref != _PRIOR_HDL_SOURCE_REF for f in response.trace.grounded_facts)
 
 
+def test_ask_records_prior_grounded_facts_as_trace_evidence():
+    """Regression test: an independent review found that the facts which
+    actually widened this turn's grounding check were never recorded
+    anywhere retrievable -- a trace alone couldn't be replayed later to
+    reproduce why a draft referencing an older number passed. See
+    `AgentTrace.prior_evidence`'s own docstring."""
+    agent = HealthAgent(narrator=_RestatesOldNumberNarrator())
+    prior_fact = _prior_fact()
+    response = agent.ask(
+        user_id="user_demo_001",
+        question_text="How is my LDL trending?",
+        prior_grounded_facts=[prior_fact],
+    )
+    assert response.trace.prior_evidence == [prior_fact]
+
+
+def test_ask_prior_evidence_is_empty_when_no_prior_grounded_facts_supplied():
+    agent = HealthAgent(narrator=_RestatesOldNumberNarrator())
+    response = agent.ask(user_id="user_demo_001", question_text="How is my LDL trending?")
+    assert response.trace.prior_evidence == []
+
+
 # -- ask_compound() (V2) -------------------------------------------------
 
 
@@ -113,12 +135,14 @@ def test_ask_compound_falls_back_on_a_restated_number_with_no_prior_grounded_fac
 def test_ask_compound_accepts_a_restated_number_when_prior_grounded_facts_supplied():
     agent = HealthAgent(narrator=_RestatesOldNumberNarrator())
     planner = _ScriptedPlanner([ToolPlan(calls=(PlannedToolCall("get_marker_trend", {"concept_id": "ldl_c_mg_dl"}),))])
+    prior_fact = _prior_fact()
     response = agent.ask_compound(
         user_id="user_demo_001",
         question_text="How is my LDL trending?",
         planner=planner,
-        prior_grounded_facts=[_prior_fact()],
+        prior_grounded_facts=[prior_fact],
     )
     assert response.trace.disposition == "answered"
     assert "47" in response.answer
     assert all(f.source_ref != _PRIOR_HDL_SOURCE_REF for f in response.trace.grounded_facts)
+    assert response.trace.prior_evidence == [prior_fact]

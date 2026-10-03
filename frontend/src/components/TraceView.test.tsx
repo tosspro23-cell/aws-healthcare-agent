@@ -144,3 +144,25 @@ describe("TraceView V2 traces (orchestration view)", () => {
     expect(screen.queryByText(/^Total:/)).not.toBeInTheDocument();
   });
 });
+
+describe("TraceView cross-turn evidence (prior_evidence)", () => {
+  it("renders prior_evidence in its own section, separate from this turn's grounded facts", () => {
+    const trace = baseTrace({
+      grounded_facts: [{ claim: "LDL-C trend: 148 -> 162 mg/dL", source_type: "bloodwork", source_ref: "trend:ldl_c_mg_dl", numeric_values: [162, 148], unit: "mg/dL" }],
+      prior_evidence: [
+        { claim: "HDL-C = 47 mg/dL (adequate)", source_type: "bloodwork", source_ref: "panel:hdl_c_mg_dl", numeric_values: [47], unit: "mg/dL", source_run_id: "run-1" },
+      ],
+    });
+    render(<TraceView trace={trace} />);
+
+    expect(screen.getByText("Grounded facts (1)")).toBeInTheDocument();
+    expect(screen.getByText("Carried over from earlier turns (1)")).toBeInTheDocument();
+    expect(screen.getByText("HDL-C = 47 mg/dL (adequate)")).toBeInTheDocument();
+    expect(screen.getByText(/from run run-1/)).toBeInTheDocument();
+  });
+
+  it("omits the carried-over section entirely when prior_evidence is empty or absent", () => {
+    render(<TraceView trace={baseTrace()} />);
+    expect(screen.queryByText(/^Carried over from earlier turns/)).not.toBeInTheDocument();
+  });
+});

@@ -112,6 +112,13 @@ def fetch_prior_grounded_facts(run_ids: list[str], owner_sub: str | None) -> lis
             # common, expected case here, not a problem.
             logger.info("No evidence available for prior_run_id=%r (%s)", run_id, exc)
             continue
-        facts.extend(trace.get("grounded_facts") or [])
+        # Tag each fact with the run it actually came from -- an
+        # independent review found that flattening facts from multiple
+        # prior runs into one bare list lost this relationship entirely,
+        # so a trace recording *that* a cross-turn fact was used couldn't
+        # also record *which* earlier turn it came from. `source_run_id`
+        # is read back by `grounded_fact_from_dict`. See
+        # `GroundedFact.source_run_id`'s own docstring.
+        facts.extend({**f, "source_run_id": run_id} for f in (trace.get("grounded_facts") or []))
 
     return facts

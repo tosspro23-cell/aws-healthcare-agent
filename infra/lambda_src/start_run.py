@@ -101,6 +101,16 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(prior_run_ids, list) or not all(isinstance(x, str) for x in prior_run_ids):
         return _json_response(400, {"error": "'prior_run_ids', if supplied, must be a list of strings."})
 
+    # See adapter.py's identical validation/docstring -- threaded into the
+    # Step Functions input below alongside `prior_run_ids`. Must *also* be
+    # listed in `InvokeAgent`'s own `Payload` whitelist in
+    # orchestration_stack.py, or agent_task.py never sees it -- the exact
+    # class of bug this file's own comments already document happening
+    # twice before, for `persona` and `engine`. See docs/DECISIONS.md.
+    current_question = body.get("current_question") or question
+    if not isinstance(current_question, str) or not current_question:
+        return _json_response(400, {"error": "'current_question', if supplied, must be a non-empty string."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         # `start_execution`'s `name` param must be a string; an
@@ -120,6 +130,7 @@ def handler(event: dict, context: object) -> dict:
         "persona": persona,
         "engine": engine,
         "prior_run_ids": prior_run_ids,
+        "current_question": current_question,
     }
 
     try:
@@ -139,7 +150,5 @@ def handler(event: dict, context: object) -> dict:
     existing = _sfn().describe_execution(executionArn=_execution_arn_for(run_id))
     existing_input = json.loads(existing["input"])
     if existing_input != submitted_input:
-        return _json_response(
-            409, {"error": f"run_id={run_id!r} is already in use by a different request.", "status": existing["status"]}
-        )
+        return _json_response(409, {"error": f"run_id={run_id!r} is already in use by a different request.", "status": existing["status"]})
     return _json_response(202, {"run_id": run_id, "status": existing["status"]})

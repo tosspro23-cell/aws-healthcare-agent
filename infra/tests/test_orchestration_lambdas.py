@@ -353,9 +353,7 @@ def test_start_run_threads_persona_into_the_execution_input(state_machine_arn):
 
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
-        event = _api_event(
-            body='{"user_id": "user_demo_001", "question": "hello", "run_id": "clinician-run", "persona": "clinician"}'
-        )
+        event = _api_event(body='{"user_id": "user_demo_001", "question": "hello", "run_id": "clinician-run", "persona": "clinician"}')
         start_run.handler(event, None)
 
     sfn = boto3.client("stepfunctions", region_name="us-east-1")
@@ -373,9 +371,7 @@ def test_start_run_threads_prior_run_ids_into_the_execution_input(state_machine_
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
         event = _api_event(
-            body=json.dumps(
-                {"user_id": "user_demo_001", "question": "hello", "run_id": "follow-up-run", "prior_run_ids": ["earlier-run"]}
-            )
+            body=json.dumps({"user_id": "user_demo_001", "question": "hello", "run_id": "follow-up-run", "prior_run_ids": ["earlier-run"]})
         )
         start_run.handler(event, None)
 
@@ -464,7 +460,6 @@ def test_start_run_handles_execution_already_exists_with_matching_input_as_idemp
     Regression test: this used to always report "RUNNING" regardless of
     the execution's real status; now it reports whatever
     describe_execution actually returns."""
-    
 
     matching_input = json.dumps(
         {
@@ -475,6 +470,7 @@ def test_start_run_handles_execution_already_exists_with_matching_input_as_idemp
             "persona": "patient",
             "engine": "v1",
             "prior_run_ids": [],
+            "current_question": "hello",
         }
     )
     fake_client = MagicMock()
@@ -499,7 +495,6 @@ def test_start_run_handles_execution_already_exists_with_different_input_as_conf
     different request could silently piggyback on someone else's
     already-running or already-finished execution instead of being told
     about the conflict."""
-    
 
     different_input = json.dumps(
         {"run_id": "dup-1", "user_id": "someone_else", "question": "a totally different question", "owner_sub": "other-sub"}
@@ -518,7 +513,7 @@ def test_start_run_handles_execution_already_exists_with_different_input_as_conf
     assert result["statusCode"] == 409
 
 
-@pytest.mark.parametrize("bad_run_id", ["has spaces", "has/slash", "x" * 81, "quote\"mark"])
+@pytest.mark.parametrize("bad_run_id", ["has spaces", "has/slash", "x" * 81, 'quote"mark'])
 def test_start_run_rejects_invalid_run_id_characters(state_machine_arn, bad_run_id):
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         start_run._sfn_client = None
@@ -748,9 +743,7 @@ def test_cancel_run_owned_by_another_caller_returns_404_not_the_real_status(runs
     caller could cancel any other caller's run by run_id alone. A
     non-owner gets the same 404 a missing run_id gets, and the run is left
     untouched -- not cancelled, not told the real status."""
-    runs_table.put_item(
-        Item={"run_id": "r1", "status": "RUNNING", "owner_sub": _OTHER_CALLER_SUB, "execution_type": "STEP_FUNCTIONS"}
-    )
+    runs_table.put_item(Item={"run_id": "r1", "status": "RUNNING", "owner_sub": _OTHER_CALLER_SUB, "execution_type": "STEP_FUNCTIONS"})
 
     with patch.dict(os.environ, {"STATE_MACHINE_ARN": state_machine_arn}):
         cancel_run._sfn_client = None

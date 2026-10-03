@@ -333,6 +333,34 @@ def test_run_compound_reasoning_repairs_the_rejected_half_of_a_mixed_plan():
     assert len(execution_calls) == 2  # hba1c_percent executed once, not twice
 
 
+def test_run_compound_reasoning_does_not_let_a_harmless_reproposal_erase_an_unrelated_rejection():
+    """Regression test for a real reproduced gap, distinct from the
+    "genuine fix" test above: a repair round that re-proposes *only* an
+    already-succeeded call from round one -- addressing nothing new at
+    all -- must not silently clear disclosure of a *different*,
+    still-unresolved rejection just because this round itself produced
+    no new rejections of its own. An independent review found the
+    previous version of this logic (`unresolved = rejections`,
+    overwritten wholesale whenever a round proposed anything) did exactly
+    this: `made_up_marker`'s rejection vanished with no `Limitation` ever
+    recorded, not because anything fixed it, but because round two's own
+    plan simply didn't mention it again. See docs/DECISIONS.md."""
+    planner = _ScriptedPlanner(
+        [
+            ToolPlan(
+                calls=(
+                    PlannedToolCall("get_marker_snapshot", {"concept_id": "ldl_c_mg_dl"}),
+                    PlannedToolCall("get_marker_snapshot", {"concept_id": "made_up_marker"}),
+                )
+            ),
+            ToolPlan(calls=(PlannedToolCall("get_marker_snapshot", {"concept_id": "ldl_c_mg_dl"}),)),
+        ]
+    )
+    brief, _ = run_compound_reasoning("What's my LDL, and what about this other marker?", _real_ctx(), planner)
+    assert len(planner.calls) == 2
+    assert any(lim.kind == "partial_tool_rejection" and "made_up_marker" in lim.detail for lim in brief.limitations)
+
+
 def test_run_compound_reasoning_repairs_after_a_rejected_call():
     """The bounded-repair path: a first plan referencing an unsupported
     concept_id is rejected by the capability gate, and the planner gets

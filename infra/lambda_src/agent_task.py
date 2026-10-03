@@ -85,9 +85,11 @@ def handler(event: dict, context: object) -> dict:
     # grounding purpose as adapter.py's sync path -- see run_reads.py.
     owner_sub = event.get("owner_sub")
     prior_run_ids = event.get("prior_run_ids", [])
-    prior_grounded_facts = [
-        grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)
-    ]
+    prior_grounded_facts = [grounded_fact_from_dict(d) for d in run_reads.fetch_prior_grounded_facts(prior_run_ids, owner_sub)]
+    # Same default-for-pre-existing-executions posture as `persona`/
+    # `engine` above. Used only for deterministic intent/red-flag routing
+    # -- see `HealthAgent.ask()`'s own docstring and docs/DECISIONS.md.
+    current_question = event.get("current_question") or question
 
     if engine == "v2":
         response = _agent.ask_compound(
@@ -98,6 +100,7 @@ def handler(event: dict, context: object) -> dict:
             persona=persona,
             on_stage=_make_stage_callback(run_id),
             prior_grounded_facts=prior_grounded_facts,
+            current_question=current_question,
         )
     else:
         response = _agent.ask(
@@ -106,6 +109,7 @@ def handler(event: dict, context: object) -> dict:
             question_id=run_id,
             persona=persona,
             prior_grounded_facts=prior_grounded_facts,
+            current_question=current_question,
         )
     trace_dict = response.trace.as_dict()
 

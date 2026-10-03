@@ -17,6 +17,21 @@ export interface GroundedFact {
   source_ref: string;
   numeric_values: number[];
   unit: string | null;
+  // Found missing while closing a different gap: the backend's
+  // GroundedFact has carried these since the cross-marker-binding safety
+  // fix, but this interface never declared them.
+  display_name?: string | null;
+  display_name_aliases?: string[];
+  // Structured trend-claim fields, populated only for a two-point trend
+  // fact -- see GroundedFact.trend_direction's own backend docstring.
+  trend_previous_value?: number | null;
+  trend_previous_date?: string | null;
+  trend_latest_value?: number | null;
+  trend_latest_date?: string | null;
+  trend_direction?: "up" | "down" | "flat" | null;
+  // Set only for a fact re-fetched from an *earlier* turn (cross-turn
+  // grounding, see run_reads.py) -- absent for this turn's own facts.
+  source_run_id?: string | null;
 }
 
 export interface Limitation {
@@ -60,6 +75,11 @@ export interface AgentTrace {
   // in milliseconds -- independent of summing individual ToolCall
   // duration_ms entries. Undefined for any trace predating this field.
   total_duration_ms?: number;
+  // Facts re-fetched from an earlier turn that widened THIS turn's own
+  // grounding check (cross-turn grounding, see run_reads.py) -- kept
+  // separate from `grounded_facts` (this turn's own tools only).
+  // Undefined for any trace predating this field.
+  prior_evidence?: GroundedFact[];
 }
 
 export interface AskResponse {
@@ -151,6 +171,7 @@ export async function askQuestion(
   engine?: Engine,
   persona?: Persona,
   priorRunIds?: string[],
+  currentQuestion?: string,
 ): Promise<AskResponse> {
   return (await authedFetch("/ask", {
     method: "POST",
@@ -160,6 +181,7 @@ export async function askQuestion(
       ...(engine ? { engine } : {}),
       ...(persona ? { persona } : {}),
       ...(priorRunIds && priorRunIds.length > 0 ? { prior_run_ids: priorRunIds } : {}),
+      ...(currentQuestion ? { current_question: currentQuestion } : {}),
     }),
   })) as AskResponse;
 }
@@ -178,6 +200,7 @@ export async function startRun(
   persona?: Persona,
   engine?: Engine,
   priorRunIds?: string[],
+  currentQuestion?: string,
 ): Promise<{ run_id: string; status: string }> {
   return (await authedFetch("/runs", {
     method: "POST",
@@ -188,6 +211,7 @@ export async function startRun(
       ...(persona ? { persona } : {}),
       ...(engine ? { engine } : {}),
       ...(priorRunIds && priorRunIds.length > 0 ? { prior_run_ids: priorRunIds } : {}),
+      ...(currentQuestion ? { current_question: currentQuestion } : {}),
     }),
   })) as { run_id: string; status: string };
 }
@@ -204,6 +228,7 @@ export async function enqueueJob(
   persona?: Persona,
   engine?: Engine,
   priorRunIds?: string[],
+  currentQuestion?: string,
 ): Promise<{ run_id: string; status: string }> {
   return (await authedFetch("/jobs", {
     method: "POST",
@@ -214,6 +239,7 @@ export async function enqueueJob(
       ...(persona ? { persona } : {}),
       ...(engine ? { engine } : {}),
       ...(priorRunIds && priorRunIds.length > 0 ? { prior_run_ids: priorRunIds } : {}),
+      ...(currentQuestion ? { current_question: currentQuestion } : {}),
     }),
   })) as { run_id: string; status: string };
 }

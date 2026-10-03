@@ -311,9 +311,12 @@ loop. Every step is deterministic and independently testable:
 
 Every `HealthAgent.ask()` call returns an `AgentResponse` with `answer`
 (the text) and `trace` (`AgentTrace`): every tool call made, every knowledge
-chunk retrieved (with source + score), every grounded fact used, every
-limitation surfaced, and every safety check's pass/fail — the "expose
-enough trace/debug information" requirement.
+chunk retrieved (with source + score), every fact this turn's own tools
+grounded (`grounded_facts`), any earlier-turn fact that also widened this
+turn's grounding check (`prior_evidence` — cross-turn conversation memory,
+each tagged with the run it came from), every limitation surfaced, and
+every safety check's pass/fail — the "expose enough trace/debug
+information" requirement.
 
 ### V2 — bounded tool-calling agent
 

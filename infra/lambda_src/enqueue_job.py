@@ -105,6 +105,13 @@ def handler(event: dict, context: object) -> dict:
     if not isinstance(prior_run_ids, list) or not all(isinstance(x, str) for x in prior_run_ids):
         return _json_response(400, {"error": "'prior_run_ids', if supplied, must be a list of strings."})
 
+    # See adapter.py's identical validation/docstring -- threaded into the
+    # SQS message below so process_job.py can route on the bare live
+    # question, not the context-wrapped `question` text.
+    current_question = body.get("current_question") or question
+    if not isinstance(current_question, str) or not current_question:
+        return _json_response(400, {"error": "'current_question', if supplied, must be a non-empty string."})
+
     run_id = body.get("run_id") or str(uuid.uuid4())
     if not isinstance(run_id, str):
         return _json_response(400, {"error": "'run_id', if supplied, must be a string."})
@@ -145,6 +152,7 @@ def handler(event: dict, context: object) -> dict:
                     "engine": engine,
                     "owner_sub": owner_sub,
                     "prior_run_ids": prior_run_ids,
+                    "current_question": current_question,
                 }
             ),
         )
