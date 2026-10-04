@@ -127,6 +127,29 @@ needs a real design change, not a quick patch. See
 [`docs/INDEPENDENT_REVIEW_FINDINGS.md`](docs/INDEPENDENT_REVIEW_FINDINGS.md).
 See [`docs/AWS_ROADMAP.md`](docs/AWS_ROADMAP.md) / `docs/DECISIONS.md`
 for the full writeup.
+
+Conversation memory came next: a follow-up question now folds the active
+conversation's recent Q&A into context (client-side, not a backend
+session — see the "Known limitations" bullet below), and the backend
+re-fetches and re-authorizes each prior turn's own grounded facts by
+`run_id` rather than trusting whatever the client sends. A third
+independent audit of that work then found 6 more issues (1 High, 5
+Medium), reproduced live before any fix was planned: a derived
+delta/percentage claim (e.g. "increased by 14 mg/dL") could pass
+`numeric_grounding` as if it were a literal measurement, with no check on
+direction; an old turn's keywords could hijack a new question's
+deterministic routing once wrapped in context; a repair round could
+silently erase disclosure of an unrelated, still-unresolved tool
+rejection; cross-turn grounding facts that widened a safety check weren't
+recorded anywhere a trace could replay; restoring a conversation only
+re-polled its last entry instead of every turn that could still be
+non-terminal; and `stress_test.py`'s direct Step Functions calls were
+missing a required payload field (a payload-whitelist mistake this
+project has now hit three times — closed this time with a contract test,
+not just a fix). All 6 fixed, re-verified against the real deployed API
+and with two live stress-test runs against the real state machine. See
+`docs/DECISIONS.md`'s 2026-10-03 entry.
+
 A live deployment (Cognito +
 API Gateway + Lambda + DynamoDB + S3 + Step Functions + SQS + Bedrock) is
 running in AWS end to end. The synchronous `/ask` and the async `/runs` →
@@ -164,18 +187,25 @@ disabled (synthetic demo data, single account, created via
 `AdminCreateUser` -- see `docs/DECISIONS.md`), so the login page won't
 take a new account; reach out if you'd like a demo login to try it live.
 
-A real, non-mocked run against the deployed backend (`narrator: bedrock`
-in the trace) -- personalized guidance grounded in this user's own
-bloodwork and questionnaire answers, not a generic template:
+A real, non-mocked run against the deployed backend -- the Workbench's
+three-zone layout (conversation history, the running thread, and a
+persistent evidence panel): a SAFE-tagged, personalized **V1** answer to
+"What should I focus on first in my results?", with its own evidence open
+beside it -- four passed safety checks (`non_empty`, `no_diagnosis`,
+`no_dosing`, `numeric_grounding`) and all 12 grounded facts, each citing
+its exact bloodwork source field, not just asserted in the prose:
 
-![The Workbench's answer to "What should I focus on first in my results?" -- a SAFE-tagged, personalized recommendation citing this user's own LDL-C, HbA1c, and questionnaire context](docs/screenshots/workbench-answer.png)
+![The Workbench's three-zone layout: a SAFE-tagged, personalized V1 answer citing this user's own LDL-C, HbA1c, and questionnaire context, with its evidence panel open alongside showing four passed safety checks and all 12 grounded facts, each citing its exact source field](docs/screenshots/workbench-answer.png)
 
-Every answer ships with its own trace, not just the prose: which safety
-checks ran and passed, and every numeric claim traced back to the exact
-bloodwork/questionnaire field it came from -- the grounding this whole
-project's safety model depends on, made visible rather than asserted:
+**V2**'s evidence panel shows something V1's can't: the actual
+tool-calling trace behind the answer. This compound question ("Compare my
+LDL and A1C trends and tell me if my reported diet change is helping",
+clinician persona) needed a trend comparison *and* a questionnaire lookup
+-- the planner resolved both in one round of three tool calls, then
+retrieved supporting knowledge-base chunks automatically, each step timed
+(5.0s total):
 
-![The same answer's full trace: four passed safety checks (non_empty, no_diagnosis, no_dosing, numeric_grounding) and 12 grounded facts, each citing its exact source field](docs/screenshots/workbench-grounding.png)
+![V2's compound-reasoning trace for a question comparing two markers' trends against a reported diet change: classify_intent, load_user_profile, load_bloodwork, one round of three tool calls (compare_marker_trends, two get_questionnaire_fact lookups), automatic knowledge retrieval, compose_answer, and verify_safety_checks, each step timed](docs/screenshots/workbench-v2-trace.png)
 
 ## Quickstart
 
@@ -530,9 +560,19 @@ no credentials to try immediately:
   implemented and tested, never wired into the deployed Lambda (`chromadb`
   pulls in a compiled `hnswlib` wheel that this project's flat-copy Lambda
   packaging can't handle without new work -- see `docs/DECISIONS.md`).
-- **No conversation memory.** Each `ask()` is a single turn; a follow-up
-  ("what about my triglycerides specifically?") reruns the whole pipeline
-  from scratch rather than refining a prior answer.
+- **Conversation memory is client-side context injection, not a backend
+  session.** A follow-up folds the active conversation's recent Q&A into
+  the question text actually sent to the API (`Workbench.tsx`'s
+  `buildContextualQuestion`), and the backend re-fetches and
+  re-authorizes each prior turn's own grounded facts by `run_id`
+  (`prior_run_ids` in, `prior_evidence` in the trace out) rather than
+  trusting client-supplied facts directly -- but every `ask()`/
+  `ask_compound()` call is still stateless per call, with no session
+  concept on the backend at all. Deterministic routing (`classify()`)
+  runs on the bare live question only (`current_question`), never the
+  context-wrapped blob, so an earlier answer's own keywords can't hijack
+  a new question's routing -- a real bug an independent audit found and
+  this project fixed; see `docs/DECISIONS.md`'s 2026-10-03 entry.
 - **Single-locale.** Questionnaire values, KB content, and templates are
   English-only.
 - **The narrator's questionnaire-modifier phrasing is templated per topic**,
