@@ -92,6 +92,31 @@ def test_metabolic_pattern_not_detected_when_a_marker_missing():
     assert detect_metabolic_priority_pattern(items) is False
 
 
+def test_rank_focus_markers_leaves_out_an_implausible_value(bloodwork, catalog):
+    """A value no living human could have (almost certainly a data-entry
+    error) must not rank as a priority -- and so must not be able to
+    complete the metabolic pattern on its own. It is still disclosed
+    separately by `implausible_value_limitations`."""
+    from dataclasses import replace
+
+    panel = bloodwork.latest_panel
+    corrupted = [replace(m, value=50000.0) if m.concept_id == "triglycerides_mg_dl" else m for m in panel.biomarkers]
+    items = rank_focus_markers(replace(panel, biomarkers=corrupted), catalog, set())
+    ranked = {it.marker.concept_id for it in items}
+    assert "triglycerides_mg_dl" not in ranked
+    assert {"ldl_c_mg_dl", "hba1c_percent"} <= ranked  # plausible abnormal markers still rank
+    assert detect_metabolic_priority_pattern(items) is False
+
+
+def test_rank_focus_markers_keeps_a_severe_but_real_value(bloodwork, catalog):
+    from dataclasses import replace
+
+    panel = bloodwork.latest_panel
+    severe = [replace(m, value=3500.0) if m.concept_id == "triglycerides_mg_dl" else m for m in panel.biomarkers]
+    items = rank_focus_markers(replace(panel, biomarkers=severe), catalog, set())
+    assert "triglycerides_mg_dl" in {it.marker.concept_id for it in items}
+
+
 def test_questionnaire_modifiers_cover_expected_topics(questionnaire):
     modifiers = build_questionnaire_modifiers(questionnaire)
     topics = {m.topic for m in modifiers}

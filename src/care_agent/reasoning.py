@@ -123,8 +123,20 @@ class FocusItem:
 
 
 def rank_focus_markers(panel: Panel, catalog: BiomarkerCatalog, mentioned_concepts: set[str]) -> list[FocusItem]:
+    """Rank abnormal markers by severity x importance.
+
+    A marker outside `plausibility`'s outer physiological bounds is left
+    out entirely: a value nothing physiologically supports (almost
+    certainly a data-entry or unit error) must not itself drive a "see a
+    clinician" priority or a metabolic-pattern match. It is still
+    disclosed -- `implausible_value_limitations` runs over every marker
+    in the panel, independent of this ranking -- just never ranked.
+    """
     items: list[FocusItem] = []
     for marker in panel.biomarkers:
+        plausibility = assess_plausibility(marker)
+        if plausibility.bounds is not None and not plausibility.is_plausible:
+            continue
         catalog_entry = catalog.lookup(marker.concept_id)
         sev = severity_weight(marker.classification)
         if sev <= 0:

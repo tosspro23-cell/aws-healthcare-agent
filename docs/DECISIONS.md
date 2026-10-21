@@ -5006,6 +5006,38 @@ deploy, since both need a fresh Cognito token the user obtains themselves.
 
 ---
 
+## 2026-10-21 — Implausible values no longer rank as focus markers
+
+**Context**: The 2026-09-19 plausibility work deliberately only *disclosed*
+a value outside physiological bounds (e.g. a triglycerides value of 50000
+mg/dL) and left it in `rank_focus_markers` / `detect_metabolic_priority_pattern`,
+explicitly noting that excluding it from ranking was "a reasonable next
+step, not done here." The gap that left: a data-entry error classified
+"high" by the source dataset could still rank as a top priority, and could
+itself complete the three-marker metabolic pattern that drives a "see a
+clinician" recommendation -- disclosed, but still steering the answer.
+
+**Decision**: `rank_focus_markers` skips any marker `assess_plausibility`
+reports as outside its bounds. Disclosure is unchanged and independent:
+`implausible_value_limitations` still runs over every marker in the panel
+(shared by V1 and V2 via `_apply_source_data_checks`), so the flagged value
+and its "may be a data entry or unit error" limitation still appear in the
+answer -- it is just never ranked. A marker with no bounds entry is still
+treated as plausible, and a severe-but-real value (e.g. triglycerides
+3500 mg/dL) still ranks.
+
+**Alternatives considered**: Dropping the marker from the panel before any
+processing -- rejected, since the user should still be told about the
+suspicious value rather than have it silently vanish.
+
+**Consequence**: Two regression tests in `tests/test_reasoning.py` (an
+implausible marker is left out and cannot complete the metabolic pattern;
+a severe-but-real value is kept). The new test fails against the previous
+behavior. Affects both engines, since V2's `get_focus_markers` tool shares
+`rank_focus_markers`.
+
+---
+
 <!-- Template for new entries:
 
 ## YYYY-MM-DD — Short decision title
