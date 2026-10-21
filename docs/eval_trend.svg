@@ -6,40 +6,41 @@
 <text x="42" y="111.0" text-anchor="end" font-size="11" fill="#666">50%</text>
 <line x1="50" y1="24.0" x2="620" y2="24.0" stroke="#dcdcdc" stroke-width="1"/>
 <text x="42" y="28.0" text-anchor="end" font-size="11" fill="#666">100%</text>
-<polyline points="50.0,24.0 67.8,24.0 85.6,24.0 103.4,24.0 121.2,24.0 139.1,24.0 156.9,24.0 174.7,24.0 192.5,24.0 210.3,24.0 228.1,24.0 245.9,24.0 263.8,24.0 281.6,24.0 299.4,24.0 317.2,24.0 335.0,24.0 352.8,24.0 370.6,24.0 388.4,24.0 406.2,24.0 424.1,24.0 441.9,24.0 459.7,24.0 477.5,24.0 495.3,24.0 513.1,24.0 530.9,24.0 548.8,24.0 566.6,24.0 584.4,24.0 602.2,24.0 620.0,24.0" fill="none" stroke="#94a3b8" stroke-width="2"/>
+<polyline points="50.0,24.0 67.3,24.0 84.5,24.0 101.8,24.0 119.1,24.0 136.4,24.0 153.6,24.0 170.9,24.0 188.2,24.0 205.5,24.0 222.7,24.0 240.0,24.0 257.3,24.0 274.5,24.0 291.8,24.0 309.1,24.0 326.4,24.0 343.6,24.0 360.9,24.0 378.2,24.0 395.5,24.0 412.7,24.0 430.0,24.0 447.3,24.0 464.5,24.0 481.8,24.0 499.1,24.0 516.4,24.0 533.6,24.0 550.9,24.0 568.2,24.0 585.5,24.0 602.7,24.0 620.0,24.0" fill="none" stroke="#94a3b8" stroke-width="2"/>
 <circle cx="50.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 5bb7a29 (mock): 100%</title></circle>
-<circle cx="67.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d82c92b (mock): 100%</title></circle>
-<circle cx="85.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 43b851a (mock): 100%</title></circle>
-<circle cx="103.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d29c8d7 (mock): 100%</title></circle>
-<circle cx="121.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 bb9aabc (mock): 100%</title></circle>
-<circle cx="139.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 00ae367 (mock): 100%</title></circle>
-<circle cx="156.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 d0ed6ff (mock): 100%</title></circle>
-<circle cx="174.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 0ecab72 (mock): 100%</title></circle>
-<circle cx="192.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 dee5bd9 (mock): 100%</title></circle>
-<circle cx="210.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 40123ec (mock): 100%</title></circle>
-<circle cx="228.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-20 a71fa08 (mock): 100%</title></circle>
-<circle cx="245.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 eb91611 (mock): 100%</title></circle>
-<circle cx="263.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 fcb99c0 (mock): 100%</title></circle>
-<circle cx="281.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 e5d1efe (mock): 100%</title></circle>
-<circle cx="299.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 9b89131 (mock): 100%</title></circle>
-<circle cx="317.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 3283570 (mock): 100%</title></circle>
-<circle cx="335.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-24 b3837db (mock): 100%</title></circle>
-<circle cx="352.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-27 bce7a02 (mock): 100%</title></circle>
-<circle cx="370.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-29 ac635e9 (mock): 100%</title></circle>
-<circle cx="388.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-29 b4ef39f (mock): 100%</title></circle>
-<circle cx="406.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-29 2a45b7c (mock): 100%</title></circle>
-<circle cx="424.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-30 a400f3f (mock): 100%</title></circle>
-<circle cx="441.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-30 cbb5ca8 (mock): 100%</title></circle>
-<circle cx="459.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 ab901ed (mock): 100%</title></circle>
-<circle cx="477.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 6ea6a6d (mock): 100%</title></circle>
-<circle cx="495.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 8656d7f (mock): 100%</title></circle>
-<circle cx="513.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 a8a34fd (mock): 100%</title></circle>
-<circle cx="530.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 edec1dc (mock): 100%</title></circle>
-<circle cx="548.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 1f4bf15 (mock): 100%</title></circle>
-<circle cx="566.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 53b2d42 (mock): 100%</title></circle>
-<circle cx="584.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 054e4cb (mock): 100%</title></circle>
-<circle cx="602.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-03 fdcee90 (mock): 100%</title></circle>
-<circle cx="620.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-04 f691118 (mock): 100%</title></circle>
+<circle cx="67.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d82c92b (mock): 100%</title></circle>
+<circle cx="84.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 43b851a (mock): 100%</title></circle>
+<circle cx="101.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-06 d29c8d7 (mock): 100%</title></circle>
+<circle cx="119.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 bb9aabc (mock): 100%</title></circle>
+<circle cx="136.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 00ae367 (mock): 100%</title></circle>
+<circle cx="153.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 d0ed6ff (mock): 100%</title></circle>
+<circle cx="170.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 0ecab72 (mock): 100%</title></circle>
+<circle cx="188.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 dee5bd9 (mock): 100%</title></circle>
+<circle cx="205.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-07 40123ec (mock): 100%</title></circle>
+<circle cx="222.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-20 a71fa08 (mock): 100%</title></circle>
+<circle cx="240.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 eb91611 (mock): 100%</title></circle>
+<circle cx="257.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 fcb99c0 (mock): 100%</title></circle>
+<circle cx="274.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 e5d1efe (mock): 100%</title></circle>
+<circle cx="291.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 9b89131 (mock): 100%</title></circle>
+<circle cx="309.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-21 3283570 (mock): 100%</title></circle>
+<circle cx="326.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-24 b3837db (mock): 100%</title></circle>
+<circle cx="343.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-27 bce7a02 (mock): 100%</title></circle>
+<circle cx="360.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-29 ac635e9 (mock): 100%</title></circle>
+<circle cx="378.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-29 b4ef39f (mock): 100%</title></circle>
+<circle cx="395.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-29 2a45b7c (mock): 100%</title></circle>
+<circle cx="412.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-30 a400f3f (mock): 100%</title></circle>
+<circle cx="430.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-09-30 cbb5ca8 (mock): 100%</title></circle>
+<circle cx="447.3" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 ab901ed (mock): 100%</title></circle>
+<circle cx="464.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 6ea6a6d (mock): 100%</title></circle>
+<circle cx="481.8" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 8656d7f (mock): 100%</title></circle>
+<circle cx="499.1" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-01 a8a34fd (mock): 100%</title></circle>
+<circle cx="516.4" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 edec1dc (mock): 100%</title></circle>
+<circle cx="533.6" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 1f4bf15 (mock): 100%</title></circle>
+<circle cx="550.9" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 53b2d42 (mock): 100%</title></circle>
+<circle cx="568.2" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-02 054e4cb (mock): 100%</title></circle>
+<circle cx="585.5" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-03 fdcee90 (mock): 100%</title></circle>
+<circle cx="602.7" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-04 f691118 (mock): 100%</title></circle>
+<circle cx="620.0" cy="24.0" r="4" fill="#2f7d32"><title>2026-10-21 acd827b (mock): 100%</title></circle>
 <text x="50" y="212" font-size="11" fill="#666">2026-09-06 · 5bb7a29</text>
-<text x="620" y="212" text-anchor="end" font-size="11" fill="#666">2026-10-04 · f691118 · 100%</text>
+<text x="620" y="212" text-anchor="end" font-size="11" fill="#666">2026-10-21 · acd827b · 100%</text>
 </svg>
