@@ -14,7 +14,7 @@ concurrency:
 jobs:
   test:
     name: lint, type-check, test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -53,7 +53,7 @@ jobs:
 
   smoke:
     name: CLI smoke test (no API key, no network)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: test
     steps:
       - name: Checkout
@@ -89,7 +89,7 @@ jobs:
 
   update-eval-history:
     name: Update eval history (main only)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: smoke
     # Only for a real push to main -- not a PR (would commit to a branch
     # nobody asked for) and not workflow_dispatch/other events. The bot's
@@ -129,7 +129,7 @@ jobs:
 
   infra:
     name: infra (cdk synth + cdk-nag + moto-mocked tests, no live AWS account)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -174,7 +174,7 @@ jobs:
 
   frontend:
     name: frontend (lint, type-check, vitest, build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -204,7 +204,7 @@ jobs:
 
   check-deploy-paths:
     name: Check whether this push touches anything actually deployed
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Independent of test/smoke/infra/frontend -- pure git-diff, so it
     # finishes well before deploy would need its answer instead of
     # adding to the critical path.
@@ -253,7 +253,7 @@ jobs:
 
   deploy:
     name: Deploy to AWS (main only, requires manual approval)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [test, smoke, infra, frontend, check-deploy-paths]
     # Only a real push to main (never a PR -- a fork's PR could not
     # assume this role anyway, since the OIDC trust condition below is
